@@ -1,0 +1,17 @@
+# .NET
+bin/
+obj/
+*.user
+
+# Node / Vite
+web/node_modules/
+web/dist/
+
+# IDE
+.vs/
+.idea/
+*.swp
+
+# Local secrets (never commit real keys/connection strings)
+**/appsettings.Local.json
+**/*.secrets.json

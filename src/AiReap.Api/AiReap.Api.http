@@ -1,0 +1,48 @@
+@AiReap.Api_HostAddress = http://localhost:5299
+
+### Register (self-service role selection — Phase 0 demo convenience only)
+POST {{AiReap.Api_HostAddress}}/api/auth/register
+Content-Type: application/json
+
+{
+  "email": "ba@aireap.dev",
+  "password": "Passw0rd!23",
+  "displayName": "BA Tester",
+  "role": "BusinessAnalyst"
+}
+
+### Login
+# @name login
+POST {{AiReap.Api_HostAddress}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "ba@aireap.dev",
+  "password": "Passw0rd!23"
+}
+
+### List projects
+GET {{AiReap.Api_HostAddress}}/api/projects
+Authorization: Bearer {{login.response.body.token}}
+
+### Create project
+POST {{AiReap.Api_HostAddress}}/api/projects
+Authorization: Bearer {{login.response.body.token}}
+Content-Type: application/json
+
+{
+  "name": "Complaint Management",
+  "description": "Employees submit complaints, managers investigate them."
+}
+
+### AI demo round trip (replace projectId with one from the create/list response above)
+POST {{AiReap.Api_HostAddress}}/api/aidemo/analyze
+Authorization: Bearer {{login.response.body.token}}
+Content-Type: application/json
+
+{
+  "projectId": "00000000-0000-0000-0000-000000000000",
+  "rawText": "We need a complaint management application where employees can submit complaints and managers investigate them."
+}
+
+###

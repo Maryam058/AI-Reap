@@ -1,0 +1,147 @@
+# AI-REAP — Development Roadmap
+
+Derived from `docs/requirements/REQUIREMENTS-ANALYSIS.md` and `docs/requirements/TRACEABILITY-MATRIX.md`. Phase boundaries follow the PDF's own phasing (§33–§36); each phase ends with a demonstrable, working increment — not partial/broken features.
+
+Update this file's checkboxes and the matrix's Status column together as work lands; don't let them drift apart.
+
+---
+
+## Phase 0 — Project Setup & Architecture Decisions (pre-MVP) — ✅ Complete (2026-09-17)
+
+Not explicitly a numbered phase in the PDF, but required before any code, because the PDF explicitly demands justified decisions (§29) rather than defaults.
+
+- [x] Resolve the **Open Questions** in `REQUIREMENTS-ANALYSIS.md` (LLM provider, vector store, auth mechanism, file-parsing libs, hosting target, multi-tenancy scope) — recorded in `docs/architecture/ADR-001-technology-decisions.md`.
+- [x] **Architecture Decision Record: generalized artifact data model** (REAP-008) — `docs/architecture/ADR-002-data-model.md`. Implemented as `Artifact`/`ArtifactVersion`/`ArtifactRelationship`/`ArtifactReview` in `AiReap.Domain`, migrated to SQL Server.
+- [x] Scaffold solution: `AiReap.sln` with `AiReap.Api` / `AiReap.Application` / `AiReap.Domain` / `AiReap.Infrastructure` (ASP.NET Core 8, EF Core 8, Swagger), plus `web/` (React 19 + TypeScript, Vite).
+- [x] Stand up `IAiChatClient` abstraction (REAP-004) with two implementations: `StubAiChatClient` (default, no key required) and `AnthropicAiChatClient` (used automatically once `Ai:Anthropic:ApiKey` is configured) — verified round-tripping through `/api/aidemo/analyze`.
+- [x] Auth scaffolding (REAP-006) + role model (REAP-007): ASP.NET Identity + JWT, five roles seeded on startup (Administrator, BusinessAnalyst, Developer, QA, Reviewer). Verified: register/login issue a role-claimed JWT; a `Developer` gets `403` on `POST /api/projects`, `200` on `GET /api/projects`; no token gets `401`.
+- [ ] CI basics (build + test on push) — deferred; no git remote/CI provider set up yet.
+
+**Exit criteria — verified against a real SQL Server (Docker, throwaway container) end-to-end:** register → login → JWT issued with role claim → role-gated `POST /api/projects` succeeds for BusinessAnalyst/blocked for Developer → `GET /api/projects` lists it → `POST /api/aidemo/analyze` round-trips through `IAiChatClient` and logs an `AIExecution` audit row → Swagger documents all of it. React app builds, type-checks, and serves. See `docs/architecture/ADR-001`/`ADR-002` for the decisions behind this.
+
+**Known Phase 0 gaps carried into Phase 1:** no automated test project yet; `RequirementSource`/`Document` entities exist in the schema but have no endpoints yet; self-registration lets a caller pick any role (fine for a solo dev demo, needs tightening once there's a real Administrator-only user management flow — see Epic 1.5/2.x).
+
+---
+
+## Phase 1 — MVP (PDF §33, sections 1–13 are the "mandatory first-month deliverable")
+
+Goal: raw requirement in → clarified, structured functional/non-functional requirements + stories + acceptance criteria out, all persisted, versioned-enough to demo, with visible AI-vs-human distinction.
+
+### Epic 1.1 — Project Management (REAP-020..023) — ✅ done (2026-09-17)
+- [x] Project CRUD — Create/List/GetById shipped in Phase 1; `PUT /api/projects/{id}` (edit all descriptive fields) added later to close the gap. Verified live.
+- [x] Project status lifecycle enforcement — `UpdateStatusAsync` now rejects any transition except staying put or advancing exactly one stage in the fixed `Draft→...→Completed` sequence (400 with a clear message otherwise). No "reopen"/"reject back to draft" concept exists in the spec, so none was invented. Verified live: valid single-step transition succeeds, skip-ahead and backward attempts both correctly rejected.
+- [x] Stakeholder management — full CRUD (`POST`/`GET`/`PUT`/`DELETE` under `/api/projects/{id}/stakeholders`), `ProjectSettingsPanel` in the UI. Verified live: add → list → update → remove → list-empty, plus role gating (Developer blocked 403 on writes, still able to read).
+
+### Epic 1.2 — Requirement Intake (REAP-030..033) — ✅ done (2026-09-17)
+- [x] Manual/rich-text requirement entry (plain text for now — no rich-text formatting yet)
+- [x] Paste meeting notes
+- [x] Upload TXT — endpoint + UI (file input in `RequirementWorkspace`) verified live end-to-end. PDF/DOCX remain Phase 2 (ADR-001 §4).
+- [x] `RequirementSource` persisted immutably; never overwritten by AI output — verified live
+
+### Epic 1.3 — AI Analysis & Clarification (REAP-040..042) — ✅ done (2026-09-17)
+- [x] `RequirementAnalysisService`: raw text → actors/capabilities/data/rules/missing-info (structured JSON, schema-validated via `AiJsonParser` per REAP-005) — verified live against real SQL Server
+- [x] `ClarificationService` + `IArtifactService.AnswerClarificationAsync`: clarification questions generated from "missing info"; Open→Answered/NotApplicable lifecycle verified live (no workflow yet drives the separate "Resolved" state — see matrix REAP-042)
+- [x] UI: `RequirementWorkspace`/`ClarificationQuestionCard` — user answers questions inline, answers persist and version
+
+### Epic 1.4 — Structured Requirement Generation (REAP-043..047) — ✅ done (2026-09-17)
+- [x] Functional Requirement Generator + editable UI (`ArtifactCard`) + unique IDs (`FR-001`, …) — verified live
+- [x] Non-Functional Requirement Generator, with `proposed_assumption` vs `confirmed` flag **force-set server-side** (never trusted from the model) on any target value (REAP-045, REAP-011) — verified live
+- [x] User Story Generator, linked to functional requirements via `ArtifactRelationship(DerivedFrom)` — verified live
+- [x] Acceptance Criteria Generator (Given/When/Then; positive/negative/boundary), per story, linked via `DerivedFrom` — verified live
+
+### Epic 1.5 — Human-in-the-Loop Baseline (REAP-074, partial) — mostly done
+- [x] Artifact status machine: AI Generated → Approved/Rejected wired end-to-end (`PATCH /api/artifacts/{id}/status`, gated to Administrator/BusinessAnalyst/Reviewer, writes an `ArtifactReview` row) — verified live. Draft/UnderReview/Implemented/Verified states exist in the enum but nothing transitions into them yet.
+- [x] Visible "AI Generated" / "AI Generated — Human Review Required" badge in the UI
+
+### Epic 1.6 — Basic Dashboard (REAP-083, partial) — ✅ done (2026-09-17)
+- [x] Requirement counts, FR/NFR split, unresolved-question count, approved/pending/rejected split, recent changes — `GET /api/projects/{id}/dashboard`, `DashboardPanel` in the UI. Verified live: counts move correctly as artifacts are generated/answered.
+
+## Phase 1 — ✅ Complete (2026-09-17)
+
+**Exit criteria (Phase 1 demo) — ✅ verified live against a real SQL Server:** created a project, pasted the complaint-management prompt, ran AI analysis (actors/capabilities/missing-info + 2 clarification questions), answered one question (version bumped, Origin=Human on that version), generated FR-001/NFR-001 (NFR correctly forced to `proposed_assumption`), generated US-001 (linked DerivedFrom FR-001), generated AC-001/AC-002 (linked DerivedFrom US-001), approved FR-001 (ArtifactReview recorded), uploaded a .txt requirement source, and watched the dashboard counts update accordingly. Confirmed role gating (Developer blocked with 403 on every write endpoint) and CORS working from the Vite dev origin. **Known gap:** no actual visual browser check of the UI was possible (no browser-automation tool available in this environment) — verification is via the API contract directly plus the React type-check/build succeeding; the UI has not been eyeballed running in a real browser.
+
+---
+
+## Phase 2 — AI SDLC (PDF §34) — ✅ Complete (2026-09-17)
+
+Goal: extend from "requirements" to "design + plan + tests," add quality/conflict guardrails.
+
+All of §11 (business rules), §14 (quality analysis), §15 (conflict detection), §16-18 (solution/DB/API design), §19-20 (tasks/test cases), and Epic 2.4 (PDF/DOCX parsing) are built and verified live end-to-end, following the same generalized-artifact pattern from Phase 1 — no new architectural concept was needed for any of it, which is exactly what ADR-002 was betting on. Phase 2 is fully complete.
+
+### Epic 2.1 — Business Rules & Quality (REAP-050..052) — ✅ done (2026-09-17)
+- [x] Business Rule Extraction, linked to requirements — `BusinessRuleService`, `POST /api/requirement-sources/{id}/generate-business-rules`, UI section in `RequirementWorkspace`. Verified live: BR-001 correctly linked to FR-001 via `LinkedRule`.
+- [x] Requirement Quality Analysis with concrete recommendations — `RequirementQualityService`, `POST /api/requirement-sources/{id}/analyze-quality`. Ephemeral (not persisted as an artifact — there's no "finding" artifact type), logged via `AIExecution`. Verified live.
+- [x] Duplicate/Conflict Detection → "Human Resolution Required" outcome — `ConflictDetectionService`, project-wide scan, `POST /api/projects/{id}/detect-conflicts`, `ConflictsPanel` in the UI. Findings recorded as `ArtifactRelationship(ConflictsWith|DuplicateOf)`, never auto-resolved. Verified live (empty-result path only — the stub AI client returns no findings by design; a real model is needed to exercise an actual detected pair).
+
+### Epic 2.2 — Design Assistants (REAP-060..062, 064) — ✅ done (2026-09-17)
+- [x] Solution Design Assistant (architecture/modules/integration/auth/jobs/caching/logging/deployment notes) — `SolutionDesignService`, `POST /api/requirement-sources/{id}/generate-design`, one `DA-xxx` artifact per call. Verified live.
+- [x] Database Design Assistant (entities/fields/types/keys/relationships/indexes) — `DatabaseDesignService`, `POST .../generate-data-entities`, `DE-xxx` artifacts linked `DerivedFrom` the FR(s) they support. Verified live. (Developer-review gate = the standard artifact approval workflow, same as every other type — no separate gate needed.)
+- [x] API Design Assistant (contract generation linked to requirement IDs) — `ApiDesignService`, `POST .../generate-api-specs`, `API-xxx` artifacts linked `DerivedFrom` FR. Verified live.
+
+### Epic 2.3 — Planning & QA (REAP-063, 070) — ✅ done (2026-09-17)
+- [x] Implementation Task generator (desc/type/priority/deps/related-reqs/role/estimate) — `ImplementationPlanningService`, `POST .../generate-tasks`, `TASK-xxx` artifacts linked `Implements` the FR(s) they realize, aware of already-generated data entities/API specs for context. Verified live.
+- [x] Test Case Generator (positive/negative/boundary/permission/validation), linked to requirement IDs — `TestGenerationService`, `POST /api/artifacts/{frId}/generate-test-cases` (scoped per FR, like acceptance criteria are per story), `TC-xxx` artifacts linked `TestedBy` (FR → TestCase). Verified live.
+
+### Epic 2.4 — File Intake Completion (carry-over from Phase 1 if deferred) — ✅ done (2026-09-17)
+- [x] PDF/DOCX upload parsing (REAP-032) — `IDocumentTextExtractor`/`DocumentTextExtractor` (PdfPig for PDF, DocumentFormat.OpenXml for DOCX, per ADR-001 §4), wired into both upload endpoints (`requirement-sources/upload` and `documents/upload`, since both accept the same file types). Verified live: generated a real PDF and DOCX with distinct content, uploaded both through each endpoint, confirmed correct extracted text in the response; confirmed an unsupported extension (.xyz) is rejected with 400. **Known limitation, not silently glossed over:** PDF extraction is text-layer only (no OCR) — a scanned/image-only PDF yields empty text and is rejected with a clear error rather than silently creating an empty source; DOCX extraction is paragraph text only (tables/headers/footers/embedded objects are out of scope for this pass).
+
+**Exit criteria (Phase 2 demo) — ✅ verified live against a real SQL Server:** from a requirement source with FR-001 already generated, ran generate-design → DA-001, generate-data-entities → DE-001 (linked `DerivedFrom` FR-001), generate-api-specs → API-001 (linked `DerivedFrom` FR-001), generate-tasks → TASK-001 (linked `Implements` FR-001, aware of DE-001/API-001 as context), and generate-test-cases on FR-001 → TC-001/TC-002 (FR-001 linked `TestedBy` both). Confirmed the full traceability graph by querying `GET /api/artifacts/{FR-001 id}/relationships` and seeing all five links (2 TestedBy outgoing, DerivedFrom×2 and Implements×1 incoming) in one place. Role gating reconfirmed (Developer blocked 403 on `generate-design`, still able to read). All reviewable/editable through the same generic artifact endpoints as every other type — no special-casing needed thanks to the ADR-002 generalized model.
+
+---
+
+## Phase 3 — Advanced Intelligence (PDF §35) — ✅ Complete (2026-09-17)
+
+Goal: close the loop — traceability as a live graph, change-impact awareness, versioning, RAG-grounded Copilot, full audit trail.
+
+### Epic 3.1 — Traceability & Change Management (REAP-071..073) — ✅ done (2026-09-17)
+- [x] Traceability Matrix as a queryable graph (Objective→Req→Story→AC→Design→Task→Test) — `TraceabilityService`, `GET /api/projects/{id}/traceability-matrix`, `TraceabilityMatrixPanel`. Verified live: one FR rolled up a story, 2 AC, a data entity, a task, and 2 test cases in a single query.
+- [x] Impact Analysis on approved-requirement change (advisory only — REAP-072) — `ImpactAnalysisService` (undirected 3-hop BFS over the relationship graph, split by downstream-approval-status), `GET /api/artifacts/{id}/impact`, surfaced via "Check impact" in `ArtifactDetails`. Verified live; never mutates anything.
+- [x] Requirement Versioning + version-history UI, AI-vs-human origin tracked — the version endpoint existed since Phase 1; `ArtifactDetails` now renders it with AI/Human badges, plus a two-version side-by-side field diff (pick any two versions from dropdowns, changed fields highlighted) — entirely client-side, since the existing versions endpoint already returns each version's full data snapshot. Verified live: edited an artifact's precondition text, confirmed the resulting v1→v2 diff showed only that field changed and every other field identical.
+
+### Epic 3.2 — RAG & Copilot (REAP-080..082) — ✅ done (2026-09-17)
+- [x] Document extraction → chunking → embeddings → vector store pipeline. Embedding-provider decision (carried from ADR-001 §2) resolved: OpenAI `text-embedding-3-small` via `OpenAiEmbeddingClient`, with a `StubEmbeddingClient` default so the app runs with no external key — see ADR-001 §2. `DocumentService` chunks plain text (1200 chars, 200 overlap) and embeds each chunk into `DocumentChunk.Embedding`; no separate vector store/index — similarity is in-process cosine over a project's chunks (also ADR-001 §2).
+- [x] Semantic retrieval wired into LLM calls — `CopilotService` retrieves top-5 chunks above a similarity threshold and includes them as cited excerpts in the prompt.
+- [x] Project Copilot Q&A (grounded, cites sources) — `CopilotService`/`CopilotController`/`CopilotPanel`. Answers are grounded in two kinds of context: structured facts (untested FRs, open clarifications, pending-review artifacts, recent changes — same underlying data as Traceability/Impact Analysis) plus semantic search over uploaded documents. Ephemeral like quality/conflict analysis — never persists an artifact, only logs an `AIExecution` (`ProjectCopilotQuery`) for the audit trail. Verified live: document upload → chunk → embed → ask → cited answer → audit trail entry, against a real SQL Server.
+- PDF/DOCX extraction for uploaded documents shipped with Epic 2.4 (`IDocumentTextExtractor`, shared with requirement-source upload) — no longer TXT-only.
+
+### Epic 3.3 — Audit & Full Dashboard (REAP-009..010, 083) — mostly done
+- [x] AI Audit Trail — `AuditTrailService`, `GET /api/projects/{id}/ai-executions`, `AuditTrailPanel`. Explicitly no chain-of-thought field (REAP-010, unchanged from Phase 0). **Two known gaps, not silently glossed over:** `PromptTemplateVersion` is never populated (prompts are inline C# string constants, not a versioned template store); `Accepted`/human-edit linkage isn't wired, since one `AIExecution` can produce many artifacts and the entity's single `ProducedArtifactId` FK doesn't cleanly model that — would need a join table to do properly.
+- [x] Full dashboard: approval progress and recent changes shipped in Phase 1's basic dashboard. **Not done:** test coverage and conflict counts are not yet rolled into the dashboard (conflict findings exist via `ConflictsPanel` but aren't summarized there).
+
+### Epic 3.4 — Full Approval Lifecycle (REAP-074, completion) — ✅ done (2026-09-17)
+- [x] Implemented/Verified states wired to actual downstream completion signals — `ArtifactService.PromoteLinkedFunctionalRequirementsAsync`, triggered when an `ImplementationTask` or `TestCase` is approved. A Functional Requirement auto-promotes Approved→Implemented once *all* of its linked tasks (`Implements`) are Approved, and Implemented→Verified once *all* of its linked test cases (`TestedBy`) are Approved. This is the only real "completion signal" the platform has (it doesn't execute code or run tests itself), so nothing beyond artifact-review state is used to drive it. Verified live: approving the sole task promoted FR-001 to Implemented; approving one of two test cases left it at Implemented; approving the second promoted it to Verified. **Known limitation, documented not hidden:** promotion is one-directional — there's no demotion if a task/test is later un-approved (would need a real state machine for artifacts, which doesn't exist); only Functional Requirements get this treatment since only they carry `Implements`/`TestedBy` links in this system.
+
+**Exit criteria (Phase 3 demo = PDF §37 in full):** Run the complaint-management scenario end-to-end from raw prompt through traceability matrix; then change one approved requirement and show the system correctly identifying (not auto-changing) impacted downstream artifacts. This is REAP-100/REAP-101 — treat it as an automated integration test, not just a manual walkthrough.
+
+---
+
+## Phase 4 — Agentic SDLC (PDF §36, optional / stretch)
+
+Only start after Phase 3's exit criteria are verified.
+
+- [ ] Define each agent's responsibility + structured input/output contract: Requirements Agent, Analysis Agent, Architecture Agent, Development Planning Agent, QA Agent, Review Agent
+- [ ] Chain agents with explicit human-approval checkpoints between stages (REAP-091)
+- [ ] Confirm autonomous code deployment remains explicitly out of scope (REAP-092)
+
+---
+
+## Release Gate — Definition of Done (PDF §38, REAP-102)
+
+Before calling any milestone "done," verify against the full checklist in `docs/requirements/TRACEABILITY-MATRIX.md` §J, and in particular:
+
+- [ ] React ↔ ASP.NET Core integration working end-to-end
+- [ ] SQL Server persistence with the justified schema from the Phase 0 ADR
+- [ ] Auth + role-based authorization across multiple projects
+- [ ] Full AI requirement analysis + clarification workflow
+- [ ] FR/NFR generation, business rules, stories, acceptance criteria
+- [ ] Requirement quality + conflict analysis
+- [ ] Design, implementation-task, and test-case assistance
+- [ ] Traceability, versioning, and change-impact analysis
+- [ ] Human approval workflow + AI Project Copilot
+- [ ] AI execution/audit history (no hidden chain-of-thought)
+- [ ] Clear AI-vs-human-decision distinction visible throughout the UI
+- [ ] Exception handling, logging, clean source control, setup/architecture docs
+
+## Working Agreement While Building (PDF §39)
+
+For every AI-assisted change in this repo: **Understand Requirement → Design → Generate/Write Code → Review → Build → Test → Review AI Output → Commit.** No generated diff gets committed unless the developer (you) can explain what it does, why it's needed, how it fits the rest of the system, and how it was tested — this applies to Claude-authored code in this repo just as much as any other AI assistant.
