@@ -233,14 +233,14 @@ function TestCaseDetails({ data }: { data: TestCaseData }) {
       <span className={`kind-pill kind-${data.testKind}`}>{data.testKind}</span>
       <Detail label="Preconditions" value={data.preconditions} />
       {data.steps?.length > 0 && (
-        <p>
+        <div>
           <span className="detail-label">Steps:</span>
           <ol className="test-steps">
             {data.steps.map((s, i) => (
               <li key={i}>{s}</li>
             ))}
           </ol>
-        </p>
+        </div>
       )}
       <Detail label="Expected result" value={data.expectedResult} />
     </>

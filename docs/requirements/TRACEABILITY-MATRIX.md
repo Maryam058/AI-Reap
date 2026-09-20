@@ -15,8 +15,8 @@ Legend for **Phase**: `P1` MVP, `P2` AI SDLC, `P3` Advanced Intelligence, `P4` A
 | REAP-003 | SQL Server as system of record for all listed entities | §2, §29 | P1 | Must | Built & Verified (migration applied to real SQL Server; Project/Identity tables exercised, others migrated but unused so far) |
 | REAP-004 | AI provider abstraction (swappable without business-logic rewrite) | §2, §30 | P1 | Must | Built & Verified (Stub verified live; Anthropic implementation written, not yet exercised with a real key) |
 | REAP-005 | Structured JSON output contract + response validation before persistence | §31 | P1 | Must | Built & Verified (`AiJsonParser` rejects the whole response — nothing partial persisted — on any shape mismatch; exercised across all four pipeline stages) |
-| REAP-006 | Authentication (login/session) | §4, §33, §38 | P1 | Must | Built & Verified |
-| REAP-007 | Role-based authorization enforced server-side (5 roles) | §4, §38 | P1 | Must | Built & Verified (403/200/401 confirmed live) |
+| REAP-006 | Authentication (login/session) | §4, §33, §38 | P1 | Must | Built & Verified (2026-09-20: bootstrap admin, per-request token re-validation, deactivation) |
+| REAP-007 | Role-based authorization enforced server-side (5 roles) | §4, §38 | P1 | Must | Built & Verified (403/200/401 confirmed live; 2026-09-20: public sign-up can no longer choose a role; Administrator user management at `/api/users`) |
 | REAP-008 | Generalized/justified artifact data model (not 1 table per concept) | §29 | P1 | Must | Built (schema migrated; not yet exercised by an endpoint — Phase 1) |
 | REAP-009 | AI Audit Trail (op type, project, user, timestamp, model, prompt version, input ref, output, accept/reject, human edits, final version) | §27 | P3 | Should | In Progress — `GET /api/projects/{id}/ai-executions` + `AuditTrailPanel` UI now expose the full history live. Two known gaps: `PromptTemplateVersion` is never populated (system prompts are inline C# constants, not a versioned template store) and `Accepted`/human-edit linkage isn't wired (one `AIExecution` can produce many artifacts, so the single `ProducedArtifactId` FK on the entity doesn't cleanly capture "accepted" for a batch operation) |
 | REAP-010 | Prohibit storing/exposing hidden provider chain-of-thought | §27, §32 | P1 (policy) | Must | Built (by design — `AIExecution` has no such field) |
@@ -96,9 +96,9 @@ Legend for **Phase**: `P1` MVP, `P2` AI SDLC, `P3` Advanced Intelligence, `P4` A
 
 | ID | Requirement | Source | Phase | Priority | Status |
 |---|---|---|---|---|---|
-| REAP-090 | Requirements Agent → Analysis Agent → Architecture Agent → Dev Planning Agent → QA Agent → Review Agent, chained with structured I/O | §36 | P4 | Optional | Not Started |
-| REAP-091 | Defined agent responsibilities + human approval boundaries per agent | §36 | P4 | Optional | Not Started |
-| REAP-092 | Autonomous code deployment explicitly OUT of scope | §36 | — | Excluded | N/A |
+| REAP-090 | Requirements Agent → Analysis Agent → Architecture Agent → Dev Planning Agent → QA Agent → Review Agent, chained with structured I/O | §36 | P4 | Optional | Done (2026-09-19) |
+| REAP-091 | Defined agent responsibilities + human approval boundaries per agent | §36 | P4 | Optional | Done (2026-09-19) |
+| REAP-092 | Autonomous code deployment explicitly OUT of scope | §36 | — | Excluded | N/A — enforced structurally (no deploy agent; ADR-003 §7) |
 
 ## J. Acceptance / Demo Gate
 

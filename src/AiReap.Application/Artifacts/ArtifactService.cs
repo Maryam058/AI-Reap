@@ -206,7 +206,7 @@ public class ArtifactService : IArtifactService
 
         return versions.Select(v => new ArtifactVersionResponse(
             v.VersionNumber,
-            JsonDocument.Parse(v.DataSnapshotJson).RootElement.Clone(),
+            ArtifactJson.ToCamelCaseElement(v.DataSnapshotJson),
             v.ChangedByUserId,
             v.ChangedAt,
             v.Reason,

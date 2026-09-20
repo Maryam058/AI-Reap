@@ -2,7 +2,6 @@ import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { ApiError } from '../api/client';
-import { ROLES } from '../api/types';
 import { AuthLayout } from '../components/AuthLayout';
 import { TextField } from '../components/ui/TextField';
 import { PasswordField } from '../components/ui/PasswordField';
@@ -24,7 +23,6 @@ export function RegisterPage() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [role, setRole] = useState<string>('BusinessAnalyst');
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -48,7 +46,7 @@ export function RegisterPage() {
     if (!validate()) return;
     setSubmitting(true);
     try {
-      await register({ email, password, displayName, role });
+      await register({ email, password, displayName });
       navigate('/projects');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Registration failed. Please try again.');
@@ -122,24 +120,11 @@ export function RegisterPage() {
           autoComplete="new-password"
         />
 
-        <div className="field">
-          <label className="field-label" htmlFor="role">
-            Role
-          </label>
-          <select id="role" className="select-input" value={role} onChange={(e) => setRole(e.target.value)}>
-            {ROLES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-        </div>
-
         <div className="auth-phase-note">
           <IconInfo />
           <span>
-            Phase 0 demo — self-service role selection. Real user/role administration ships in a later phase (see
-            docs/roadmap).
+            New accounts have no access until an administrator assigns you a role (Business Analyst, Developer, QA,
+            Reviewer / Manager). Ask your administrator once you have signed up.
           </span>
         </div>
 

@@ -1,6 +1,8 @@
 using System.Text;
 using AiReap.Api.Auth;
 using AiReap.Api.Startup;
+using AiReap.Application.Agents;
+using AiReap.Application.Agents.Implementations;
 using AiReap.Application.Ai.Pipeline;
 using AiReap.Application.Artifacts;
 using AiReap.Application.Audit;
@@ -10,9 +12,11 @@ using AiReap.Application.Knowledge;
 using AiReap.Application.Projects;
 using AiReap.Application.RequirementSources;
 using AiReap.Application.Traceability;
+using AiReap.Domain.Common;
 using AiReap.Infrastructure;
 using AiReap.Infrastructure.Identity;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -48,6 +52,15 @@ builder.Services.AddScoped<IAuditTrailService, AuditTrailService>();
 builder.Services.AddScoped<IDocumentService, DocumentService>();
 builder.Services.AddScoped<ICopilotService, CopilotService>();
 
+// §36 — the agent chain. Registration order is irrelevant; AgentOrchestrator sorts by AgentKind.
+builder.Services.AddScoped<IAgent, RequirementsAgent>();
+builder.Services.AddScoped<IAgent, AnalysisAgent>();
+builder.Services.AddScoped<IAgent, ArchitectureAgent>();
+builder.Services.AddScoped<IAgent, DevelopmentPlanningAgent>();
+builder.Services.AddScoped<IAgent, QaAgent>();
+builder.Services.AddScoped<IAgent, ReviewAgent>();
+builder.Services.AddScoped<IAgentOrchestrator, AgentOrchestrator>();
+
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 builder.Services.AddSingleton<JwtTokenService>();
 
@@ -76,9 +89,19 @@ builder.Services
             ValidAudience = jwtOptions.Audience,
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.Key))
         };
+        options.Events = new JwtBearerEvents { OnTokenValidated = TokenValidation.ValidateUserStillCurrentAsync };
     });
 
-builder.Services.AddAuthorization();
+// Every [Authorize] endpoint needs a signed-in user who has been assigned one of the five roles.
+// Public sign-up creates accounts with no role, so a self-registered account can sign in but
+// can do nothing until an Administrator assigns one (UsersController).
+builder.Services.AddAuthorization(options =>
+{
+    options.DefaultPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .RequireRole(Roles.All)
+        .Build();
+});
 
 builder.Services.AddSwaggerGen(options =>
 {
@@ -114,9 +137,13 @@ if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
+}
 
-    using var scope = app.Services.CreateScope();
+// Roles and the first administrator are needed in every environment, not just Development.
+using (var scope = app.Services.CreateScope())
+{
     await RoleSeeder.SeedAsync(scope.ServiceProvider);
+    await AdminBootstrapper.EnsureAdministratorAsync(scope.ServiceProvider, app.Configuration);
 }
 
 app.UseHttpsRedirection();

@@ -7,6 +7,7 @@ import { Layout } from '../components/Layout';
 import { PageHeader } from '../components/ui/PageHeader';
 import { RequirementWorkspace } from '../components/RequirementWorkspace';
 import { DashboardPanel } from '../components/DashboardPanel';
+import { AgentPipelinePanel } from '../components/AgentPipelinePanel';
 import { ConflictsPanel } from '../components/ConflictsPanel';
 import { TraceabilityMatrixPanel } from '../components/TraceabilityMatrixPanel';
 import { AuditTrailPanel } from '../components/AuditTrailPanel';
@@ -51,6 +52,7 @@ export function ProjectDetailPage() {
       <ProjectSettingsPanel project={project} onProjectUpdated={setProject} />
       <DashboardPanel projectId={project.id} refreshKey={refreshKey} />
       <RequirementWorkspace projectId={project.id} onChange={() => setRefreshKey((k) => k + 1)} />
+      <AgentPipelinePanel projectId={project.id} refreshKey={refreshKey} onChange={() => setRefreshKey((k) => k + 1)} />
       <ConflictsPanel projectId={project.id} />
       <TraceabilityMatrixPanel projectId={project.id} />
       <DocumentsPanel projectId={project.id} />

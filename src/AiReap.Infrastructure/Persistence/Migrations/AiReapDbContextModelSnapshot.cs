@@ -67,6 +67,98 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.ToTable("AIExecutions");
                 });
 
+            modelBuilder.Entity("AiReap.Domain.Entities.AgentRun", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("RequirementSourceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("StartedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("StartedByUserId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProjectId");
+
+                    b.HasIndex("RequirementSourceId")
+                        .IsUnique()
+                        .HasFilter("[Status] IN (0, 1, 4)");
+
+                    b.ToTable("AgentRuns");
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.AgentStageRun", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Agent")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("AgentRunId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("DecidedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DecidedByUserId")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("DecisionComment")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTime?>("FinishedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("Order")
+                        .HasColumnType("int");
+
+                    b.Property<string>("OutputJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<DateTime?>("StartedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AgentRunId", "Order")
+                        .IsUnique();
+
+                    b.ToTable("AgentStageRuns");
+                });
+
             modelBuilder.Entity("AiReap.Domain.Entities.Artifact", b =>
                 {
                     b.Property<Guid>("Id")
@@ -599,6 +691,32 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.ToTable("AspNetUserTokens", (string)null);
                 });
 
+            modelBuilder.Entity("AiReap.Domain.Entities.AgentRun", b =>
+                {
+                    b.HasOne("AiReap.Domain.Entities.Project", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("AiReap.Domain.Entities.RequirementSource", null)
+                        .WithMany()
+                        .HasForeignKey("RequirementSourceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.AgentStageRun", b =>
+                {
+                    b.HasOne("AiReap.Domain.Entities.AgentRun", "AgentRun")
+                        .WithMany("Stages")
+                        .HasForeignKey("AgentRunId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("AgentRun");
+                });
+
             modelBuilder.Entity("AiReap.Domain.Entities.Artifact", b =>
                 {
                     b.HasOne("AiReap.Domain.Entities.Project", "Project")
@@ -740,6 +858,11 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.AgentRun", b =>
+                {
+                    b.Navigation("Stages");
                 });
 
             modelBuilder.Entity("AiReap.Domain.Entities.Artifact", b =>

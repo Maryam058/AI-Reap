@@ -1,4 +1,3 @@
-using System.Text.Json;
 using AiReap.Domain.Entities;
 
 namespace AiReap.Application.Artifacts;
@@ -15,7 +14,7 @@ public static class ArtifactResponseMapper
         artifact.Status,
         artifact.Origin,
         artifact.RequirementSourceId,
-        JsonDocument.Parse(artifact.DataJson).RootElement.Clone(),
+        ArtifactJson.ToCamelCaseElement(artifact.DataJson),
         artifact.CurrentVersion,
         artifact.CreatedAt,
         artifact.UpdatedAt);

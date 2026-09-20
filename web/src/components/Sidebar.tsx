@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { useAuth } from '../auth/AuthContext';
 import { useSidebar } from '../context/SidebarContext';
-import { IconChat, IconChevronLeft, IconDocument, IconGrid, IconLink, IconSettings, IconX } from './icons';
+import { IconChat, IconChevronLeft, IconDocument, IconGrid, IconLink, IconSettings, IconUser, IconX } from './icons';
 
 const workspaceItems = [
   { label: 'Requirements', icon: IconDocument },
@@ -13,7 +14,9 @@ const workspaceItems = [
 export function Sidebar() {
   const location = useLocation();
   const { collapsed, toggleCollapsed, mobileOpen, closeMobile } = useSidebar();
+  const { hasRole } = useAuth();
   const isDashboard = location.pathname === '/projects';
+  const isUsers = location.pathname === '/admin/users';
 
   useEffect(() => {
     closeMobile();
@@ -49,6 +52,16 @@ export function Sidebar() {
             <IconGrid />
             {!collapsed && 'Dashboard'}
           </Link>
+          {hasRole('Administrator') && (
+            <Link
+              to="/admin/users"
+              className={`sidebar-link${isUsers ? ' active' : ''}`}
+              title={collapsed ? 'User management' : undefined}
+            >
+              <IconUser />
+              {!collapsed && 'User management'}
+            </Link>
+          )}
         </nav>
 
         {!collapsed && <div className="sidebar-section-label">Workspace</div>}

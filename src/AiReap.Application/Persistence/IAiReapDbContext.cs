@@ -17,6 +17,8 @@ public interface IAiReapDbContext
     DbSet<AIExecution> AIExecutions { get; }
     DbSet<Document> Documents { get; }
     DbSet<DocumentChunk> DocumentChunks { get; }
+    DbSet<AgentRun> AgentRuns { get; }
+    DbSet<AgentStageRun> AgentStageRuns { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

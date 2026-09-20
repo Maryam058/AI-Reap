@@ -19,7 +19,7 @@ Not explicitly a numbered phase in the PDF, but required before any code, becaus
 
 **Exit criteria — verified against a real SQL Server (Docker, throwaway container) end-to-end:** register → login → JWT issued with role claim → role-gated `POST /api/projects` succeeds for BusinessAnalyst/blocked for Developer → `GET /api/projects` lists it → `POST /api/aidemo/analyze` round-trips through `IAiChatClient` and logs an `AIExecution` audit row → Swagger documents all of it. React app builds, type-checks, and serves. See `docs/architecture/ADR-001`/`ADR-002` for the decisions behind this.
 
-**Known Phase 0 gaps carried into Phase 1:** no automated test project yet; `RequirementSource`/`Document` entities exist in the schema but have no endpoints yet; self-registration lets a caller pick any role (fine for a solo dev demo, needs tightening once there's a real Administrator-only user management flow — see Epic 1.5/2.x).
+**Known Phase 0 gaps carried into Phase 1:** no automated test project yet; `RequirementSource`/`Document` entities exist in the schema but have no endpoints yet; self-registration lets a caller pick any role (fine for a solo dev demo, needs tightening once there's a real Administrator-only user management flow — see Epic 1.5/2.x). **Closed 2026-09-20** — see "Authentication & role management" below.
 
 ---
 
@@ -115,15 +115,46 @@ Goal: close the loop — traceability as a live graph, change-impact awareness, 
 
 ---
 
-## Phase 4 — Agentic SDLC (PDF §36, optional / stretch)
+## Phase 4 — Agentic SDLC (PDF §36, optional / stretch) — ✅ Complete (2026-09-19)
 
-Only start after Phase 3's exit criteria are verified.
+Design and rationale: `docs/architecture/ADR-003-agent-pipeline.md`.
 
-- [ ] Define each agent's responsibility + structured input/output contract: Requirements Agent, Analysis Agent, Architecture Agent, Development Planning Agent, QA Agent, Review Agent
-- [ ] Chain agents with explicit human-approval checkpoints between stages (REAP-091)
-- [ ] Confirm autonomous code deployment remains explicitly out of scope (REAP-092)
+- [x] Each agent's responsibility + structured input/output contract — `IAgent` / `AgentOutput` (summary, metrics, produced artifact refs, findings, review guidance) in `AiReap.Application/Agents`. Six agents: Requirements, Analysis, Architecture, Development Planning, QA, Review. They are thin orchestration over the Phase 1–3 services (no duplicated prompts); only the Review Agent adds a prompt (narrative on top of deterministically computed gaps). `GET /api/agents` exposes the definitions.
+- [x] Chained with explicit human-approval checkpoints (REAP-091) — `AgentOrchestrator` persists `AgentRun`/`AgentStageRun` (migration `AddAgentRuns`); every stage ends in `AwaitingApproval` (or `Failed`) and only `POST /api/agent-runs/{id}/decision` advances it. Each agent names its own approver roles (Requirements/Analysis → BusinessAnalyst, Architecture/Planning → Developer, QA → QA, Review → Reviewer; Administrator always). Reject halts the run. Failed stages can be retried or abandoned. UI: `AgentPipelinePanel`.
+- [x] Autonomous code deployment out of scope (REAP-092) — structural, not just a policy: there is no deploy/release agent, no code-generation or execution path, and the Review Agent is read-only. Agents plan and document; they don't build or ship anything.
 
----
+### Phase 4 verification & stabilization (2026-09-19)
+
+Verified by execution, not inspection: `AiReap.Tests` (18 integration tests, real SQL Server + real EF migrations, throwaway DB per test) and a real-browser run (Playwright driving Edge against a throwaway database) covering register/login, project + requirement-source creation, the full pipeline, reject, retry-after-backend-restart, stale-tab conflict, and the five-role approval matrix at every stage.
+
+Bugs found and fixed during verification:
+- **Concurrent start/approve/retry raced** — two simultaneous requests both passed the state check, ran the next stage twice, and the loser got an unhandled 500. Fixed with a `rowversion` on `AgentStageRun` (only one caller can claim a decision/retry) and a filtered unique index enforcing one active run per source (migration `AgentConcurrencyGuards`); losers now get 409.
+- **(Phase 1–3, pre-existing) Artifact `data` was returned PascalCase while the whole UI reads camelCase** — any project with clarification questions white-screened the app for every role, and other artifact cards showed empty fields. Fixed in one place (`ArtifactJson`, used by `ArtifactResponseMapper` and the versions endpoint); stored data is unchanged. Never caught earlier because the UI had only been type-checked, not run.
+- Agent panel didn't notice a requirement source added moments earlier (needed a page reload) — panel now reloads on the shared `refreshKey`.
+- Invalid `<ol>` inside `<p>` in the test-case card (React DOM-nesting console error).
+
+**Known limitations, stated plainly:**
+- Stages run **synchronously inside the HTTP request**. With a real model the Analysis stage makes many calls and can take minutes; a background worker is the fix if that becomes a problem.
+- A stage left `Running` by a process crash mid-request has no recovery path (no heartbeat/timeout).
+- A stage approval is a **"proceed" decision, not an approval of the generated artifacts** — those keep their own approval workflow. The Review Agent lists what's still unreviewed.
+- "Reject" is terminal for that run; a new run reuses existing artifacts instead of regenerating (no delete/regenerate yet).
+- The UI does not auto-refresh across users: a second person sees a stage change only after reloading. A stale approve/reject shows a clear "not awaiting a decision" error rather than acting.
+- The Agent Pipeline panel shows raw provider error text on a failed stage (e.g. connection errors); acceptable for now, but review before exposing to end users.
+- Retry/failure was verified with a simulated provider outage (unreachable endpoint) and a controllable AI client in tests; it has not been exercised against a real model.
+- oxlint reports pre-existing style warnings (e.g. set-state-in-effect); none are build errors.
+
+
+## Authentication & role management (2026-09-20)
+
+- [x] Public sign-up can no longer choose a role: `POST /api/auth/register` has no role field (a supplied one is ignored) and creates an account with **no role**. A default authorization policy (`Program.cs`) requires one of the five roles on every `[Authorize]` endpoint, so a role-less account can sign in but cannot read or do anything (UI shows "Waiting for a role").
+- [x] Administrator user management — `UsersController` (`GET/POST /api/users`, `PUT /api/users/{id}/role`, `PUT /api/users/{id}/status`), class-level `[Authorize(Roles = Administrator)]`; UI at `/admin/users` (link visible to Administrators only). Reuses ASP.NET Identity, `UserManager` and `JwtTokenService` — no new tables and no migration (deactivation = Identity lockout). One role per user; `Reviewer` is the Reviewer/Manager role.
+- [x] First Administrator: `AdminBootstrapper` creates it at startup from `Bootstrap:AdminEmail`/`AdminPassword` only when no Administrator exists; no default credential; never touches an existing account; never logs the password. Roles are now seeded in every environment (previously Development only).
+- [x] Changes take effect immediately: tokens carry the user's security stamp and `TokenValidation` re-checks user + stamp + lockout on every request; role changes and (de)activation rotate the stamp. The web client signs the user out on a 401 for a token it sent.
+- [x] Guards: an administrator cannot change or deactivate their own account, which guarantees at least one active Administrator always remains.
+
+Verified by `AuthAndUserManagementTests` (14 tests) and a real-browser run (sign-up page, waiting screen, all five roles created through the UI, role change, deactivation, non-admin blocked at UI and API).
+
+**Known limitations:** no password reset or self-service password change; no user deletion (deactivate instead); no email verification or invite flow (an admin sets a temporary password out of band); users have one role; existing installs need every user to sign in once after upgrading (old tokens lack the security stamp); `Bootstrap:AdminPassword` stays in configuration until you remove it (it is ignored once an admin exists).
 
 ## Release Gate — Definition of Done (PDF §38, REAP-102)
 

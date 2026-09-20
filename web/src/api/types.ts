@@ -32,12 +32,36 @@ export interface AuthResponse {
   roles: string[];
 }
 
+// Public sign-up never carries a role — accounts start with none and an Administrator assigns one.
 export interface RegisterRequest {
   email: string;
   password: string;
   displayName: string;
+}
+
+// Administrator user management (GET/POST /api/users ...). `role` is null until one is assigned.
+export interface UserAccount {
+  id: string;
+  email: string;
+  displayName: string;
+  role: string | null;
+  isActive: boolean;
+}
+
+export interface CreateUserRequest {
+  email: string;
+  displayName: string;
+  password: string;
   role: string;
 }
+
+export const ROLE_LABELS: Record<string, string> = {
+  Administrator: 'Administrator',
+  BusinessAnalyst: 'Business Analyst',
+  Developer: 'Developer',
+  QA: 'QA',
+  Reviewer: 'Reviewer / Manager',
+};
 
 export interface LoginRequest {
   email: string;
@@ -424,4 +448,59 @@ export interface CopilotAnswer {
   answer: string;
   citations: CopilotCitation[];
   relatedArtifactCodes: string[];
+}
+
+// §36 — agent pipeline. Enums arrive as numbers, matching the rest of the API.
+// AgentRunStatus: 0 Running | 1 AwaitingApproval | 2 Completed | 3 Rejected | 4 Failed
+// AgentStageStatus: 0 Pending | 1 Running | 2 AwaitingApproval | 3 Approved | 4 Rejected | 5 Failed
+export interface AgentDefinition {
+  agent: number;
+  order: number;
+  displayName: string;
+  responsibility: string;
+  inputs: string;
+  outputs: string;
+  approverRoles: string[];
+}
+
+export interface AgentArtifactRef {
+  id: string;
+  code: string;
+  type: string;
+  title: string;
+}
+
+export interface AgentOutput {
+  summary: string;
+  metrics: Record<string, number>;
+  producedArtifacts: AgentArtifactRef[];
+  findings: string[];
+  reviewGuidance: string;
+}
+
+export interface AgentStage {
+  id: string;
+  agent: number;
+  order: number;
+  displayName: string;
+  status: number;
+  output?: AgentOutput | null;
+  error?: string | null;
+  approverRoles: string[];
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  decidedByUserId?: string | null;
+  decidedAt?: string | null;
+  decisionComment?: string | null;
+}
+
+export interface AgentRun {
+  id: string;
+  projectId: string;
+  requirementSourceId: string;
+  status: number;
+  startedByUserId: string;
+  startedAt: string;
+  completedAt?: string | null;
+  stages: AgentStage[];
 }

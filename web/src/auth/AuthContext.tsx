@@ -1,5 +1,5 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from 'react';
-import { apiClient } from '../api/client';
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { apiClient, setUnauthorizedHandler } from '../api/client';
 import type { AuthResponse, LoginRequest, RegisterRequest } from '../api/types';
 
 interface AuthState {
@@ -57,6 +57,15 @@ function saveState(response: AuthResponse, remember: boolean): AuthState {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(loadState);
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      localStorage.removeItem(STORAGE_KEY);
+      sessionStorage.removeItem(STORAGE_KEY);
+      setState(EMPTY_STATE);
+    });
+    return () => setUnauthorizedHandler(null);
+  }, []);
 
   const value = useMemo<AuthContextValue>(
     () => ({

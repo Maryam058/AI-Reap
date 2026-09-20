@@ -22,6 +22,8 @@ public class AiReapDbContext : IdentityDbContext<ApplicationUser>, IAiReapDbCont
     public DbSet<AIExecution> AIExecutions => Set<AIExecution>();
     public DbSet<Document> Documents => Set<Document>();
     public DbSet<DocumentChunk> DocumentChunks => Set<DocumentChunk>();
+    public DbSet<AgentRun> AgentRuns => Set<AgentRun>();
+    public DbSet<AgentStageRun> AgentStageRuns => Set<AgentStageRun>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -87,6 +89,31 @@ public class AiReapDbContext : IdentityDbContext<ApplicationUser>, IAiReapDbCont
                 .OnDelete(DeleteBehavior.Restrict);
 
             b.HasIndex(r => new { r.SourceArtifactId, r.RelationshipType, r.TargetArtifactId }).IsUnique();
+        });
+
+        builder.Entity<AgentRun>(b =>
+        {
+            // Restrict, same reason as RequirementSource: Project already reaches other tables
+            // through cascade paths, and runs are deleted explicitly, not as a side effect.
+            b.HasOne<Project>().WithMany().HasForeignKey(r => r.ProjectId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne<RequirementSource>().WithMany().HasForeignKey(r => r.RequirementSourceId).OnDelete(DeleteBehavior.Restrict);
+            b.HasMany(r => r.Stages)
+                .WithOne(s => s.AgentRun)
+                .HasForeignKey(s => s.AgentRunId)
+                .OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(r => r.ProjectId);
+            // One active run per requirement source, enforced by the database, not just by a
+            // check-then-insert in the orchestrator. Active = Running(0), AwaitingApproval(1), Failed(4).
+            b.HasIndex(r => r.RequirementSourceId).IsUnique().HasFilter("[Status] IN (0, 1, 4)");
+        });
+
+        builder.Entity<AgentStageRun>(b =>
+        {
+            b.Property(s => s.RowVersion).IsRowVersion();
+            b.Property(s => s.OutputJson).HasColumnType("nvarchar(max)");
+            b.Property(s => s.Error).HasMaxLength(2000);
+            b.Property(s => s.DecisionComment).HasMaxLength(2000);
+            b.HasIndex(s => new { s.AgentRunId, s.Order }).IsUnique();
         });
 
         builder.Entity<Document>(b =>

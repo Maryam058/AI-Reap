@@ -9,6 +9,14 @@ export class ApiError extends Error {
   }
 }
 
+// Called when the API rejects a token we sent (expired, or invalidated because an administrator
+// changed this user's role / deactivated them). AuthProvider registers it to sign the user out.
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler;
+}
+
 async function request<T>(path: string, options: RequestInit = {}, token?: string | null): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -19,6 +27,10 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
   }
 
   const response = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
+
+  if (response.status === 401 && token) {
+    unauthorizedHandler?.();
+  }
 
   if (!response.ok) {
     const text = await response.text().catch(() => '');

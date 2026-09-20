@@ -16,6 +16,7 @@ public class StubAiChatClient : IAiChatClient
     {
         var response = systemPrompt switch
         {
+            _ when systemPrompt.Contains("readinessSummary") => ReviewResponse,
             _ when systemPrompt.Contains("missingInformation") => AnalysisResponse,
             _ when systemPrompt.Contains("functionalRequirements") => RequirementsResponse,
             _ when systemPrompt.Contains("userStories") => UserStoriesResponse,
@@ -34,6 +35,13 @@ public class StubAiChatClient : IAiChatClient
 
         return Task.FromResult(response);
     }
+
+    private const string ReviewResponse = """
+        {
+          "readinessSummary": "Stub assessment - configure Ai:Anthropic:ApiKey for a real model. See the deterministic findings for the actual gaps.",
+          "recommendation": "not_ready"
+        }
+        """;
 
     private const string AnalysisResponse = """
         {

@@ -19,17 +19,12 @@ public class AuthController : ControllerBase
         _tokenService = tokenService;
     }
 
-    // Self-service registration with a caller-chosen role is a Phase 0 convenience for
-    // demoing role-gated endpoints. Real user/role administration (REAP-007, Administrator
-    // role per §4) is Phase 1+ work — see docs/roadmap/ROADMAP.md.
+    // Public sign-up. The caller cannot choose a role: the account is created with none, so it
+    // can sign in but every role-gated and [Authorize] endpoint refuses it (see the default
+    // authorization policy in Program.cs) until an Administrator assigns a role.
     [HttpPost("register")]
     public async Task<ActionResult<AuthResponse>> Register(RegisterRequest request)
     {
-        if (!Roles.All.Contains(request.Role))
-        {
-            return BadRequest($"Role must be one of: {string.Join(", ", Roles.All)}");
-        }
-
         var user = new ApplicationUser
         {
             UserName = request.Email,
@@ -43,10 +38,8 @@ public class AuthController : ControllerBase
             return BadRequest(result.Errors.Select(e => e.Description));
         }
 
-        await _userManager.AddToRoleAsync(user, request.Role);
-
-        var token = _tokenService.CreateToken(user, new[] { request.Role });
-        return Ok(new AuthResponse(token, user.Id, user.Email!, user.DisplayName, new[] { request.Role }));
+        var token = _tokenService.CreateToken(user, Array.Empty<string>());
+        return Ok(new AuthResponse(token, user.Id, user.Email!, user.DisplayName, Array.Empty<string>()));
     }
 
     [HttpPost("login")]
@@ -56,6 +49,11 @@ public class AuthController : ControllerBase
         if (user is null || !await _userManager.CheckPasswordAsync(user, request.Password))
         {
             return Unauthorized("Invalid email or password.");
+        }
+
+        if (await _userManager.IsLockedOutAsync(user))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, "This account has been deactivated. Contact an administrator.");
         }
 
         var roles = await _userManager.GetRolesAsync(user);
