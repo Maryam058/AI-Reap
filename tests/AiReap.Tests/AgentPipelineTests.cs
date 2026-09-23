@@ -39,6 +39,13 @@ public class AgentPipelineTests : IAsyncLifetime
             new { sourceType = 1, rawText = "Customers submit complaints; agents triage and resolve them." });
         Assert.InRange(ss, 200, 201);
         _sourceId = source!["id"]!.GetValue<string>();
+
+        // §38 DoD — project membership. Ba is already a member (the creator); every other role
+        // that decides a stage below needs to be added explicitly.
+        foreach (var role in new[] { "Developer", "QA", "Reviewer" })
+        {
+            Assert.InRange((await _host.AddMemberAsync(Ba, _projectId, _users[role])).Status, 200, 201);
+        }
     }
 
     public Task DisposeAsync() => _host.DisposeAsync().AsTask();

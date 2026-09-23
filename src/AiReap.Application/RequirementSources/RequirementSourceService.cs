@@ -9,11 +9,13 @@ public class RequirementSourceService : IRequirementSourceService
 {
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly IProjectAccessService _projectAccess;
 
-    public RequirementSourceService(IAiReapDbContext db, ICurrentUser currentUser)
+    public RequirementSourceService(IAiReapDbContext db, ICurrentUser currentUser, IProjectAccessService projectAccess)
     {
         _db = db;
         _currentUser = currentUser;
+        _projectAccess = projectAccess;
     }
 
     public async Task<RequirementSourceResponse> CreateAsync(Guid projectId, CreateRequirementSourceRequest request, CancellationToken cancellationToken = default)
@@ -49,7 +51,13 @@ public class RequirementSourceService : IRequirementSourceService
     public async Task<RequirementSourceResponse?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
         var source = await _db.RequirementSources.FirstOrDefaultAsync(s => s.Id == id, cancellationToken);
-        return source is null ? null : ToResponse(source);
+        if (source is null)
+        {
+            return null;
+        }
+
+        await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
+        return ToResponse(source);
     }
 
     private static RequirementSourceResponse ToResponse(RequirementSource source) => new(

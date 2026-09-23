@@ -39,7 +39,7 @@ export function DocumentsPanel({ projectId }: { projectId: string }) {
   };
 
   return (
-    <div className="card">
+    <div className="card" id="project-documents">
       <h2>Project Documents</h2>
       <p className="hint">§26 — specs/notes fed into chunking + embeddings for the Copilot's semantic search below.</p>
       <button type="button" disabled={busy === 'load'} onClick={load}>

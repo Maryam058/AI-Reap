@@ -4,6 +4,7 @@ import type {
   ArtifactSummary,
   ArtifactVersion,
   ClarificationAnswerRequest,
+  UpdateArtifactRequest,
   UpdateArtifactStatusRequest,
 } from './types';
 
@@ -15,6 +16,9 @@ export const artifactsApi = {
     const query = params.toString();
     return apiClient.get<ArtifactSummary[]>(`/api/projects/${projectId}/artifacts${query ? `?${query}` : ''}`, token);
   },
+
+  update: (artifactId: string, request: UpdateArtifactRequest, token: string | null) =>
+    apiClient.patch<ArtifactSummary>(`/api/artifacts/${artifactId}`, request, token),
 
   updateStatus: (artifactId: string, request: UpdateArtifactStatusRequest, token: string | null) =>
     apiClient.patch<ArtifactSummary>(`/api/artifacts/${artifactId}/status`, request, token),

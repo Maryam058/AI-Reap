@@ -1,5 +1,7 @@
 using System.Text;
 using AiReap.Api.Auth;
+using AiReap.Api.Authorization;
+using AiReap.Api.ErrorHandling;
 using AiReap.Api.Startup;
 using AiReap.Application.Agents;
 using AiReap.Application.Agents.Implementations;
@@ -23,13 +25,19 @@ using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddControllers();
+builder.Services.AddControllers(options => options.Filters.Add<ProjectMembershipFilter>());
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddHttpContextAccessor();
+
+// Order matters: tried in registration order, first to claim the exception wins.
+builder.Services.AddExceptionHandler<ProjectAccessDeniedExceptionHandler>();
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+builder.Services.AddProblemDetails();
 
 builder.Services.AddInfrastructure(builder.Configuration);
 
 builder.Services.AddScoped<ICurrentUser, CurrentUser>();
+builder.Services.AddScoped<IProjectAccessService, ProjectAccessService>();
 builder.Services.AddScoped<IProjectService, ProjectService>();
 builder.Services.AddScoped<IRequirementSourceService, RequirementSourceService>();
 builder.Services.AddScoped<IArtifactService, ArtifactService>();
@@ -145,6 +153,8 @@ using (var scope = app.Services.CreateScope())
     await RoleSeeder.SeedAsync(scope.ServiceProvider);
     await AdminBootstrapper.EnsureAdministratorAsync(scope.ServiceProvider, app.Configuration);
 }
+
+app.UseExceptionHandler();
 
 app.UseHttpsRedirection();
 

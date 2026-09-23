@@ -27,7 +27,7 @@ export function ConflictsPanel({ projectId }: { projectId: string }) {
   };
 
   return (
-    <div className="card">
+    <div className="card" id="sec-consistency">
       <h2>Duplicate &amp; Conflict Detection</h2>
       <p className="hint">Scans all functional requirements in the project. Conflicts are never auto-resolved.</p>
       <button type="button" disabled={busy} onClick={run}>

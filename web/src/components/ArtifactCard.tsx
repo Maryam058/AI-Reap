@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { ArtifactDetails } from './ArtifactDetails';
+import { ArtifactEditDialog } from './ArtifactEditDialog';
+import { IconCheck, IconEdit, IconSparkles, IconX } from './icons';
 import {
   ARTIFACT_PRIORITY_LABELS,
   ARTIFACT_STATUS_LABELS,
@@ -20,26 +22,63 @@ import {
 interface Props {
   artifact: ArtifactSummary;
   canReview: boolean;
+  // §23 — Administrator/BusinessAnalyst only (the backend's WriterRoles on PATCH
+  // /api/artifacts/{id}), distinct from canReview (which also includes the Reviewer role).
+  canEdit: boolean;
+  token: string | null;
   onApprove: (id: string) => Promise<void>;
   onReject: (id: string) => Promise<void>;
+  onSaved: () => void;
   onGenerateAcceptanceCriteria?: (userStoryId: string) => Promise<void>;
   onGenerateTestCases?: (functionalRequirementId: string) => Promise<void>;
 }
 
+// Artifact status (0 AI Generated … 6 Verified) → status-pill tone.
+const STATUS_TONE: Record<number, string> = {
+  0: 'info',
+  1: 'neutral',
+  2: 'warning',
+  3: 'success',
+  4: 'danger',
+  5: 'info',
+  6: 'success',
+};
+
+// Artifact priority (0 Low … 3 Critical) → status-pill tone.
+const PRIORITY_TONE: Record<number, string> = {
+  0: 'neutral',
+  1: 'info',
+  2: 'warning',
+  3: 'danger',
+};
+
 function Detail({ label, value }: { label: string; value?: string | null }) {
   if (!value) return null;
   return (
-    <p>
-      <span className="detail-label">{label}:</span> {value}
+    <p className="detail-row">
+      <span className="detail-label">{label}</span>
+      <span className="detail-value">{value}</span>
     </p>
   );
 }
 
-export function ArtifactCard({ artifact, canReview, onApprove, onReject, onGenerateAcceptanceCriteria, onGenerateTestCases }: Props) {
+export function ArtifactCard({
+  artifact,
+  canReview,
+  canEdit,
+  token,
+  onApprove,
+  onReject,
+  onSaved,
+  onGenerateAcceptanceCriteria,
+  onGenerateTestCases,
+}: Props) {
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   const isPending = artifact.status === 0 || artifact.status === 1 || artifact.status === 2;
   const isAiOrigin = artifact.origin === 0;
+  const isEditable = canEdit && artifact.artifactType !== ARTIFACT_TYPE_VALUES.ClarificationQuestion;
 
   const act = async (fn: (id: string) => Promise<void>) => {
     setBusy(true);
@@ -51,13 +90,21 @@ export function ArtifactCard({ artifact, canReview, onApprove, onReject, onGener
   };
 
   return (
-    <li className="artifact-card">
+    <li className={`artifact-card tone-${STATUS_TONE[artifact.status] ?? 'neutral'}`}>
       <div className="artifact-header">
         <span className="code">{artifact.code}</span>
-        <strong>{artifact.title}</strong>
-        {artifact.priority !== null && <span className="priority-pill">{ARTIFACT_PRIORITY_LABELS[artifact.priority]}</span>}
-        <span className="status-pill">{ARTIFACT_STATUS_LABELS[artifact.status]}</span>
-        {isAiOrigin && <span className="ai-badge">AI Generated</span>}
+        <strong className="artifact-title">{artifact.title}</strong>
+        <span className="artifact-badges">
+          {artifact.priority !== null && (
+            <span className={`status-pill tone-${PRIORITY_TONE[artifact.priority] ?? 'neutral'}`}>
+              {ARTIFACT_PRIORITY_LABELS[artifact.priority]}
+            </span>
+          )}
+          <span className={`status-pill tone-${STATUS_TONE[artifact.status] ?? 'neutral'}`}>
+            {ARTIFACT_STATUS_LABELS[artifact.status]}
+          </span>
+          {isAiOrigin && <span className="ai-badge">AI Generated</span>}
+        </span>
       </div>
 
       <div className="artifact-body">
@@ -94,29 +141,41 @@ export function ArtifactCard({ artifact, canReview, onApprove, onReject, onGener
       </div>
 
       <div className="artifact-actions">
+        {isEditable && (
+          <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setEditing(true)}>
+            <IconEdit width={14} height={14} />
+            Edit
+          </button>
+        )}
         {canReview && isPending && (
           <>
-            <button type="button" disabled={busy} onClick={() => act(onApprove)}>
+            <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => act(onApprove)}>
+              <IconCheck width={14} height={14} />
               Approve
             </button>
-            <button type="button" className="secondary" disabled={busy} onClick={() => act(onReject)}>
+            <button type="button" className="btn btn-secondary btn-sm btn-reject" disabled={busy} onClick={() => act(onReject)}>
+              <IconX width={14} height={14} />
               Reject
             </button>
           </>
         )}
         {artifact.artifactType === ARTIFACT_TYPE_VALUES.UserStory && onGenerateAcceptanceCriteria && (
-          <button type="button" disabled={busy} onClick={() => act(onGenerateAcceptanceCriteria)}>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act(onGenerateAcceptanceCriteria)}>
+            <IconSparkles width={14} height={14} />
             Generate acceptance criteria
           </button>
         )}
         {artifact.artifactType === ARTIFACT_TYPE_VALUES.FunctionalRequirement && onGenerateTestCases && (
-          <button type="button" disabled={busy} onClick={() => act(onGenerateTestCases)}>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act(onGenerateTestCases)}>
+            <IconSparkles width={14} height={14} />
             Generate test cases
           </button>
         )}
       </div>
 
       <ArtifactDetails artifactId={artifact.id} artifactType={artifact.artifactType} />
+
+      {editing && <ArtifactEditDialog artifact={artifact} token={token} onClose={() => setEditing(false)} onSaved={onSaved} />}
     </li>
   );
 }
@@ -233,9 +292,9 @@ function TestCaseDetails({ data }: { data: TestCaseData }) {
       <span className={`kind-pill kind-${data.testKind}`}>{data.testKind}</span>
       <Detail label="Preconditions" value={data.preconditions} />
       {data.steps?.length > 0 && (
-        <div>
-          <span className="detail-label">Steps:</span>
-          <ol className="test-steps">
+        <div className="detail-row">
+          <span className="detail-label">Steps</span>
+          <ol className="test-steps detail-value">
             {data.steps.map((s, i) => (
               <li key={i}>{s}</li>
             ))}

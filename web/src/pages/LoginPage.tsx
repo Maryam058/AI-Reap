@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+﻿import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { ApiError } from '../api/client';
@@ -40,7 +40,7 @@ export function LoginPage() {
     setSubmitting(true);
     try {
       await login({ email, password }, rememberMe);
-      navigate('/projects');
+      navigate('/dashboard');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Sign in failed. Check your credentials and try again.');
     } finally {

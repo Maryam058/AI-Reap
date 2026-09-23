@@ -16,12 +16,14 @@ public class AgentOrchestrator : IAgentOrchestrator
 
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly IProjectAccessService _projectAccess;
     private readonly IReadOnlyList<IAgent> _agents;
 
-    public AgentOrchestrator(IAiReapDbContext db, ICurrentUser currentUser, IEnumerable<IAgent> agents)
+    public AgentOrchestrator(IAiReapDbContext db, ICurrentUser currentUser, IProjectAccessService projectAccess, IEnumerable<IAgent> agents)
     {
         _db = db;
         _currentUser = currentUser;
+        _projectAccess = projectAccess;
         _agents = agents.OrderBy(a => a.Kind).ToList();
     }
 
@@ -33,6 +35,7 @@ public class AgentOrchestrator : IAgentOrchestrator
     {
         var source = await _db.RequirementSources.FirstOrDefaultAsync(s => s.Id == requirementSourceId, cancellationToken)
             ?? throw new KeyNotFoundException($"RequirementSource {requirementSourceId} not found.");
+        await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
 
         if (await HasActiveRunAsync(requirementSourceId, cancellationToken))
         {
@@ -81,7 +84,13 @@ public class AgentOrchestrator : IAgentOrchestrator
     public async Task<AgentRunResponse?> GetAsync(Guid runId, CancellationToken cancellationToken = default)
     {
         var run = await LoadRunAsync(runId, cancellationToken);
-        return run is null ? null : ToResponse(run);
+        if (run is null)
+        {
+            return null;
+        }
+
+        await _projectAccess.EnsureMemberAsync(run.ProjectId, cancellationToken);
+        return ToResponse(run);
     }
 
     public async Task<IReadOnlyList<AgentRunResponse>> GetForProjectAsync(Guid projectId, CancellationToken cancellationToken = default)
@@ -100,6 +109,7 @@ public class AgentOrchestrator : IAgentOrchestrator
     {
         var run = await LoadRunAsync(runId, cancellationToken)
             ?? throw new KeyNotFoundException($"AgentRun {runId} not found.");
+        await _projectAccess.EnsureMemberAsync(run.ProjectId, cancellationToken);
 
         var stage = run.Stages.SingleOrDefault(s => s.Status is AgentStageStatus.AwaitingApproval or AgentStageStatus.Failed)
             ?? throw new InvalidOperationException("This run is not awaiting a decision.");
@@ -145,6 +155,7 @@ public class AgentOrchestrator : IAgentOrchestrator
     {
         var run = await LoadRunAsync(runId, cancellationToken)
             ?? throw new KeyNotFoundException($"AgentRun {runId} not found.");
+        await _projectAccess.EnsureMemberAsync(run.ProjectId, cancellationToken);
 
         var stage = run.Stages.SingleOrDefault(s => s.Status == AgentStageStatus.Failed)
             ?? throw new InvalidOperationException("This run has no failed stage to retry.");

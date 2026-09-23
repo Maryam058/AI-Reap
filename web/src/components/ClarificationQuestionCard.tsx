@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { ArtifactSummary, ClarificationQuestionData } from '../api/types';
+import { IconInfo } from './icons';
 
 interface Props {
   artifact: ArtifactSummary;
@@ -23,28 +24,41 @@ export function ClarificationQuestionCard({ artifact, canAnswer, onAnswer }: Pro
     }
   };
 
+  const status = data.clarificationStatus.toLowerCase();
+  const statusTone = isOpen ? 'warning' : status === 'notapplicable' ? 'neutral' : 'success';
+  const statusLabel = status === 'notapplicable' ? 'Not applicable' : data.clarificationStatus;
+
   return (
-    <li className={`cq-card cq-${data.clarificationStatus.toLowerCase()}`}>
+    <li className={`cq-card cq-${status}`}>
       <div className="cq-header">
         <span className="code">{artifact.code}</span>
-        <span className={`cq-status cq-status-${data.clarificationStatus.toLowerCase()}`}>{data.clarificationStatus}</span>
+        <span className={`status-pill tone-${statusTone}`}>{statusLabel}</span>
       </div>
       <p className="cq-question">{data.question}</p>
-      {data.reason && <p className="hint">Why it matters: {data.reason}</p>}
+      {data.reason && (
+        <p className="cq-reason">
+          <IconInfo width={13} height={13} />
+          <span>
+            <span className="detail-label">Why it matters:</span> {data.reason}
+          </span>
+        </p>
+      )}
 
       {isOpen && canAnswer ? (
         <div className="cq-answer-form">
           <textarea
+            className="req-textarea"
             value={answer}
             onChange={(e) => setAnswer(e.target.value)}
             rows={2}
             placeholder="Type the answer…"
+            aria-label={`Answer for ${artifact.code}`}
           />
           <div className="cq-answer-actions">
-            <button type="button" disabled={submitting || !answer.trim()} onClick={() => submit(false)}>
+            <button type="button" className="btn btn-primary btn-sm" disabled={submitting || !answer.trim()} onClick={() => submit(false)}>
               Submit answer
             </button>
-            <button type="button" className="secondary" disabled={submitting} onClick={() => submit(true)}>
+            <button type="button" className="btn btn-ghost btn-sm" disabled={submitting} onClick={() => submit(true)}>
               Not applicable
             </button>
           </div>
@@ -52,7 +66,8 @@ export function ClarificationQuestionCard({ artifact, canAnswer, onAnswer }: Pro
       ) : (
         data.answer && (
           <p className="cq-answer">
-            <strong>Answer:</strong> {data.answer}
+            <span className="detail-label">Answer</span>
+            {data.answer}
           </p>
         )
       )}

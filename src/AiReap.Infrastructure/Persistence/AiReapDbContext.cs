@@ -14,6 +14,7 @@ public class AiReapDbContext : IdentityDbContext<ApplicationUser>, IAiReapDbCont
 
     public DbSet<Project> Projects => Set<Project>();
     public DbSet<ProjectStakeholder> ProjectStakeholders => Set<ProjectStakeholder>();
+    public DbSet<ProjectMember> ProjectMembers => Set<ProjectMember>();
     public DbSet<RequirementSource> RequirementSources => Set<RequirementSource>();
     public DbSet<Artifact> Artifacts => Set<Artifact>();
     public DbSet<ArtifactVersion> ArtifactVersions => Set<ArtifactVersion>();
@@ -36,6 +37,16 @@ public class AiReapDbContext : IdentityDbContext<ApplicationUser>, IAiReapDbCont
                 .WithOne(s => s.Project)
                 .HasForeignKey(s => s.ProjectId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<ProjectMember>(b =>
+        {
+            // Restrict, same reason as RequirementSource/AgentRun: Project already reaches other
+            // tables through a cascade path (Stakeholders), and a second cascade path to a
+            // different table is fine, but membership rows are removed explicitly, not as a
+            // side effect of some other delete.
+            b.HasOne<Project>().WithMany().HasForeignKey(m => m.ProjectId).OnDelete(DeleteBehavior.Restrict);
+            b.HasIndex(m => new { m.ProjectId, m.UserId }).IsUnique();
         });
 
         builder.Entity<RequirementSource>(b =>

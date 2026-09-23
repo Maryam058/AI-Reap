@@ -7,11 +7,14 @@ using AiReap.Application.Persistence;
 using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace AiReap.Application.Ai.Pipeline;
 
 public class BusinessRuleService : IBusinessRuleService
 {
+    private const string PromptTemplateVersion = "BusinessRuleExtraction-v1";
+
     private const string SystemPrompt = """
         You are a requirements engineer (§11 of an SDLC automation spec). Given a raw
         requirement, its clarifications, and the functional requirements already derived from
@@ -33,18 +36,25 @@ public class BusinessRuleService : IBusinessRuleService
     private readonly IAiChatClient _chatClient;
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly IProjectAccessService _projectAccess;
+    private readonly ILogger<BusinessRuleService> _logger;
 
-    public BusinessRuleService(IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser)
+    public BusinessRuleService(
+        IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser, IProjectAccessService projectAccess,
+        ILogger<BusinessRuleService> logger)
     {
         _chatClient = chatClient;
         _db = db;
         _currentUser = currentUser;
+        _projectAccess = projectAccess;
+        _logger = logger;
     }
 
     public async Task<IReadOnlyList<ArtifactResponse>> GenerateAsync(Guid requirementSourceId, CancellationToken cancellationToken = default)
     {
         var source = await _db.RequirementSources.FirstOrDefaultAsync(s => s.Id == requirementSourceId, cancellationToken)
             ?? throw new KeyNotFoundException($"RequirementSource {requirementSourceId} not found.");
+        await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
 
         var functionalRequirements = await _db.Artifacts
             .Where(a => a.RequirementSourceId == requirementSourceId && a.ArtifactType == ArtifactType.FunctionalRequirement)
@@ -60,8 +70,8 @@ public class BusinessRuleService : IBusinessRuleService
 
         var userPrompt = source.RawText + context + (functionalRequirements.Count > 0 ? frContext.ToString() : string.Empty);
 
-        var rawResponse = await _chatClient.CompleteAsync(SystemPrompt, userPrompt, cancellationToken);
-        var parsed = AiJsonParser.Parse<BusinessRuleAiResponse>(rawResponse);
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<BusinessRuleAiResponse>(
+            _chatClient, _logger, "BusinessRuleExtraction", source.Id.ToString(), SystemPrompt, userPrompt, cancellationToken);
 
         var now = DateTime.UtcNow;
         var codes = await ArtifactCodeGenerator.ReserveCodesAsync(
@@ -123,18 +133,10 @@ public class BusinessRuleService : IBusinessRuleService
             ruleArtifacts.Add(artifact);
         }
 
-        _db.AIExecutions.Add(new AIExecution
-        {
-            Id = Guid.NewGuid(),
-            ProjectId = source.ProjectId,
-            OperationType = "BusinessRuleExtraction",
-            UserId = _currentUser.UserId,
-            Timestamp = now,
-            Model = _chatClient.ModelName,
-            InputReference = source.Id.ToString(),
-            OutputJson = rawResponse,
-            Accepted = null
-        });
+        GenerationSupport.AddExecutions(
+            _db, source.ProjectId, "BusinessRuleExtraction", PromptTemplateVersion, _currentUser.UserId,
+            _chatClient.ModelName, source.Id.ToString(), rawResponse, now,
+            ruleArtifacts.Select(a => a.Id).ToList());
 
         await _db.SaveChangesAsync(cancellationToken);
 

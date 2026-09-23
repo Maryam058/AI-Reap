@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
+import { phasePath } from '../lib/sdlc';
 import { useAuth } from '../auth/AuthContext';
 import { ApiError } from '../api/client';
 import { requirementSourcesApi } from '../api/requirementSources';
@@ -12,8 +14,21 @@ import {
 } from '../api/types';
 import { ClarificationQuestionCard } from './ClarificationQuestionCard';
 import { ArtifactCard } from './ArtifactCard';
+import { EmptyState } from './ui/EmptyState';
+import { IconAlert, IconCheckCircle, IconDocument, IconInbox, IconLock, IconSparkles, IconUpload } from './icons';
 
-export function RequirementWorkspace({ projectId, onChange }: { projectId: string; onChange?: () => void }) {
+/** Which SDLC phase's slice of the requirement pipeline to render. Each phase page mounts its own view. */
+export type WorkspaceView = 'gathering' | 'analysis' | 'validation' | 'design' | 'development' | 'testing';
+
+export function RequirementWorkspace({
+  projectId,
+  view,
+  onChange,
+}: {
+  projectId: string;
+  view: WorkspaceView;
+  onChange?: () => void;
+}) {
   const { token, hasRole } = useAuth();
   const canWrite = hasRole('Administrator') || hasRole('BusinessAnalyst');
   const canReview = canWrite || hasRole('Reviewer');
@@ -211,176 +226,283 @@ export function RequirementWorkspace({ projectId, onChange }: { projectId: strin
 
   const openQuestionCount = questions.filter((q) => (q.data as { clarificationStatus?: string }).clarificationStatus === 'Open').length;
 
+  const needsFr = functionalRequirements.length === 0;
+  const needsFrHint = needsFr ? 'Generate functional requirements first' : undefined;
+
+  const isGathering = view === 'gathering';
+  const phaseArtifactCount =
+    view === 'analysis'
+      ? functionalRequirements.length + nonFunctionalRequirements.length + businessRules.length + userStories.length + acceptanceCriteria.length
+      : view === 'design'
+        ? designArtifacts.length + dataEntities.length + apiSpecifications.length
+        : view === 'development'
+          ? implementationTasks.length
+          : view === 'testing'
+            ? testCases.length
+            : 0;
+
+  const onArtifactSaved = () => {
+    if (selectedId) loadDerived(selectedId);
+  };
+
+  const reviewProps = { canReview, canEdit: canWrite, token, onApprove, onReject, onSaved: onArtifactSaved };
+  const generateButton = (key: string, label: string, busyLabel: string, run: () => unknown, disabled: boolean, primary = false, hint?: string) => (
+    <button
+      type="button"
+      className={`btn ${primary ? 'btn-primary' : 'btn-secondary'} btn-sm`}
+      disabled={busy === key || disabled}
+      onClick={run}
+      title={hint}
+    >
+      {primary && <IconSparkles width={14} height={14} />}
+      {busy === key ? busyLabel : label}
+    </button>
+  );
+
   return (
-    <div className="card">
-      <h2>Requirements</h2>
+    <div className="req">
+      {error && (
+        <div className="alert alert-danger req-alert" role="alert">
+          <IconAlert width={16} height={16} />
+          <span>{error}</span>
+        </div>
+      )}
 
-      {canWrite && (
-        <div className="source-form">
-          <label>
-            Paste raw requirement / meeting notes
-            <textarea value={newText} onChange={(e) => setNewText(e.target.value)} rows={3} />
+      {isGathering && canWrite && (
+        <div className="req-intake">
+          {/* Plain textarea, not a rich-text editor — intentional (PDF §6), not an oversight.
+              This raw text is sent to the LLM as a flat string either way, so WYSIWYG
+              formatting would be stored and displayed but never consumed by the pipeline. */}
+          <label className="field">
+            <span className="field-label">Raw requirement / meeting notes</span>
+            <textarea
+              className="req-textarea"
+              value={newText}
+              onChange={(e) => setNewText(e.target.value)}
+              rows={4}
+              placeholder="Paste stakeholder notes, an email thread, or a rough brief…"
+            />
           </label>
-          <button type="button" disabled={!newText.trim() || busy === 'create-source'} onClick={onCreateSource}>
-            {busy === 'create-source' ? 'Saving…' : 'Add requirement source'}
-          </button>
-
-          <div className="upload-row">
-            <span className="hint">or upload a .txt, .pdf, or .docx file:</span>
-            <input type="file" accept=".txt,.pdf,.docx" onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)} />
-            <button type="button" disabled={!uploadFile || busy === 'upload-source'} onClick={onUploadFile}>
-              {busy === 'upload-source' ? 'Uploading…' : 'Upload'}
+          <div className="req-intake-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!newText.trim() || busy === 'create-source'}
+              onClick={onCreateSource}
+            >
+              {busy === 'create-source' ? 'Saving…' : 'Add requirement source'}
             </button>
+
+            <span className="req-or">or</span>
+
+            <div className="req-upload">
+              <label className="btn btn-secondary req-file-btn">
+                <IconUpload width={15} height={15} />
+                {uploadFile ? 'Change file' : 'Choose file'}
+                <input
+                  type="file"
+                  accept=".txt,.pdf,.docx"
+                  onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+                />
+              </label>
+              <span className="req-file-name" title={uploadFile?.name}>
+                {uploadFile ? uploadFile.name : '.txt, .pdf or .docx'}
+              </span>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={!uploadFile || busy === 'upload-source'}
+                onClick={onUploadFile}
+              >
+                {busy === 'upload-source' ? 'Uploading…' : 'Upload'}
+              </button>
+            </div>
           </div>
         </div>
       )}
 
+      {sources.length === 0 && (
+        <EmptyState
+          icon={<IconInbox width={20} height={20} />}
+          title={isGathering ? 'No requirement sources yet' : 'No requirements yet'}
+          description={
+            isGathering
+              ? canWrite
+                ? 'Paste notes or upload a document above. Every later phase — analysis, validation, design — starts from this raw input.'
+                : 'A business analyst needs to add a requirement source before anything appears here.'
+              : 'Start by capturing the business needs for this project. This phase works on the requirement sources added during Requirements Gathering.'
+          }
+          action={
+            !isGathering && (
+              <Link to={phasePath(projectId, 'gathering')} className="btn btn-primary">
+                Start Requirements Gathering
+              </Link>
+            )
+          }
+        />
+      )}
+
       {sources.length > 0 && (
-        <div className="source-tabs">
+        <div className="req-sources" role="tablist" aria-label="Requirement sources">
+          <span className="req-sources-label">Source</span>
           {sources.map((s) => (
             <button
               key={s.id}
               type="button"
-              className={`tab ${s.id === selectedId ? 'active' : ''}`}
+              role="tab"
+              aria-selected={s.id === selectedId}
+              className={`req-source ${s.id === selectedId ? 'active' : ''}`}
               onClick={() => setSelectedId(s.id)}
+              title={s.rawText}
             >
-              {s.rawText.slice(0, 40)}
-              {s.rawText.length > 40 ? '…' : ''}
+              {s.originalFileName ? <IconUpload width={13} height={13} /> : <IconDocument width={13} height={13} />}
+              <span>
+                {(s.originalFileName ?? s.rawText).slice(0, 40)}
+                {(s.originalFileName ?? s.rawText).length > 40 ? '…' : ''}
+              </span>
             </button>
           ))}
         </div>
       )}
 
-      {error && <p className="error">{error}</p>}
-
       {selectedSource && (
-        <div className="source-detail">
-          <p className="hint">Original input (never overwritten by AI output):</p>
-          <pre>{selectedSource.rawText}</pre>
-
-          {canWrite && (
-            <div className="pipeline-actions">
-              <button type="button" disabled={busy === 'analyze'} onClick={onAnalyze}>
-                {busy === 'analyze' ? 'Analyzing…' : 'Run AI analysis'}
-              </button>
-              <button
-                type="button"
-                disabled={busy === 'generate-requirements' || questions.length === 0}
-                onClick={onGenerateRequirements}
-                title={questions.length === 0 ? 'Run AI analysis first' : undefined}
-              >
-                {busy === 'generate-requirements' ? 'Generating…' : 'Generate FR / NFR'}
-              </button>
-              <button
-                type="button"
-                disabled={busy === 'generate-stories' || functionalRequirements.length === 0}
-                onClick={onGenerateStories}
-                title={functionalRequirements.length === 0 ? 'Generate functional requirements first' : undefined}
-              >
-                {busy === 'generate-stories' ? 'Generating…' : 'Generate user stories'}
-              </button>
-              <button
-                type="button"
-                disabled={busy === 'generate-rules' || functionalRequirements.length === 0}
-                onClick={onGenerateBusinessRules}
-                title={functionalRequirements.length === 0 ? 'Generate functional requirements first' : undefined}
-              >
-                {busy === 'generate-rules' ? 'Generating…' : 'Extract business rules'}
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                disabled={busy === 'analyze-quality' || functionalRequirements.length === 0}
-                onClick={onAnalyzeQuality}
-                title={functionalRequirements.length === 0 ? 'Generate functional requirements first' : undefined}
-              >
-                {busy === 'analyze-quality' ? 'Analyzing…' : 'Analyze quality'}
-              </button>
-              <button
-                type="button"
-                disabled={busy === 'generate-design' || functionalRequirements.length === 0}
-                onClick={onGenerateDesign}
-                title={functionalRequirements.length === 0 ? 'Generate functional requirements first' : undefined}
-              >
-                {busy === 'generate-design' ? 'Generating…' : 'Generate solution design'}
-              </button>
-              <button
-                type="button"
-                disabled={busy === 'generate-data-entities' || functionalRequirements.length === 0}
-                onClick={onGenerateDataEntities}
-                title={functionalRequirements.length === 0 ? 'Generate functional requirements first' : undefined}
-              >
-                {busy === 'generate-data-entities' ? 'Generating…' : 'Generate data entities'}
-              </button>
-              <button
-                type="button"
-                disabled={busy === 'generate-api-specs' || functionalRequirements.length === 0}
-                onClick={onGenerateApiSpecs}
-                title={functionalRequirements.length === 0 ? 'Generate functional requirements first' : undefined}
-              >
-                {busy === 'generate-api-specs' ? 'Generating…' : 'Generate API specs'}
-              </button>
-              <button
-                type="button"
-                disabled={busy === 'generate-tasks' || functionalRequirements.length === 0}
-                onClick={onGenerateTasks}
-                title={functionalRequirements.length === 0 ? 'Generate functional requirements first' : undefined}
-              >
-                {busy === 'generate-tasks' ? 'Generating…' : 'Generate implementation tasks'}
-              </button>
+        <div className="req-detail">
+          {isGathering && (
+            <div className="req-original">
+              <div className="req-original-head">
+                <IconLock width={13} height={13} />
+                <span>Original input</span>
+                <span className="req-original-note">Never overwritten by AI output</span>
+              </div>
+              <pre>{selectedSource.rawText}</pre>
             </div>
           )}
 
-          {qualityFindings && (
-            <div className="analysis-result quality-result">
-              {qualityFindings.length === 0 ? (
-                <p>No quality issues found.</p>
-              ) : (
-                <>
-                  <span className="ai-badge">AI Generated — Human Review Required</span>
-                  <ul className="quality-findings">
-                    {qualityFindings.map((f, i) => (
-                      <li key={i}>
-                        <span className="code">{f.artifactCode}</span> {f.artifactTitle}
-                        <p className="issue">
-                          <strong>Issue:</strong> {f.issue}
-                        </p>
-                        <p className="recommendation">
-                          <strong>Recommendation:</strong> {f.recommendation}
-                        </p>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
+          {isGathering && sources.length > 0 && (
+            <p className="req-next-hint">
+              Input captured. <Link to={phasePath(projectId, 'analysis')}>Continue to Requirements Analysis →</Link>
+            </p>
+          )}
+
+          {canWrite && view === 'analysis' && (
+            <div className="req-pipeline" id="sec-ai-analysis">
+              <PipelineStep n={1} title="Analyze">
+                {generateButton('analyze', 'Run AI analysis', 'Analyzing…', onAnalyze, false, true)}
+              </PipelineStep>
+              <PipelineStep n={2} title="Specify">
+                {generateButton('generate-requirements', 'Generate FR / NFR', 'Generating…', onGenerateRequirements, questions.length === 0, false, questions.length === 0 ? 'Run AI analysis first' : undefined)}
+                {generateButton('generate-stories', 'Generate user stories', 'Generating…', onGenerateStories, needsFr, false, needsFrHint)}
+                {generateButton('generate-rules', 'Extract business rules', 'Generating…', onGenerateBusinessRules, needsFr, false, needsFrHint)}
+              </PipelineStep>
             </div>
           )}
 
-          {analysis && (
-            <div className="analysis-result">
-              <span className="ai-badge">AI Generated — Human Review Required</span>
-              <p>
-                <strong>Actors:</strong> {analysis.actors.join(', ') || '—'}
-              </p>
-              <p>
-                <strong>Capabilities:</strong> {analysis.capabilities.join(', ') || '—'}
-              </p>
-              <p>
-                <strong>Data elements:</strong> {analysis.dataElements.join(', ') || '—'}
-              </p>
+          {canWrite && view === 'validation' && (
+            <div className="req-pipeline">
+              <PipelineStep n={1} title="Quality check">
+                {generateButton('analyze-quality', 'Analyze quality', 'Analyzing…', onAnalyzeQuality, needsFr, true, needsFrHint)}
+              </PipelineStep>
+            </div>
+          )}
+
+          {canWrite && view === 'design' && (
+            <div className="req-pipeline">
+              <PipelineStep n={1} title="Generate design">
+                {generateButton('generate-design', 'Solution design', 'Generating…', onGenerateDesign, needsFr, true, needsFrHint)}
+                {generateButton('generate-data-entities', 'Data entities', 'Generating…', onGenerateDataEntities, needsFr, false, needsFrHint)}
+                {generateButton('generate-api-specs', 'API specs', 'Generating…', onGenerateApiSpecs, needsFr, false, needsFrHint)}
+              </PipelineStep>
+            </div>
+          )}
+
+          {canWrite && view === 'development' && (
+            <div className="req-pipeline">
+              <PipelineStep n={1} title="Plan implementation">
+                {generateButton('generate-tasks', 'Implementation tasks', 'Generating…', onGenerateTasks, needsFr, true, needsFrHint)}
+              </PipelineStep>
+            </div>
+          )}
+
+          {view === 'analysis' && analysis && (
+            <div className="req-ai-panel">
+              <div className="req-ai-panel-head">
+                <span className="ai-badge">
+                  <IconSparkles width={12} height={12} /> AI Generated — Human Review Required
+                </span>
+                <h3>Analysis summary</h3>
+              </div>
+              <dl className="req-summary">
+                <SummaryRow label="Actors" items={analysis.actors} />
+                <SummaryRow label="Capabilities" items={analysis.capabilities} />
+                <SummaryRow label="Data elements" items={analysis.dataElements} />
+              </dl>
               {analysis.notes.length > 0 && (
-                <p>
-                  <strong>Notes:</strong> {analysis.notes.join(' ')}
+                <p className="req-notes">
+                  <span className="detail-label">Notes</span>
+                  {analysis.notes.join(' ')}
                 </p>
               )}
             </div>
           )}
 
-          {questions.length > 0 && (
-            <section>
-              <h3>
-                Clarification questions {openQuestionCount > 0 && <span className="open-count">({openQuestionCount} open)</span>}
-              </h3>
+          {view === 'analysis' && openQuestionCount > 0 && (
+            <p className="req-next-hint warn">
+              {openQuestionCount} clarification {openQuestionCount === 1 ? 'question is' : 'questions are'} still open.{' '}
+              <Link to={phasePath(projectId, 'validation')}>Resolve them in Requirements Validation →</Link>
+            </p>
+          )}
+
+          {view === 'validation' && qualityFindings && (
+            <div className="req-ai-panel" id="sec-quality">
+              <div className="req-ai-panel-head">
+                <span className="ai-badge">
+                  <IconSparkles width={12} height={12} /> AI Generated — Human Review Required
+                </span>
+                <h3>Quality analysis</h3>
+              </div>
+              {qualityFindings.length === 0 ? (
+                <p className="req-all-clear">
+                  <IconCheckCircle width={16} height={16} /> No quality issues found.
+                </p>
+              ) : (
+                <ul className="req-findings">
+                  {qualityFindings.map((f, i) => (
+                    <li key={i}>
+                      <div className="req-finding-title">
+                        <span className="code">{f.artifactCode}</span>
+                        <strong>{f.artifactTitle}</strong>
+                      </div>
+                      <p className="req-finding-issue">
+                        <span className="detail-label">Issue</span>
+                        {f.issue}
+                      </p>
+                      <p className="req-finding-fix">
+                        <span className="detail-label">Recommendation</span>
+                        {f.recommendation}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {view === 'validation' && questions.length === 0 && (
+            <EmptyState
+              compact
+              icon={<IconCheckCircle width={18} height={18} />}
+              title="No clarification questions"
+              description="Questions appear here after Requirements Analysis flags missing or ambiguous information."
+            />
+          )}
+
+          {view === 'validation' && questions.length > 0 && (
+            <section className="req-section" id="sec-clarifications">
+              <div className="req-section-head">
+                <h3>Clarification questions</h3>
+                <span className="req-count">{questions.length}</span>
+                {openQuestionCount > 0 && <span className="status-pill tone-warning">{openQuestionCount} open</span>}
+              </div>
               <ul className="cq-list">
                 {questions.map((q) => (
                   <ClarificationQuestionCard key={q.id} artifact={q} canAnswer={canWrite} onAnswer={onAnswer} />
@@ -389,49 +511,99 @@ export function RequirementWorkspace({ projectId, onChange }: { projectId: strin
             </section>
           )}
 
-          {functionalRequirements.length > 0 && (
-            <ArtifactSection
-              title="Functional Requirements"
-              items={functionalRequirements}
-              canReview={canReview}
-              onApprove={onApprove}
-              onReject={onReject}
-              onGenerateTestCases={onGenerateTestCases}
-            />
+          {view === 'analysis' && (
+            <>
+              {phaseArtifactCount === 0 && (
+                <EmptyState
+                  compact
+                  icon={<IconDocument width={18} height={18} />}
+                  title="No structured requirements yet"
+                  description={canWrite ? 'Run AI analysis, then generate functional and non-functional requirements from this source.' : 'A business analyst has not generated requirements from this source yet.'}
+                />
+              )}
+              {functionalRequirements.length > 0 && (
+                <ArtifactSection id="sec-functional" title="Functional Requirements" items={functionalRequirements} {...reviewProps} />
+              )}
+              {nonFunctionalRequirements.length > 0 && (
+                <ArtifactSection id="sec-nonfunctional" title="Non-Functional Requirements" items={nonFunctionalRequirements} {...reviewProps} />
+              )}
+              {businessRules.length > 0 && <ArtifactSection title="Business Rules" items={businessRules} {...reviewProps} />}
+              {userStories.length > 0 && (
+                <ArtifactSection title="User Stories" items={userStories} {...reviewProps} onGenerateAcceptanceCriteria={onGenerateAcceptanceCriteria} />
+              )}
+              {acceptanceCriteria.length > 0 && <ArtifactSection title="Acceptance Criteria" items={acceptanceCriteria} {...reviewProps} />}
+            </>
           )}
-          {nonFunctionalRequirements.length > 0 && (
-            <ArtifactSection title="Non-Functional Requirements" items={nonFunctionalRequirements} canReview={canReview} onApprove={onApprove} onReject={onReject} />
+
+          {view === 'design' && (
+            <>
+              {phaseArtifactCount === 0 && (
+                <EmptyState
+                  compact
+                  icon={<IconInbox width={18} height={18} />}
+                  title="No design artifacts yet"
+                  description={needsFr ? 'Generate functional requirements in Requirements Analysis first — design is derived from them.' : 'Generate a solution design, data entities and API specifications from the requirements.'}
+                />
+              )}
+              {designArtifacts.length > 0 && <ArtifactSection id="sec-architecture" title="Solution Design" items={designArtifacts} {...reviewProps} />}
+              {dataEntities.length > 0 && <ArtifactSection id="sec-data" title="Data Entities" items={dataEntities} {...reviewProps} />}
+              {apiSpecifications.length > 0 && <ArtifactSection id="sec-api" title="API Specifications" items={apiSpecifications} {...reviewProps} />}
+            </>
           )}
-          {businessRules.length > 0 && (
-            <ArtifactSection title="Business Rules" items={businessRules} canReview={canReview} onApprove={onApprove} onReject={onReject} />
+
+          {view === 'development' && (
+            <>
+              {phaseArtifactCount === 0 && (
+                <EmptyState
+                  compact
+                  icon={<IconInbox width={18} height={18} />}
+                  title="No implementation tasks yet"
+                  description={needsFr ? 'Generate functional requirements first — tasks are derived from them.' : 'Generate implementation tasks from the requirements and design.'}
+                />
+              )}
+              {implementationTasks.length > 0 && <ArtifactSection id="sec-tasks" title="Implementation Tasks" items={implementationTasks} {...reviewProps} />}
+            </>
           )}
-          {userStories.length > 0 && (
-            <ArtifactSection
-              title="User Stories"
-              items={userStories}
-              canReview={canReview}
-              onApprove={onApprove}
-              onReject={onReject}
-              onGenerateAcceptanceCriteria={onGenerateAcceptanceCriteria}
-            />
-          )}
-          {acceptanceCriteria.length > 0 && (
-            <ArtifactSection title="Acceptance Criteria" items={acceptanceCriteria} canReview={canReview} onApprove={onApprove} onReject={onReject} />
-          )}
-          {designArtifacts.length > 0 && (
-            <ArtifactSection title="Solution Design" items={designArtifacts} canReview={canReview} onApprove={onApprove} onReject={onReject} />
-          )}
-          {dataEntities.length > 0 && (
-            <ArtifactSection title="Data Entities" items={dataEntities} canReview={canReview} onApprove={onApprove} onReject={onReject} />
-          )}
-          {apiSpecifications.length > 0 && (
-            <ArtifactSection title="API Specifications" items={apiSpecifications} canReview={canReview} onApprove={onApprove} onReject={onReject} />
-          )}
-          {implementationTasks.length > 0 && (
-            <ArtifactSection title="Implementation Tasks" items={implementationTasks} canReview={canReview} onApprove={onApprove} onReject={onReject} />
-          )}
-          {testCases.length > 0 && (
-            <ArtifactSection title="Test Cases" items={testCases} canReview={canReview} onApprove={onApprove} onReject={onReject} />
+
+          {view === 'testing' && (
+            <>
+              {canWrite && functionalRequirements.length > 0 && (
+                <section className="req-section">
+                  <div className="req-section-head">
+                    <h3>Generate test cases per requirement</h3>
+                    <span className="req-count">{functionalRequirements.length}</span>
+                  </div>
+                  <ul className="tc-source-list">
+                    {functionalRequirements.map((fr) => {
+                      return (
+                        <li key={fr.id}>
+                          <span className="code">{fr.code}</span>
+                          <span className="tc-source-title">{fr.title}</span>
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            disabled={busy === `generate-tc-${fr.id}`}
+                            onClick={() => onGenerateTestCases(fr.id)}
+                          >
+                            <IconSparkles width={14} height={14} />
+                            {busy === `generate-tc-${fr.id}` ? 'Generating…' : 'Generate test cases'}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              )}
+              {phaseArtifactCount === 0 && (
+                <EmptyState
+                  compact
+                  icon={<IconInbox width={18} height={18} />}
+                  title="No test cases yet"
+                  description={needsFr ? 'Generate functional requirements first — test cases are derived from them.' : 'Generate test cases from a functional requirement above.'}
+                />
+              )}
+              {testCases.length > 0 && <ArtifactSection id="sec-tests" title="Test Cases" items={testCases} {...reviewProps} />}
+            </>
           )}
         </div>
       )}
@@ -439,34 +611,79 @@ export function RequirementWorkspace({ projectId, onChange }: { projectId: strin
   );
 }
 
+function PipelineStep({ n, title, children }: { n: number; title: string; children: ReactNode }) {
+  return (
+    <div className="req-step">
+      <div className="req-step-head">
+        <span className="req-step-num">{n}</span>
+        <span className="req-step-title">{title}</span>
+      </div>
+      <div className="req-step-actions">{children}</div>
+    </div>
+  );
+}
+
+function SummaryRow({ label, items }: { label: string; items: string[] }) {
+  return (
+    <div className="req-summary-row">
+      <dt>{label}</dt>
+      <dd>
+        {items.length === 0 ? (
+          <span className="req-none">—</span>
+        ) : (
+          items.map((item, i) => (
+            <span key={i} className="req-chip">
+              {item}
+            </span>
+          ))
+        )}
+      </dd>
+    </div>
+  );
+}
+
 function ArtifactSection({
+  id,
   title,
   items,
   canReview,
+  canEdit,
+  token,
   onApprove,
   onReject,
+  onSaved,
   onGenerateAcceptanceCriteria,
   onGenerateTestCases,
 }: {
+  id?: string;
   title: string;
   items: ArtifactSummary[];
   canReview: boolean;
+  canEdit: boolean;
+  token: string | null;
   onApprove: (id: string) => Promise<void>;
   onReject: (id: string) => Promise<void>;
+  onSaved: () => void;
   onGenerateAcceptanceCriteria?: (id: string) => Promise<void>;
   onGenerateTestCases?: (id: string) => Promise<void>;
 }) {
   return (
-    <section>
-      <h3>{title}</h3>
+    <section className="req-section" id={id}>
+      <div className="req-section-head">
+        <h3>{title}</h3>
+        <span className="req-count">{items.length}</span>
+      </div>
       <ul className="artifact-list">
         {items.map((a) => (
           <ArtifactCard
             key={a.id}
             artifact={a}
             canReview={canReview}
+            canEdit={canEdit}
+            token={token}
             onApprove={onApprove}
             onReject={onReject}
+            onSaved={onSaved}
             onGenerateAcceptanceCriteria={onGenerateAcceptanceCriteria}
             onGenerateTestCases={onGenerateTestCases}
           />

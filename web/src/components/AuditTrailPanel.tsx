@@ -24,7 +24,7 @@ export function AuditTrailPanel({ projectId }: { projectId: string }) {
   };
 
   return (
-    <div className="card">
+    <div className="card" id="ai-audit-trail">
       <h2>AI Audit Trail</h2>
       <p className="hint">§27 — every AI call this project has made. No hidden provider reasoning is ever stored — only structured input/output.</p>
       <button type="button" disabled={busy} onClick={load}>
@@ -48,6 +48,11 @@ export function AuditTrailPanel({ projectId }: { projectId: string }) {
                 {expandedId === e.id && (
                   <div className="audit-detail">
                     <p className="hint">Input reference: {e.inputReference ?? '—'}</p>
+                    <p className="hint">Prompt template version: {e.promptTemplateVersion ?? '—'}</p>
+                    <p className="hint">
+                      Human decision: {e.accepted === true ? 'Accepted' : e.accepted === false ? 'Rejected' : 'Not yet reviewed'}
+                      {e.producedArtifactId ? ` (artifact ${e.producedArtifactId})` : ''}
+                    </p>
                     <pre>{e.outputJson}</pre>
                   </div>
                 )}

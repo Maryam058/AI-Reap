@@ -5,6 +5,7 @@ using AiReap.Application.Persistence;
 using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace AiReap.Application.Ai.Pipeline;
 
@@ -80,6 +81,47 @@ public static class GenerationSupport
         Origin = ArtifactOrigin.Ai
     };
 
+    // Every pipeline service follows the same call-then-parse shape, so the LLM call and the
+    // strict-JSON validation of its response - the two places a production failure actually
+    // needs debugging context to diagnose - are logged once, here, instead of ad hoc per service.
+    public static async Task<(string RawResponse, T Parsed)> CallAiAndParseAsync<T>(
+        IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
+        string systemPrompt, string userPrompt, CancellationToken cancellationToken) where T : class
+    {
+        logger.LogInformation(
+            "AI call starting: {OperationType} model={Model} input={InputReference}",
+            operationType, chatClient.ModelName, inputReference);
+
+        string rawResponse;
+        try
+        {
+            rawResponse = await chatClient.CompleteAsync(systemPrompt, userPrompt, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex,
+                "AI call failed: {OperationType} model={Model} input={InputReference}",
+                operationType, chatClient.ModelName, inputReference);
+            throw;
+        }
+
+        logger.LogInformation(
+            "AI call succeeded: {OperationType} input={InputReference} responseLength={ResponseLength}",
+            operationType, inputReference, rawResponse.Length);
+
+        try
+        {
+            return (rawResponse, AiJsonParser.Parse<T>(rawResponse));
+        }
+        catch (AiOutputValidationException ex)
+        {
+            logger.LogError(ex,
+                "AI response failed JSON validation: {OperationType} input={InputReference}",
+                operationType, inputReference);
+            throw;
+        }
+    }
+
     public static void LinkToRelated(IAiReapDbContext db, Artifact newArtifact, IEnumerable<Artifact> related, RelationshipType type, DateTime now)
     {
         foreach (var target in related)
@@ -95,16 +137,45 @@ public static class GenerationSupport
         }
     }
 
-    public static AIExecution NewExecution(Guid projectId, string operationType, string userId, string model, string inputReference, string rawResponse, DateTime now) => new()
+    private static AIExecution NewExecution(
+        Guid projectId, string operationType, string promptTemplateVersion, string userId, string model,
+        string inputReference, string rawResponse, DateTime now, Guid? producedArtifactId) => new()
     {
         Id = Guid.NewGuid(),
         ProjectId = projectId,
         OperationType = operationType,
+        PromptTemplateVersion = promptTemplateVersion,
         UserId = userId,
         Timestamp = now,
         Model = model,
         InputReference = inputReference,
         OutputJson = rawResponse,
+        ProducedArtifactId = producedArtifactId,
         Accepted = null
     };
+
+    // §27 — one AIExecution row per produced artifact, so ProducedArtifactId and the
+    // Accepted/Rejected decision (set later in ArtifactService.UpdateStatusAsync) can be
+    // tracked per artifact rather than only for "the first one" when a single AI call produces
+    // several (e.g. RequirementGenerationService's FR+NFR batch, or a multi-item design/task
+    // list). All rows for one call share the same OutputJson - they represent one underlying AI
+    // call, fanned out per resulting artifact for audit/review purposes. If the call produced no
+    // artifacts (e.g. analysis found no missing information), exactly one row is still logged,
+    // with no ProducedArtifactId, so the call itself remains auditable.
+    public static void AddExecutions(
+        IAiReapDbContext db, Guid projectId, string operationType, string promptTemplateVersion,
+        string userId, string model, string inputReference, string rawResponse, DateTime now,
+        IReadOnlyList<Guid> producedArtifactIds)
+    {
+        if (producedArtifactIds.Count == 0)
+        {
+            db.AIExecutions.Add(NewExecution(projectId, operationType, promptTemplateVersion, userId, model, inputReference, rawResponse, now, null));
+            return;
+        }
+
+        foreach (var artifactId in producedArtifactIds)
+        {
+            db.AIExecutions.Add(NewExecution(projectId, operationType, promptTemplateVersion, userId, model, inputReference, rawResponse, now, artifactId));
+        }
+    }
 }

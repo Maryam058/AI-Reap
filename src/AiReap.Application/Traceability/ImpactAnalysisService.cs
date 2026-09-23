@@ -1,3 +1,4 @@
+using AiReap.Application.Common;
 using AiReap.Application.Persistence;
 using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
@@ -10,10 +11,12 @@ public class ImpactAnalysisService : IImpactAnalysisService
     private const int MaxHops = 3;
 
     private readonly IAiReapDbContext _db;
+    private readonly IProjectAccessService _projectAccess;
 
-    public ImpactAnalysisService(IAiReapDbContext db)
+    public ImpactAnalysisService(IAiReapDbContext db, IProjectAccessService projectAccess)
     {
         _db = db;
+        _projectAccess = projectAccess;
     }
 
     public async Task<ImpactAnalysisResult?> AnalyzeAsync(Guid artifactId, CancellationToken cancellationToken = default)
@@ -23,6 +26,8 @@ public class ImpactAnalysisService : IImpactAnalysisService
         {
             return null;
         }
+
+        await _projectAccess.EnsureMemberAsync(artifact.ProjectId, cancellationToken);
 
         var allArtifacts = await _db.Artifacts.Where(a => a.ProjectId == artifact.ProjectId).ToListAsync(cancellationToken);
         var byId = allArtifacts.ToDictionary(a => a.Id);

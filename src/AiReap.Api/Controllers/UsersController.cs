@@ -1,4 +1,5 @@
 using AiReap.Api.Auth;
+using AiReap.Api.Authorization;
 using AiReap.Domain.Common;
 using AiReap.Infrastructure.Identity;
 using Microsoft.AspNetCore.Authorization;
@@ -32,6 +33,7 @@ public class UsersController : ControllerBase
     }
 
     [HttpGet]
+    [Capability("Administer", "Create users, assign roles, activate and deactivate accounts", 100)]
     public async Task<ActionResult<IReadOnlyList<UserResponse>>> List(CancellationToken cancellationToken)
     {
         var users = await _userManager.Users.OrderBy(u => u.Email).ToListAsync(cancellationToken);

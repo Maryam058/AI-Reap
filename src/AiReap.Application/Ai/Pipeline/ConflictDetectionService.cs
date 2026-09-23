@@ -4,11 +4,14 @@ using AiReap.Application.Persistence;
 using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace AiReap.Application.Ai.Pipeline;
 
 public class ConflictDetectionService : IConflictDetectionService
 {
+    private const string PromptTemplateVersion = "ConflictDetection-v1";
+
     private const string SystemPrompt = """
         You are a requirements analyst (§15 of an SDLC automation spec) looking for potential
         duplicates, near-duplicates, contradictions, and overlaps among a project's functional
@@ -27,12 +30,14 @@ public class ConflictDetectionService : IConflictDetectionService
     private readonly IAiChatClient _chatClient;
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly ILogger<ConflictDetectionService> _logger;
 
-    public ConflictDetectionService(IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser)
+    public ConflictDetectionService(IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser, ILogger<ConflictDetectionService> logger)
     {
         _chatClient = chatClient;
         _db = db;
         _currentUser = currentUser;
+        _logger = logger;
     }
 
     public async Task<IReadOnlyList<ConflictFinding>> DetectAsync(Guid projectId, CancellationToken cancellationToken = default)
@@ -53,8 +58,8 @@ public class ConflictDetectionService : IConflictDetectionService
             sb.Append($"{artifact.Code}: {artifact.Title}\n{artifact.DataJson}\n\n");
         }
 
-        var rawResponse = await _chatClient.CompleteAsync(SystemPrompt, sb.ToString(), cancellationToken);
-        var parsed = AiJsonParser.Parse<ConflictAiResponse>(rawResponse);
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<ConflictAiResponse>(
+            _chatClient, _logger, "ConflictDetection", projectId.ToString(), SystemPrompt, sb.ToString(), cancellationToken);
 
         var existingRelationships = await _db.ArtifactRelationships
             .Where(r => (r.RelationshipType == RelationshipType.DuplicateOf || r.RelationshipType == RelationshipType.ConflictsWith) &&
@@ -97,18 +102,9 @@ public class ConflictDetectionService : IConflictDetectionService
             findings.Add(new ConflictFinding(a.Id, a.Code, a.Title, b.Id, b.Code, b.Title, relationshipType, item.Reason));
         }
 
-        _db.AIExecutions.Add(new AIExecution
-        {
-            Id = Guid.NewGuid(),
-            ProjectId = projectId,
-            OperationType = "ConflictDetection",
-            UserId = _currentUser.UserId,
-            Timestamp = now,
-            Model = _chatClient.ModelName,
-            InputReference = projectId.ToString(),
-            OutputJson = rawResponse,
-            Accepted = null
-        });
+        GenerationSupport.AddExecutions(
+            _db, projectId, "ConflictDetection", PromptTemplateVersion, _currentUser.UserId,
+            _chatClient.ModelName, projectId.ToString(), rawResponse, now, Array.Empty<Guid>());
 
         await _db.SaveChangesAsync(cancellationToken);
 

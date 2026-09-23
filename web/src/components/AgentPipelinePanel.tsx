@@ -93,7 +93,7 @@ export function AgentPipelinePanel({
   };
 
   return (
-    <div className="card">
+    <div className="card" id="sec-ai-assistance">
       <h2>Agent Pipeline</h2>
       <p className="hint">
         §36 — Requirements → Analysis → Architecture → Development Planning → QA → Review. Each agent runs only after a

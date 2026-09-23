@@ -6,11 +6,14 @@ using AiReap.Application.Persistence;
 using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace AiReap.Application.Ai.Pipeline;
 
 public class TestGenerationService : ITestGenerationService
 {
+    private const string PromptTemplateVersion = "TestCaseGeneration-v1";
+
     private const string SystemPrompt = """
         You are a QA engineer (§20 of an SDLC automation spec). Given a functional requirement,
         write test cases covering positive, negative, boundary, permission/security, and
@@ -28,12 +31,18 @@ public class TestGenerationService : ITestGenerationService
     private readonly IAiChatClient _chatClient;
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly IProjectAccessService _projectAccess;
+    private readonly ILogger<TestGenerationService> _logger;
 
-    public TestGenerationService(IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser)
+    public TestGenerationService(
+        IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser, IProjectAccessService projectAccess,
+        ILogger<TestGenerationService> logger)
     {
         _chatClient = chatClient;
         _db = db;
         _currentUser = currentUser;
+        _projectAccess = projectAccess;
+        _logger = logger;
     }
 
     public async Task<IReadOnlyList<ArtifactResponse>?> GenerateAsync(Guid functionalRequirementArtifactId, CancellationToken cancellationToken = default)
@@ -44,6 +53,8 @@ public class TestGenerationService : ITestGenerationService
             return null;
         }
 
+        await _projectAccess.EnsureMemberAsync(fr.ProjectId, cancellationToken);
+
         var frPayload = JsonSerializer.Deserialize<FunctionalRequirementPayload>(
             fr.DataJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new FunctionalRequirementPayload();
 
@@ -51,8 +62,8 @@ public class TestGenerationService : ITestGenerationService
             $"{fr.Code}: {fr.Title}\nActor: {frPayload.Actor}\nPreconditions: {frPayload.Preconditions}\n" +
             $"Processing: {frPayload.Processing}\nExpected result: {frPayload.ExpectedResult}";
 
-        var rawResponse = await _chatClient.CompleteAsync(SystemPrompt, userPrompt, cancellationToken);
-        var parsed = AiJsonParser.Parse<TestCaseAiResponse>(rawResponse);
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<TestCaseAiResponse>(
+            _chatClient, _logger, "TestCaseGeneration", fr.Id.ToString(), SystemPrompt, userPrompt, cancellationToken);
 
         var now = DateTime.UtcNow;
         var codes = await ArtifactCodeGenerator.ReserveCodesAsync(_db, fr.ProjectId, ArtifactType.TestCase, parsed.TestCases.Count, cancellationToken);
@@ -103,7 +114,10 @@ public class TestGenerationService : ITestGenerationService
             testArtifacts.Add(artifact);
         }
 
-        _db.AIExecutions.Add(GenerationSupport.NewExecution(fr.ProjectId, "TestCaseGeneration", _currentUser.UserId, _chatClient.ModelName, fr.Id.ToString(), rawResponse, now));
+        GenerationSupport.AddExecutions(
+            _db, fr.ProjectId, "TestCaseGeneration", PromptTemplateVersion, _currentUser.UserId,
+            _chatClient.ModelName, fr.Id.ToString(), rawResponse, now,
+            testArtifacts.Select(a => a.Id).ToList());
 
         await _db.SaveChangesAsync(cancellationToken);
 

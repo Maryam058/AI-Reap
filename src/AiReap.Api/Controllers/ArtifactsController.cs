@@ -1,3 +1,4 @@
+using AiReap.Api.Authorization;
 using AiReap.Application.Ai.Pipeline;
 using AiReap.Application.Artifacts;
 using AiReap.Domain.Common;
@@ -42,6 +43,7 @@ public class ArtifactsController : ControllerBase
     // §23 — human edit; creates a new version rather than overwriting history.
     [HttpPatch("api/artifacts/{id:guid}")]
     [Authorize(Roles = WriterRoles)]
+    [Capability("Author", "Edit artifacts and answer clarification questions", 50)]
     public async Task<ActionResult<ArtifactResponse>> Update(Guid id, UpdateArtifactRequest request, CancellationToken cancellationToken)
     {
         var updated = await _artifacts.UpdateAsync(id, request, cancellationToken);
@@ -51,6 +53,7 @@ public class ArtifactsController : ControllerBase
     // §24 — Approved/Rejected are review decisions, gated to reviewer-capable roles.
     [HttpPatch("api/artifacts/{id:guid}/status")]
     [Authorize(Roles = ReviewerRoles)]
+    [Capability("Review", "Approve, reject and update artifact status", 70)]
     public async Task<ActionResult<ArtifactResponse>> UpdateStatus(Guid id, UpdateArtifactStatusRequest request, CancellationToken cancellationToken)
     {
         var updated = await _artifacts.UpdateStatusAsync(id, request, cancellationToken);

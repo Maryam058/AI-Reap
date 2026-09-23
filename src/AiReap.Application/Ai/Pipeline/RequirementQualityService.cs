@@ -4,11 +4,14 @@ using AiReap.Application.Persistence;
 using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace AiReap.Application.Ai.Pipeline;
 
 public class RequirementQualityService : IRequirementQualityService
 {
+    private const string PromptTemplateVersion = "RequirementQualityAnalysis-v1";
+
     private const string SystemPrompt = """
         You are a requirements quality reviewer (§14 of an SDLC automation spec). You are
         given a list of requirements, each with a code, title, and JSON detail. For each one
@@ -29,18 +32,25 @@ public class RequirementQualityService : IRequirementQualityService
     private readonly IAiChatClient _chatClient;
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly IProjectAccessService _projectAccess;
+    private readonly ILogger<RequirementQualityService> _logger;
 
-    public RequirementQualityService(IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser)
+    public RequirementQualityService(
+        IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser, IProjectAccessService projectAccess,
+        ILogger<RequirementQualityService> logger)
     {
         _chatClient = chatClient;
         _db = db;
         _currentUser = currentUser;
+        _projectAccess = projectAccess;
+        _logger = logger;
     }
 
     public async Task<IReadOnlyList<QualityFinding>> AnalyzeAsync(Guid requirementSourceId, CancellationToken cancellationToken = default)
     {
         var source = await _db.RequirementSources.FirstOrDefaultAsync(s => s.Id == requirementSourceId, cancellationToken)
             ?? throw new KeyNotFoundException($"RequirementSource {requirementSourceId} not found.");
+        await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
 
         var candidates = await _db.Artifacts
             .Where(a => a.RequirementSourceId == requirementSourceId &&
@@ -61,8 +71,8 @@ public class RequirementQualityService : IRequirementQualityService
             sb.Append($"{artifact.Code}: {artifact.Title}\n{artifact.DataJson}\n\n");
         }
 
-        var rawResponse = await _chatClient.CompleteAsync(SystemPrompt, sb.ToString(), cancellationToken);
-        var parsed = AiJsonParser.Parse<QualityAiResponse>(rawResponse);
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<QualityAiResponse>(
+            _chatClient, _logger, "RequirementQualityAnalysis", source.Id.ToString(), SystemPrompt, sb.ToString(), cancellationToken);
 
         var findings = parsed.Findings
             .Select(f => (Finding: f, Artifact: candidates.FirstOrDefault(a => a.Code == f.ArtifactCode)))
@@ -70,18 +80,9 @@ public class RequirementQualityService : IRequirementQualityService
             .Select(x => new QualityFinding(x.Artifact!.Id, x.Artifact.Code, x.Artifact.Title, x.Finding.Issue, x.Finding.Recommendation))
             .ToList();
 
-        _db.AIExecutions.Add(new AIExecution
-        {
-            Id = Guid.NewGuid(),
-            ProjectId = source.ProjectId,
-            OperationType = "RequirementQualityAnalysis",
-            UserId = _currentUser.UserId,
-            Timestamp = DateTime.UtcNow,
-            Model = _chatClient.ModelName,
-            InputReference = source.Id.ToString(),
-            OutputJson = rawResponse,
-            Accepted = null
-        });
+        GenerationSupport.AddExecutions(
+            _db, source.ProjectId, "RequirementQualityAnalysis", PromptTemplateVersion, _currentUser.UserId,
+            _chatClient.ModelName, source.Id.ToString(), rawResponse, DateTime.UtcNow, Array.Empty<Guid>());
 
         await _db.SaveChangesAsync(cancellationToken);
 

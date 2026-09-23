@@ -14,7 +14,7 @@ export function MetricCard({
   trend?: string;
 }) {
   return (
-    <div className="metric-card">
+    <div className={`metric-card accent-${tone}`}>
       <div className="metric-card-top">
         <div className={`metric-icon tone-${tone}`}>{icon}</div>
         {trend && <span className="metric-trend">{trend}</span>}

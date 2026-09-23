@@ -101,6 +101,18 @@ export interface CreateProjectRequest {
 export const ROLES = ['Administrator', 'BusinessAnalyst', 'Developer', 'QA', 'Reviewer'] as const;
 export type Role = (typeof ROLES)[number];
 
+// GET /api/roles/matrix - reflects the API's real [Authorize(Roles = ...)] attributes
+// (RolesController), so this never needs hand-updating when a role rule changes.
+export interface Capability {
+  label: string;
+  roles: string[];
+}
+
+export interface CapabilityGroup {
+  group: string;
+  items: Capability[];
+}
+
 export type UpdateProjectRequest = CreateProjectRequest;
 
 // §5/§29 — project stakeholders (REAP-023).
@@ -369,6 +381,7 @@ export interface AiExecution {
   inputReference?: string | null;
   outputJson: string;
   accepted?: boolean | null;
+  producedArtifactId?: string | null;
 }
 
 export interface ConflictFinding {
@@ -405,6 +418,15 @@ export interface UpdateArtifactStatusRequest {
   comment?: string;
 }
 
+// §23 — human edit; the backend replaces `data` wholesale (never a partial patch of it), so
+// callers always send back the full typed payload for the artifact's type.
+export interface UpdateArtifactRequest {
+  title?: string;
+  priority?: number | null;
+  data?: Record<string, unknown>;
+  reason?: string;
+}
+
 export interface RecentChangeItem {
   code: string;
   title: string;
@@ -423,6 +445,7 @@ export interface ProjectDashboard {
   approvedCount: number;
   pendingReviewCount: number;
   rejectedCount: number;
+  conflictCount: number;
   recentChanges: RecentChangeItem[];
 }
 

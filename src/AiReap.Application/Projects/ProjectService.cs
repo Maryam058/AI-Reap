@@ -1,5 +1,6 @@
 using AiReap.Application.Common;
 using AiReap.Application.Persistence;
+using AiReap.Domain.Common;
 using AiReap.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -38,6 +39,18 @@ public class ProjectService : IProjectService
         };
 
         _db.Projects.Add(project);
+
+        // §38 DoD — the creator is automatically a member of their own new project; everyone
+        // else has to be added explicitly (AddMemberAsync) or already be Administrator.
+        _db.ProjectMembers.Add(new ProjectMember
+        {
+            Id = Guid.NewGuid(),
+            ProjectId = project.Id,
+            UserId = _currentUser.UserId,
+            AddedByUserId = _currentUser.UserId,
+            AddedAt = now
+        });
+
         await _db.SaveChangesAsync(cancellationToken);
 
         return ToResponse(project);
@@ -45,10 +58,18 @@ public class ProjectService : IProjectService
 
     public async Task<IReadOnlyList<ProjectResponse>> GetAllAsync(CancellationToken cancellationToken = default)
     {
-        var projects = await _db.Projects
-            .OrderByDescending(p => p.CreatedAt)
-            .ToListAsync(cancellationToken);
+        var query = _db.Projects.AsQueryable();
 
+        // Administrator sees every project (consistent with Administrator bypassing membership
+        // everywhere else - IProjectAccessService); everyone else only sees what they're a
+        // member of.
+        if (!_currentUser.IsInRole(Roles.Administrator))
+        {
+            var userId = _currentUser.UserId;
+            query = query.Where(p => _db.ProjectMembers.Any(m => m.ProjectId == p.Id && m.UserId == userId));
+        }
+
+        var projects = await query.OrderByDescending(p => p.CreatedAt).ToListAsync(cancellationToken);
         return projects.Select(ToResponse).ToList();
     }
 
@@ -170,6 +191,57 @@ public class ProjectService : IProjectService
         }
 
         _db.ProjectStakeholders.Remove(stakeholder);
+        await _db.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    public async Task<IReadOnlyList<ProjectMemberResponse>> GetMembersAsync(Guid projectId, CancellationToken cancellationToken = default)
+    {
+        return await _db.ProjectMembers
+            .Where(m => m.ProjectId == projectId)
+            .OrderBy(m => m.AddedAt)
+            .Select(m => new ProjectMemberResponse(m.Id, m.ProjectId, m.UserId, m.AddedByUserId, m.AddedAt))
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<ProjectMemberResponse?> AddMemberAsync(Guid projectId, string userId, CancellationToken cancellationToken = default)
+    {
+        var project = await _db.Projects.FirstOrDefaultAsync(p => p.Id == projectId, cancellationToken);
+        if (project is null)
+        {
+            return null;
+        }
+
+        var existing = await _db.ProjectMembers.FirstOrDefaultAsync(m => m.ProjectId == projectId && m.UserId == userId, cancellationToken);
+        if (existing is not null)
+        {
+            return new ProjectMemberResponse(existing.Id, existing.ProjectId, existing.UserId, existing.AddedByUserId, existing.AddedAt);
+        }
+
+        var member = new ProjectMember
+        {
+            Id = Guid.NewGuid(),
+            ProjectId = projectId,
+            UserId = userId,
+            AddedByUserId = _currentUser.UserId,
+            AddedAt = DateTime.UtcNow
+        };
+
+        _db.ProjectMembers.Add(member);
+        await _db.SaveChangesAsync(cancellationToken);
+
+        return new ProjectMemberResponse(member.Id, member.ProjectId, member.UserId, member.AddedByUserId, member.AddedAt);
+    }
+
+    public async Task<bool> RemoveMemberAsync(Guid projectId, string userId, CancellationToken cancellationToken = default)
+    {
+        var member = await _db.ProjectMembers.FirstOrDefaultAsync(m => m.ProjectId == projectId && m.UserId == userId, cancellationToken);
+        if (member is null)
+        {
+            return false;
+        }
+
+        _db.ProjectMembers.Remove(member);
         await _db.SaveChangesAsync(cancellationToken);
         return true;
     }

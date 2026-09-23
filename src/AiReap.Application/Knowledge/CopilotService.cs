@@ -1,11 +1,13 @@
 using System.Text;
 using System.Text.Json;
 using AiReap.Application.Ai;
+using AiReap.Application.Ai.Pipeline;
 using AiReap.Application.Common;
 using AiReap.Application.Persistence;
 using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace AiReap.Application.Knowledge;
 
@@ -13,6 +15,7 @@ public class CopilotService : ICopilotService
 {
     private const int TopKChunks = 5;
     private const float MinSimilarity = 0.15f;
+    private const string PromptTemplateVersion = "ProjectCopilotQuery-v1";
 
     private const string SystemPrompt = """
         You are the AI-REAP Project Copilot (§25 of an SDLC automation spec): a read-only,
@@ -35,13 +38,17 @@ public class CopilotService : ICopilotService
     private readonly IAiChatClient _chatClient;
     private readonly IEmbeddingClient _embeddingClient;
     private readonly ICurrentUser _currentUser;
+    private readonly ILogger<CopilotService> _logger;
 
-    public CopilotService(IAiReapDbContext db, IAiChatClient chatClient, IEmbeddingClient embeddingClient, ICurrentUser currentUser)
+    public CopilotService(
+        IAiReapDbContext db, IAiChatClient chatClient, IEmbeddingClient embeddingClient, ICurrentUser currentUser,
+        ILogger<CopilotService> logger)
     {
         _db = db;
         _chatClient = chatClient;
         _embeddingClient = embeddingClient;
         _currentUser = currentUser;
+        _logger = logger;
     }
 
     public async Task<CopilotAnswerResponse> AskAsync(Guid projectId, string question, CancellationToken cancellationToken = default)
@@ -54,8 +61,8 @@ public class CopilotService : ICopilotService
 
         var userPrompt = $"STRUCTURED FACTS:\n{factsBlock}\n\nDOCUMENT EXCERPTS:\n{chunksBlock}\n\nQUESTION:\n{question}";
 
-        var rawResponse = await _chatClient.CompleteAsync(SystemPrompt, userPrompt, cancellationToken);
-        var parsed = AiJsonParser.Parse<CopilotAiResponse>(rawResponse);
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<CopilotAiResponse>(
+            _chatClient, _logger, "ProjectCopilotQuery", Snippet(question, 200), SystemPrompt, userPrompt, cancellationToken);
 
         var citations = parsed.CitedChunkRefs
             .Select(r => retrievedChunks.FirstOrDefault(c => c.DocumentName == r.DocumentName && c.ChunkIndex == r.ChunkIndex))
@@ -63,18 +70,9 @@ public class CopilotService : ICopilotService
             .Select(c => new CopilotCitation(c!.DocumentName, c.ChunkIndex, Snippet(c.ChunkText)))
             .ToList();
 
-        _db.AIExecutions.Add(new AIExecution
-        {
-            Id = Guid.NewGuid(),
-            ProjectId = projectId,
-            OperationType = "ProjectCopilotQuery",
-            UserId = _currentUser.UserId,
-            Timestamp = DateTime.UtcNow,
-            Model = _chatClient.ModelName,
-            InputReference = Snippet(question, 200),
-            OutputJson = rawResponse,
-            Accepted = null
-        });
+        GenerationSupport.AddExecutions(
+            _db, projectId, "ProjectCopilotQuery", PromptTemplateVersion, _currentUser.UserId,
+            _chatClient.ModelName, Snippet(question, 200), rawResponse, DateTime.UtcNow, Array.Empty<Guid>());
 
         await _db.SaveChangesAsync(cancellationToken);
 
@@ -119,6 +117,10 @@ public class CopilotService : ICopilotService
         return sb.ToString();
     }
 
+    // TODO: this loads every chunk for the project and scores it in memory (O(n) per query,
+    // no index). Fine at demo scale; if a project's corpus grows materially, replace with an
+    // indexed vector store (e.g. a database-native vector index, or an external store like
+    // pgvector/FAISS) so retrieval doesn't degrade linearly with corpus size.
     private async Task<(string Block, List<RetrievedChunk> Chunks)> RetrieveChunksAsync(Guid projectId, string question, CancellationToken cancellationToken)
     {
         var chunks = await _db.DocumentChunks

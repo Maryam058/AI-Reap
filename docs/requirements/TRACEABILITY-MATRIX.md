@@ -104,9 +104,9 @@ Legend for **Phase**: `P1` MVP, `P2` AI SDLC, `P3` Advanced Intelligence, `P4` A
 
 | ID | Requirement | Source | Phase | Priority | Status |
 |---|---|---|---|---|---|
-| REAP-100 | End-to-end demo: complaint-management scenario run through full pipeline | §37 | Gate (post-P2) | Must | Not Started |
-| REAP-101 | Demo must show downstream impact analysis after changing a requirement | §37, §22 | Gate (post-P3) | Must | Not Started |
-| REAP-102 | Definition of Done checklist satisfied (§38, full list) | §38 | Gate (release) | Must | Not Started |
+| REAP-100 | End-to-end demo: complaint-management scenario run through full pipeline | §37 | Gate (post-P2) | Must | Done (2026-09-22) — `Section37DemoTests.Complaint_management_scenario_runs_end_to_end_then_a_changed_requirement_shows_correct_impact`, run against a real SQL Server |
+| REAP-101 | Demo must show downstream impact analysis after changing a requirement | §37, §22 | Gate (post-P3) | Must | Done (2026-09-22) — same test: edits an approved FR, then asserts `/impact` names the actual linked user story/task/test-case ids, not just a non-empty/non-mutating response |
+| REAP-102 | Definition of Done checklist satisfied (§38, full list) | §38 | Gate (release) | Must | Not Started — see Release Gate checklist in `docs/roadmap/ROADMAP.md` (exception handling now done; project-level access control, audit-trail field population, and other items remain open) |
 
 ---
 

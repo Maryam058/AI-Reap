@@ -1,3 +1,4 @@
+using AiReap.Api.Authorization;
 using AiReap.Application.Ai.Pipeline;
 using AiReap.Application.Files;
 using AiReap.Application.RequirementSources;
@@ -47,6 +48,7 @@ public class RequirementSourcesController : ControllerBase
     // §6 — manual entry or pasted meeting notes.
     [HttpPost("api/projects/{projectId:guid}/requirement-sources")]
     [Authorize(Roles = WriterRoles)]
+    [Capability("Author", "Add requirement sources and run AI analysis and generation", 40)]
     public async Task<ActionResult<RequirementSourceResponse>> Create(
         Guid projectId, CreateRequirementSourceRequest request, CancellationToken cancellationToken)
     {

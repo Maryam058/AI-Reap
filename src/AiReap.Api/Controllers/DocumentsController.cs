@@ -1,3 +1,4 @@
+using AiReap.Api.Authorization;
 using AiReap.Application.Files;
 using AiReap.Application.Knowledge;
 using AiReap.Domain.Common;
@@ -25,6 +26,7 @@ public class DocumentsController : ControllerBase
     [HttpPost("api/projects/{projectId:guid}/documents/upload")]
     [Authorize(Roles = WriterRoles)]
     [RequestSizeLimit(5 * 1024 * 1024)]
+    [Capability("Author", "Upload project documents and run the agent pipeline", 60)]
     public async Task<ActionResult<DocumentResponse>> Upload(Guid projectId, IFormFile file, CancellationToken cancellationToken)
     {
         if (file.Length == 0)

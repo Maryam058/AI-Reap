@@ -1,6 +1,7 @@
 import { apiClient } from './client';
 import type {
   ConflictFinding,
+  CreateProjectRequest,
   CreateStakeholderRequest,
   Project,
   Stakeholder,
@@ -8,6 +9,11 @@ import type {
 } from './types';
 
 export const projectsApi = {
+  list: (token: string | null) => apiClient.get<Project[]>('/api/projects', token),
+
+  create: (request: CreateProjectRequest, token: string | null) =>
+    apiClient.post<Project>('/api/projects', request, token),
+
   update: (projectId: string, request: UpdateProjectRequest, token: string | null) =>
     apiClient.put<Project>(`/api/projects/${projectId}`, request, token),
 

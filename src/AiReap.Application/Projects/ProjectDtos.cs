@@ -50,3 +50,10 @@ public record CreateStakeholderRequest(string Name, string? RoleInProject, strin
 public record UpdateStakeholderRequest(string Name, string? RoleInProject, string? ContactInfo);
 
 public record StakeholderResponse(Guid Id, Guid ProjectId, string Name, string? RoleInProject, string? ContactInfo);
+
+// §38 DoD — project membership (access control, not a stakeholder/contact record). Added by
+// email since project membership is a Business Analyst action too, and BAs don't have access
+// to the Administrator-only /api/users list to look up a raw user id.
+public record ProjectMemberResponse(Guid Id, Guid ProjectId, string UserId, string AddedByUserId, DateTime AddedAt);
+
+public record AddProjectMemberRequest(string Email);

@@ -6,6 +6,7 @@ using AiReap.Application.Persistence;
 using AiReap.Domain.Common;
 using AiReap.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace AiReap.Application.Agents.Implementations;
 
@@ -14,6 +15,8 @@ namespace AiReap.Application.Agents.Implementations;
 // writes the narrative on top. It changes no artifact and approves nothing.
 public class ReviewAgent : IAgent
 {
+    private const string PromptTemplateVersion = "AgentReviewSummary-v1";
+
     private const string SystemPrompt = """
         You are a delivery reviewer at the end of an automated SDLC analysis pipeline. You are
         given counts describing how complete and how reviewed the generated project artifacts are.
@@ -30,12 +33,14 @@ public class ReviewAgent : IAgent
     private readonly IAiChatClient _chatClient;
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly ILogger<ReviewAgent> _logger;
 
-    public ReviewAgent(IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser)
+    public ReviewAgent(IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser, ILogger<ReviewAgent> logger)
     {
         _chatClient = chatClient;
         _db = db;
         _currentUser = currentUser;
+        _logger = logger;
     }
 
     public AgentKind Kind => AgentKind.Review;
@@ -110,11 +115,30 @@ public class ReviewAgent : IAgent
             ? "The artifact set is structurally complete: every requirement has tasks and tests."
             : $"{findingCount} gap(s) were found in the artifact set; see the findings below.";
 
-        var rawResponse = await _chatClient.CompleteAsync(SystemPrompt, JsonSerializer.Serialize(metrics), cancellationToken);
+        _logger.LogInformation(
+            "AI call starting: {OperationType} model={Model} input={InputReference}",
+            "AgentReviewSummary", _chatClient.ModelName, context.RequirementSourceId);
 
-        _db.AIExecutions.Add(GenerationSupport.NewExecution(
-            context.ProjectId, "AgentReviewSummary", _currentUser.UserId, _chatClient.ModelName,
-            context.RequirementSourceId.ToString(), rawResponse, DateTime.UtcNow));
+        string rawResponse;
+        try
+        {
+            rawResponse = await _chatClient.CompleteAsync(SystemPrompt, JsonSerializer.Serialize(metrics), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "AI call failed: {OperationType} model={Model} input={InputReference}",
+                "AgentReviewSummary", _chatClient.ModelName, context.RequirementSourceId);
+            throw;
+        }
+
+        _logger.LogInformation(
+            "AI call succeeded: {OperationType} input={InputReference} responseLength={ResponseLength}",
+            "AgentReviewSummary", context.RequirementSourceId, rawResponse.Length);
+
+        GenerationSupport.AddExecutions(
+            _db, context.ProjectId, "AgentReviewSummary", PromptTemplateVersion, _currentUser.UserId,
+            _chatClient.ModelName, context.RequirementSourceId.ToString(), rawResponse, DateTime.UtcNow, Array.Empty<Guid>());
         await _db.SaveChangesAsync(cancellationToken);
 
         try
@@ -122,10 +146,13 @@ public class ReviewAgent : IAgent
             var parsed = AiJsonParser.Parse<ReviewAiResponse>(rawResponse);
             return string.IsNullOrWhiteSpace(parsed.ReadinessSummary) ? fallback : parsed.ReadinessSummary;
         }
-        catch (AiOutputValidationException)
+        catch (AiOutputValidationException ex)
         {
             // The gap list is deterministic and already authoritative; a malformed narrative
-            // shouldn't fail the whole stage.
+            // shouldn't fail the whole stage - but it's still worth knowing about in production.
+            _logger.LogWarning(ex,
+                "AI response failed JSON validation, falling back to a deterministic narrative: {OperationType} input={InputReference}",
+                "AgentReviewSummary", context.RequirementSourceId);
             return fallback;
         }
     }

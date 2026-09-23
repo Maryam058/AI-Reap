@@ -5,11 +5,14 @@ using AiReap.Application.Common;
 using AiReap.Application.Persistence;
 using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
+using Microsoft.Extensions.Logging;
 
 namespace AiReap.Application.Ai.Pipeline;
 
 public class ImplementationPlanningService : IImplementationPlanningService
 {
+    private const string PromptTemplateVersion = "ImplementationPlanning-v1";
+
     private const string SystemPrompt = """
         You are a delivery lead (§19 of an SDLC automation spec). Given a raw requirement, its
         clarifications, and the functional requirements (plus any database entities and API
@@ -34,17 +37,24 @@ public class ImplementationPlanningService : IImplementationPlanningService
     private readonly IAiChatClient _chatClient;
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly IProjectAccessService _projectAccess;
+    private readonly ILogger<ImplementationPlanningService> _logger;
 
-    public ImplementationPlanningService(IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser)
+    public ImplementationPlanningService(
+        IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser, IProjectAccessService projectAccess,
+        ILogger<ImplementationPlanningService> logger)
     {
         _chatClient = chatClient;
         _db = db;
         _currentUser = currentUser;
+        _projectAccess = projectAccess;
+        _logger = logger;
     }
 
     public async Task<IReadOnlyList<ArtifactResponse>> GenerateAsync(Guid requirementSourceId, CancellationToken cancellationToken = default)
     {
         var source = await GenerationSupport.LoadSourceAsync(_db, requirementSourceId, cancellationToken);
+        await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
         var functionalRequirements = await GenerationSupport.LoadArtifactsAsync(_db, requirementSourceId, ArtifactType.FunctionalRequirement, cancellationToken);
         var dataEntities = await GenerationSupport.LoadArtifactsAsync(_db, requirementSourceId, ArtifactType.DataEntity, cancellationToken);
         var apiSpecs = await GenerationSupport.LoadArtifactsAsync(_db, requirementSourceId, ArtifactType.ApiSpecification, cancellationToken);
@@ -55,8 +65,8 @@ public class ImplementationPlanningService : IImplementationPlanningService
         var apiContext = GenerationSupport.BuildContextBlock("API endpoints proposed so far:", apiSpecs);
 
         var userPrompt = source.RawText + context + frContext + dataContext + apiContext;
-        var rawResponse = await _chatClient.CompleteAsync(SystemPrompt, userPrompt, cancellationToken);
-        var parsed = AiJsonParser.Parse<TaskAiResponse>(rawResponse);
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<TaskAiResponse>(
+            _chatClient, _logger, "ImplementationPlanning", source.Id.ToString(), SystemPrompt, userPrompt, cancellationToken);
 
         var now = DateTime.UtcNow;
         var codes = await ArtifactCodeGenerator.ReserveCodesAsync(_db, source.ProjectId, ArtifactType.ImplementationTask, parsed.Tasks.Count, cancellationToken);
@@ -89,7 +99,10 @@ public class ImplementationPlanningService : IImplementationPlanningService
             taskArtifacts.Add(artifact);
         }
 
-        _db.AIExecutions.Add(GenerationSupport.NewExecution(source.ProjectId, "ImplementationPlanning", _currentUser.UserId, _chatClient.ModelName, source.Id.ToString(), rawResponse, now));
+        GenerationSupport.AddExecutions(
+            _db, source.ProjectId, "ImplementationPlanning", PromptTemplateVersion, _currentUser.UserId,
+            _chatClient.ModelName, source.Id.ToString(), rawResponse, now,
+            taskArtifacts.Select(a => a.Id).ToList());
 
         await _db.SaveChangesAsync(cancellationToken);
 

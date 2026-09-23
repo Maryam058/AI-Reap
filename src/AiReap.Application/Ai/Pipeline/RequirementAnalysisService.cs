@@ -6,11 +6,14 @@ using AiReap.Application.Persistence;
 using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace AiReap.Application.Ai.Pipeline;
 
 public class RequirementAnalysisService : IRequirementAnalysisService
 {
+    private const string PromptTemplateVersion = "RequirementAnalysis-v1";
+
     private const string SystemPrompt = """
         You are a requirements analyst (§7 of an SDLC automation spec). Given a raw, possibly
         incomplete software requirement, decompose it into actors, capabilities, data elements
@@ -33,21 +36,28 @@ public class RequirementAnalysisService : IRequirementAnalysisService
     private readonly IAiChatClient _chatClient;
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly IProjectAccessService _projectAccess;
+    private readonly ILogger<RequirementAnalysisService> _logger;
 
-    public RequirementAnalysisService(IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser)
+    public RequirementAnalysisService(
+        IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser, IProjectAccessService projectAccess,
+        ILogger<RequirementAnalysisService> logger)
     {
         _chatClient = chatClient;
         _db = db;
         _currentUser = currentUser;
+        _projectAccess = projectAccess;
+        _logger = logger;
     }
 
     public async Task<AnalyzeRequirementResult> AnalyzeAsync(Guid requirementSourceId, CancellationToken cancellationToken = default)
     {
         var source = await _db.RequirementSources.FirstOrDefaultAsync(s => s.Id == requirementSourceId, cancellationToken)
             ?? throw new KeyNotFoundException($"RequirementSource {requirementSourceId} not found.");
+        await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
 
-        var rawResponse = await _chatClient.CompleteAsync(SystemPrompt, source.RawText, cancellationToken);
-        var parsed = AiJsonParser.Parse<AnalysisAiResponse>(rawResponse);
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<AnalysisAiResponse>(
+            _chatClient, _logger, "RequirementAnalysis", source.Id.ToString(), SystemPrompt, source.RawText, cancellationToken);
 
         var codes = await ArtifactCodeGenerator.ReserveCodesAsync(
             _db, source.ProjectId, ArtifactType.ClarificationQuestion, parsed.MissingInformation.Count, cancellationToken);
@@ -98,18 +108,10 @@ public class RequirementAnalysisService : IRequirementAnalysisService
             questionArtifacts.Add(artifact);
         }
 
-        _db.AIExecutions.Add(new AIExecution
-        {
-            Id = Guid.NewGuid(),
-            ProjectId = source.ProjectId,
-            OperationType = "RequirementAnalysis",
-            UserId = _currentUser.UserId,
-            Timestamp = now,
-            Model = _chatClient.ModelName,
-            InputReference = source.Id.ToString(),
-            OutputJson = rawResponse,
-            Accepted = null
-        });
+        GenerationSupport.AddExecutions(
+            _db, source.ProjectId, "RequirementAnalysis", PromptTemplateVersion, _currentUser.UserId,
+            _chatClient.ModelName, source.Id.ToString(), rawResponse, now,
+            questionArtifacts.Select(a => a.Id).ToList());
 
         await _db.SaveChangesAsync(cancellationToken);
 

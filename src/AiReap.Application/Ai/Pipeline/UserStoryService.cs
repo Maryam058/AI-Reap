@@ -7,11 +7,15 @@ using AiReap.Application.Persistence;
 using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace AiReap.Application.Ai.Pipeline;
 
 public class UserStoryService : IUserStoryService
 {
+    private const string StoryPromptTemplateVersion = "UserStoryGeneration-v1";
+    private const string AcceptanceCriteriaPromptTemplateVersion = "AcceptanceCriteriaGeneration-v1";
+
     private const string StorySystemPrompt = """
         You are a requirements engineer (§12 of an SDLC automation spec). Given a raw
         requirement, its clarifications, and the functional requirements already derived from
@@ -45,18 +49,25 @@ public class UserStoryService : IUserStoryService
     private readonly IAiChatClient _chatClient;
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly IProjectAccessService _projectAccess;
+    private readonly ILogger<UserStoryService> _logger;
 
-    public UserStoryService(IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser)
+    public UserStoryService(
+        IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser, IProjectAccessService projectAccess,
+        ILogger<UserStoryService> logger)
     {
         _chatClient = chatClient;
         _db = db;
         _currentUser = currentUser;
+        _projectAccess = projectAccess;
+        _logger = logger;
     }
 
     public async Task<IReadOnlyList<ArtifactResponse>> GenerateStoriesAsync(Guid requirementSourceId, CancellationToken cancellationToken = default)
     {
         var source = await _db.RequirementSources.FirstOrDefaultAsync(s => s.Id == requirementSourceId, cancellationToken)
             ?? throw new KeyNotFoundException($"RequirementSource {requirementSourceId} not found.");
+        await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
 
         var functionalRequirements = await _db.Artifacts
             .Where(a => a.RequirementSourceId == requirementSourceId && a.ArtifactType == ArtifactType.FunctionalRequirement)
@@ -72,8 +83,8 @@ public class UserStoryService : IUserStoryService
 
         var userPrompt = source.RawText + context + (functionalRequirements.Count > 0 ? frContext.ToString() : string.Empty);
 
-        var rawResponse = await _chatClient.CompleteAsync(StorySystemPrompt, userPrompt, cancellationToken);
-        var parsed = AiJsonParser.Parse<StoryAiResponse>(rawResponse);
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<StoryAiResponse>(
+            _chatClient, _logger, "UserStoryGeneration", source.Id.ToString(), StorySystemPrompt, userPrompt, cancellationToken);
 
         var now = DateTime.UtcNow;
         var codes = await ArtifactCodeGenerator.ReserveCodesAsync(
@@ -142,18 +153,10 @@ public class UserStoryService : IUserStoryService
             _db.ArtifactRelationships.Add(relationship);
         }
 
-        _db.AIExecutions.Add(new AIExecution
-        {
-            Id = Guid.NewGuid(),
-            ProjectId = source.ProjectId,
-            OperationType = "UserStoryGeneration",
-            UserId = _currentUser.UserId,
-            Timestamp = now,
-            Model = _chatClient.ModelName,
-            InputReference = source.Id.ToString(),
-            OutputJson = rawResponse,
-            Accepted = null
-        });
+        GenerationSupport.AddExecutions(
+            _db, source.ProjectId, "UserStoryGeneration", StoryPromptTemplateVersion, _currentUser.UserId,
+            _chatClient.ModelName, source.Id.ToString(), rawResponse, now,
+            storyArtifacts.Select(a => a.Id).ToList());
 
         await _db.SaveChangesAsync(cancellationToken);
 
@@ -168,14 +171,16 @@ public class UserStoryService : IUserStoryService
             return null;
         }
 
+        await _projectAccess.EnsureMemberAsync(story.ProjectId, cancellationToken);
+
         var payload = JsonSerializer.Deserialize<UserStoryPayload>(
             story.DataJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new UserStoryPayload();
 
         var userPrompt =
             $"Title: {story.Title}\nPersona: {payload.Persona}\nValue: {payload.ValueStatement}";
 
-        var rawResponse = await _chatClient.CompleteAsync(AcceptanceCriteriaSystemPrompt, userPrompt, cancellationToken);
-        var parsed = AiJsonParser.Parse<AcceptanceCriteriaAiResponse>(rawResponse);
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<AcceptanceCriteriaAiResponse>(
+            _chatClient, _logger, "AcceptanceCriteriaGeneration", story.Id.ToString(), AcceptanceCriteriaSystemPrompt, userPrompt, cancellationToken);
 
         var now = DateTime.UtcNow;
         var codes = await ArtifactCodeGenerator.ReserveCodesAsync(
@@ -236,18 +241,10 @@ public class UserStoryService : IUserStoryService
             acArtifacts.Add(artifact);
         }
 
-        _db.AIExecutions.Add(new AIExecution
-        {
-            Id = Guid.NewGuid(),
-            ProjectId = story.ProjectId,
-            OperationType = "AcceptanceCriteriaGeneration",
-            UserId = _currentUser.UserId,
-            Timestamp = now,
-            Model = _chatClient.ModelName,
-            InputReference = story.Id.ToString(),
-            OutputJson = rawResponse,
-            Accepted = null
-        });
+        GenerationSupport.AddExecutions(
+            _db, story.ProjectId, "AcceptanceCriteriaGeneration", AcceptanceCriteriaPromptTemplateVersion, _currentUser.UserId,
+            _chatClient.ModelName, story.Id.ToString(), rawResponse, now,
+            acArtifacts.Select(a => a.Id).ToList());
 
         await _db.SaveChangesAsync(cancellationToken);
 

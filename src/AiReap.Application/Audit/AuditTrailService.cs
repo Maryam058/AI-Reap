@@ -21,6 +21,6 @@ public class AuditTrailService : IAuditTrailService
             .ToListAsync(cancellationToken);
 
         return executions.Select(e => new AiExecutionResponse(
-            e.Id, e.OperationType, e.UserId, e.Timestamp, e.Model, e.PromptTemplateVersion, e.InputReference, e.OutputJson, e.Accepted)).ToList();
+            e.Id, e.OperationType, e.UserId, e.Timestamp, e.Model, e.PromptTemplateVersion, e.InputReference, e.OutputJson, e.Accepted, e.ProducedArtifactId)).ToList();
     }
 }

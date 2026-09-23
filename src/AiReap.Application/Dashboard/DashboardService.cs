@@ -38,6 +38,14 @@ public class DashboardService : IDashboardService
             .Select(a => new RecentChangeItem(a.Code, a.Title, a.ArtifactType.ToString(), a.Status.ToString(), a.UpdatedAt))
             .ToList();
 
+        // Each row is one duplicate/conflict pair recorded by ConflictDetectionService - never
+        // re-run detection here, just report what's already on record (§28 is a passive summary).
+        var artifactIds = artifacts.Select(a => a.Id).ToList();
+        var conflictCount = await _db.ArtifactRelationships
+            .Where(r => (r.RelationshipType == RelationshipType.DuplicateOf || r.RelationshipType == RelationshipType.ConflictsWith)
+                        && artifactIds.Contains(r.SourceArtifactId))
+            .CountAsync(cancellationToken);
+
         return new ProjectDashboardResponse(
             FunctionalRequirementCount: CountOf(ArtifactType.FunctionalRequirement),
             NonFunctionalRequirementCount: CountOf(ArtifactType.NonFunctionalRequirement),
@@ -48,6 +56,7 @@ public class DashboardService : IDashboardService
             ApprovedCount: artifacts.Count(a => a.Status == ArtifactStatus.Approved),
             PendingReviewCount: artifacts.Count(a => a.Status is ArtifactStatus.AiGenerated or ArtifactStatus.Draft or ArtifactStatus.UnderReview),
             RejectedCount: artifacts.Count(a => a.Status == ArtifactStatus.Rejected),
+            ConflictCount: conflictCount,
             RecentChanges: recentChanges);
     }
 }

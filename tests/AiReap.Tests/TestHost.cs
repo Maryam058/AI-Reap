@@ -116,8 +116,13 @@ public class TestHost : IAsyncDisposable
         var token = (await login.Content.ReadFromJsonAsync<JsonNode>())!["token"]!.GetValue<string>();
         var authed = Factory.CreateClient();
         authed.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        return new ApiUser("login", authed);
+        return new ApiUser("login", authed) { Email = email };
     }
+
+    // §38 DoD — project membership. `owner` must already be a member (normally the project's
+    // creator) with a writer role, since POST .../members is BA/Admin-only.
+    public Task<(int Status, JsonNode? Body)> AddMemberAsync(ApiUser owner, string projectId, ApiUser member) =>
+        owner.PostAsync($"/api/projects/{projectId}/members", new { email = member.Email });
 
     public async Task<int> ScalarAsync(string sql)
     {
@@ -125,6 +130,14 @@ public class TestHost : IAsyncDisposable
         await conn.OpenAsync();
         await using var cmd = new SqlCommand(sql, conn);
         return Convert.ToInt32(await cmd.ExecuteScalarAsync());
+    }
+
+    public async Task ExecuteAsync(string sql)
+    {
+        await using var conn = new SqlConnection(ConnectionString);
+        await conn.OpenAsync();
+        await using var cmd = new SqlCommand(sql, conn);
+        await cmd.ExecuteNonQueryAsync();
     }
 
     public async ValueTask DisposeAsync()
@@ -143,6 +156,7 @@ public class ApiUser
 {
     public string Role { get; }
     public HttpClient Http { get; }
+    public string Email { get; init; } = "";
 
     public ApiUser(string role, HttpClient http)
     {

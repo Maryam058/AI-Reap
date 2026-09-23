@@ -9,6 +9,7 @@ public interface IAiReapDbContext
 {
     DbSet<Project> Projects { get; }
     DbSet<ProjectStakeholder> ProjectStakeholders { get; }
+    DbSet<ProjectMember> ProjectMembers { get; }
     DbSet<RequirementSource> RequirementSources { get; }
     DbSet<Artifact> Artifacts { get; }
     DbSet<ArtifactVersion> ArtifactVersions { get; }

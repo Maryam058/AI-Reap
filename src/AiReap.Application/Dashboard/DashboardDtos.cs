@@ -11,6 +11,7 @@ public record ProjectDashboardResponse(
     int ApprovedCount,
     int PendingReviewCount,
     int RejectedCount,
+    int ConflictCount,
     IReadOnlyList<RecentChangeItem> RecentChanges);
 
 public record RecentChangeItem(string Code, string Title, string ArtifactType, string Status, DateTime UpdatedAt);

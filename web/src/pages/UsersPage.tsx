@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { ApiError } from '../api/client';
 import { usersApi } from '../api/users';
 import { ROLES, ROLE_LABELS, type UserAccount } from '../api/types';
-import { Layout } from '../components/Layout';
 import { PageHeader } from '../components/ui/PageHeader';
 
 // Administrator-only. Hiding this page is a convenience; the API rejects non-administrators
@@ -81,10 +81,20 @@ export function UsersPage() {
   };
 
   return (
-    <Layout>
+    <>
       <PageHeader
         title="User management"
         subtitle="Create accounts and assign roles. Changes take effect immediately: the affected person is signed out and gets the new role at their next sign-in."
+        actions={
+          <>
+            <Link to="/admin/roles" className="btn btn-secondary">
+              Roles &amp; Permissions
+            </Link>
+            <Link to="/admin/audit" className="btn btn-secondary">
+              Audit Logs
+            </Link>
+          </>
+        }
       />
 
       {error && <p className="error">{error}</p>}
@@ -203,6 +213,6 @@ export function UsersPage() {
           </table>
         )}
       </div>
-    </Layout>
+    </>
   );
 }

@@ -6,11 +6,14 @@ using AiReap.Application.Persistence;
 using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace AiReap.Application.Ai.Pipeline;
 
 public class RequirementGenerationService : IRequirementGenerationService
 {
+    private const string PromptTemplateVersion = "RequirementGeneration-v1";
+
     private const string SystemPrompt = """
         You are a requirements engineer (§9/§10 of an SDLC automation spec). Given a raw
         requirement and any clarifications gathered so far, produce structured functional and
@@ -41,24 +44,31 @@ public class RequirementGenerationService : IRequirementGenerationService
     private readonly IAiChatClient _chatClient;
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly IProjectAccessService _projectAccess;
+    private readonly ILogger<RequirementGenerationService> _logger;
 
-    public RequirementGenerationService(IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser)
+    public RequirementGenerationService(
+        IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser, IProjectAccessService projectAccess,
+        ILogger<RequirementGenerationService> logger)
     {
         _chatClient = chatClient;
         _db = db;
         _currentUser = currentUser;
+        _projectAccess = projectAccess;
+        _logger = logger;
     }
 
     public async Task<GenerateRequirementsResult> GenerateAsync(Guid requirementSourceId, CancellationToken cancellationToken = default)
     {
         var source = await _db.RequirementSources.FirstOrDefaultAsync(s => s.Id == requirementSourceId, cancellationToken)
             ?? throw new KeyNotFoundException($"RequirementSource {requirementSourceId} not found.");
+        await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
 
         var context = await ClarificationContextBuilder.BuildAsync(_db, requirementSourceId, cancellationToken);
         var userPrompt = source.RawText + context;
 
-        var rawResponse = await _chatClient.CompleteAsync(SystemPrompt, userPrompt, cancellationToken);
-        var parsed = AiJsonParser.Parse<GenerationAiResponse>(rawResponse);
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<GenerationAiResponse>(
+            _chatClient, _logger, "RequirementGeneration", source.Id.ToString(), SystemPrompt, userPrompt, cancellationToken);
 
         var now = DateTime.UtcNow;
 
@@ -113,18 +123,10 @@ public class RequirementGenerationService : IRequirementGenerationService
             _db.ArtifactVersions.Add(InitialVersion(artifact, now));
         }
 
-        _db.AIExecutions.Add(new AIExecution
-        {
-            Id = Guid.NewGuid(),
-            ProjectId = source.ProjectId,
-            OperationType = "RequirementGeneration",
-            UserId = _currentUser.UserId,
-            Timestamp = now,
-            Model = _chatClient.ModelName,
-            InputReference = source.Id.ToString(),
-            OutputJson = rawResponse,
-            Accepted = null
-        });
+        GenerationSupport.AddExecutions(
+            _db, source.ProjectId, "RequirementGeneration", PromptTemplateVersion, _currentUser.UserId,
+            _chatClient.ModelName, source.Id.ToString(), rawResponse, now,
+            frArtifacts.Concat(nfrArtifacts).Select(a => a.Id).ToList());
 
         await _db.SaveChangesAsync(cancellationToken);
 

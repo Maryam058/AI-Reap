@@ -29,10 +29,20 @@ public class RegressionTests : IAsyncLifetime
     {
         var (s, p) = await _ba.PostAsync("/api/projects", new { name = "Reg", description = "d" });
         Assert.Equal(201, s);
-        var (ss, src) = await _ba.PostAsync($"/api/projects/{Id(p)}/requirement-sources",
+        var projectId = Id(p);
+
+        // §38 DoD — project membership. _ba is already a member (the creator); the other roles
+        // this test class exercises against this project (approving, reading dashboard/audit/
+        // copilot) have to be added explicitly.
+        foreach (var member in new[] { _dev, _qa, _reviewer })
+        {
+            Assert.InRange((await _host.AddMemberAsync(_ba, projectId, member)).Status, 200, 201);
+        }
+
+        var (ss, src) = await _ba.PostAsync($"/api/projects/{projectId}/requirement-sources",
             new { sourceType = 1, rawText = "Employees submit leave requests; managers approve." });
         Assert.InRange(ss, 200, 201);
-        return (Id(p), Id(src));
+        return (projectId, Id(src));
     }
 
     // ---- Auth ----------------------------------------------------------------------------
@@ -58,12 +68,17 @@ public class RegressionTests : IAsyncLifetime
         var (cs, p) = await _ba.PostAsync("/api/projects", new { name = "Alpha", description = "first" });
         Assert.Equal(201, cs);
         var id = Id(p);
+        Assert.InRange((await _host.AddMemberAsync(_ba, id, _dev)).Status, 200, 201);
 
-        var (ls, list) = await _dev.GetAsync("/api/projects"); // read is open to every role
+        var (ls, list) = await _dev.GetAsync("/api/projects"); // read is open to every role, once a member
         Assert.Equal(200, ls);
         Assert.Contains(list!.AsArray(), x => Id(x) == id);
         Assert.Equal(200, (await _dev.GetAsync($"/api/projects/{id}")).Status);
-        Assert.Equal(404, (await _ba.GetAsync($"/api/projects/{Guid.NewGuid()}")).Status);
+        // 403, not 404: ProjectMembershipFilter checks membership before the controller can
+        // check existence, so a random id and a real id you're not a member of are
+        // indistinguishable from the caller's side - the same non-leaking pattern this app
+        // already uses for role-based authorization failures elsewhere.
+        Assert.Equal(403, (await _ba.GetAsync($"/api/projects/{Guid.NewGuid()}")).Status);
 
         var (us, updated) = await _ba.SendAsync(HttpMethod.Put, $"/api/projects/{id}", new { name = "Alpha2", description = "changed" });
         Assert.Equal(200, us);
