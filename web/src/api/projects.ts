@@ -1,9 +1,11 @@
 import { apiClient } from './client';
 import type {
+  AddProjectMemberRequest,
   ConflictFinding,
   CreateProjectRequest,
   CreateStakeholderRequest,
   Project,
+  ProjectMember,
   Stakeholder,
   UpdateProjectRequest,
 } from './types';
@@ -34,4 +36,13 @@ export const projectsApi = {
 
   removeStakeholder: (projectId: string, stakeholderId: string, token: string | null) =>
     apiClient.delete(`/api/projects/${projectId}/stakeholders/${stakeholderId}`, token),
+
+  getMembers: (projectId: string, token: string | null) =>
+    apiClient.get<ProjectMember[]>(`/api/projects/${projectId}/members`, token),
+
+  addMember: (projectId: string, request: AddProjectMemberRequest, token: string | null) =>
+    apiClient.post<ProjectMember>(`/api/projects/${projectId}/members`, request, token),
+
+  removeMember: (projectId: string, userId: string, token: string | null) =>
+    apiClient.delete(`/api/projects/${projectId}/members/${userId}`, token),
 };

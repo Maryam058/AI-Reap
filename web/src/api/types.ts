@@ -130,6 +130,21 @@ export interface CreateStakeholderRequest {
   contactInfo?: string;
 }
 
+// §38 DoD — project membership (access control, not a stakeholder/contact record).
+export interface ProjectMember {
+  id: string;
+  projectId: string;
+  userId: string;
+  email: string;
+  displayName: string;
+  addedByUserId: string;
+  addedAt: string;
+}
+
+export interface AddProjectMemberRequest {
+  email: string;
+}
+
 // ---- Requirement pipeline (§6-§13) ----------------------------------------------------
 
 export const ARTIFACT_TYPE_LABELS: Record<number, string> = {

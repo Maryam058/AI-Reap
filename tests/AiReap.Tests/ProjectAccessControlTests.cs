@@ -92,4 +92,27 @@ public class ProjectAccessControlTests : IAsyncLifetime
         Assert.Equal(204, (await _creator.SendAsync(HttpMethod.Delete, $"/api/projects/{projectId}/members/{devUserId}")).Status);
         Assert.Equal(403, (await dev.GetAsync($"/api/projects/{projectId}")).Status);
     }
+
+    // The members endpoints resolve each raw UserId to an email/display name (ProjectsController,
+    // not the Application-layer ProjectMemberResponse) so the frontend's MembersPanel has something
+    // to show; this asserts that enrichment actually round-trips through both the add response and
+    // the subsequent list.
+    [Fact]
+    public async Task Member_responses_are_enriched_with_email_and_display_name()
+    {
+        var (ps, project) = await _creator.PostAsync("/api/projects", new { name = "Enrichment check" });
+        Assert.Equal(201, ps);
+        var projectId = Id(project);
+        var dev = await _host.RegisterAsync("Developer");
+
+        var (addStatus, added) = await _creator.PostAsync($"/api/projects/{projectId}/members", new { email = dev.Email });
+        Assert.InRange(addStatus, 200, 201);
+        Assert.Equal(dev.Email, added!["email"]!.GetValue<string>());
+        Assert.Equal("Developer", added!["displayName"]!.GetValue<string>()); // TestHost.RegisterAsync sets displayName = role
+
+        var list = (await _creator.GetAsync($"/api/projects/{projectId}/members")).Body!.AsArray();
+        var devEntry = list.Single(m => m!["userId"]!.GetValue<string>() == added["userId"]!.GetValue<string>());
+        Assert.Equal(dev.Email, devEntry!["email"]!.GetValue<string>());
+        Assert.Equal("Developer", devEntry!["displayName"]!.GetValue<string>());
+    }
 }

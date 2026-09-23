@@ -9,6 +9,7 @@ import { Tabs } from '../components/ui/Tabs';
 import { PhasePage, PlannedCard } from '../components/PhasePage';
 import { RequirementWorkspace, type WorkspaceView } from '../components/RequirementWorkspace';
 import { StakeholdersPanel } from '../components/StakeholdersPanel';
+import { MembersPanel } from '../components/MembersPanel';
 import { ProjectEditor, ProjectSummary } from '../components/ProjectForm';
 import { ConflictsPanel } from '../components/ConflictsPanel';
 import { TraceabilityMatrix } from '../components/TraceabilityMatrix';
@@ -38,14 +39,15 @@ function Workspace({ view }: { view: WorkspaceView }) {
 
 /* ------------------------------------------------------------------ 1. Gathering */
 
-type GatheringTab = 'context' | 'stakeholders' | 'sources';
+type GatheringTab = 'context' | 'stakeholders' | 'members' | 'sources';
 
 export function GatheringPage() {
   const { hasRole } = useAuth();
   const canManage = hasRole('Administrator') || hasRole('BusinessAnalyst');
   const [params, setParams] = useSearchParams();
   const requested = params.get('tab');
-  const tab: GatheringTab = requested === 'stakeholders' || requested === 'sources' ? requested : 'context';
+  const tab: GatheringTab =
+    requested === 'stakeholders' || requested === 'members' || requested === 'sources' ? requested : 'context';
   const { project } = useProject();
   const editing = useProjectEditing();
 
@@ -58,6 +60,7 @@ export function GatheringPage() {
         items={[
           { key: 'context', label: 'Project context' },
           { key: 'stakeholders', label: 'Stakeholders' },
+          { key: 'members', label: 'Members' },
           { key: 'sources', label: 'Requirement sources' },
         ]}
       />
@@ -86,6 +89,7 @@ export function GatheringPage() {
             </section>
           ))}
         {tab === 'stakeholders' && <StakeholdersPanel projectId={project.id} />}
+        {tab === 'members' && <MembersPanel projectId={project.id} />}
         {tab === 'sources' && <Workspace view="gathering" />}
       </div>
     </PhasePage>

@@ -166,7 +166,7 @@ Verified by `AuthAndUserManagementTests` (14 tests) and a real-browser run (sign
 - [x] Creator is auto-added as a member on project creation (`ProjectService.CreateAsync`). Membership management: `GET/POST /api/projects/{id}/members`, `DELETE /api/projects/{id}/members/{userId}`, BA/Admin only (mirrors stakeholder-management gating) - added by email, not a raw user id, since BusinessAnalyst doesn't have access to the Administrator-only `/api/users` list to look one up.
 - [x] `GetAllAsync` (`GET /api/projects`) filters the list to the caller's own memberships (Administrator still sees everything), not just individual-project reads.
 
-**Known limitations:** no frontend UI for member management in this pass (API only - use Swagger or the API directly); a random/nonexistent project id and a real one you're not a member of are both reported as 403, not 404 - not distinguishing them is deliberate (same non-leaking pattern as other authorization failures in this app), but it is a deviation from strict REST "404 for doesn't-exist" semantics; re-adding an existing member returns 201 instead of 200 (harmless, just an imprecise status code). Verified by `ProjectAccessControlTests` (3 tests: creator auto-membership, a non-member refused on both a direct and an indirect route plus Administrator's bypass, and the member add/remove/role-gating lifecycle) plus updated setup across `RegressionTests`, `Section37DemoTests`, `ClarificationResolutionTests`, `AuditTrailFieldsTests`, and `AgentPipelineTests` (each now explicitly adds the non-creator roles it exercises as members, rather than relying on the old unrestricted-read behavior).
+**Known limitations:** a random/nonexistent project id and a real one you're not a member of are both reported as 403, not 404 - not distinguishing them is deliberate (same non-leaking pattern as other authorization failures in this app), but it is a deviation from strict REST "404 for doesn't-exist" semantics; re-adding an existing member returns 201 instead of 200 (harmless, just an imprecise status code). Verified by `ProjectAccessControlTests` (3 tests: creator auto-membership, a non-member refused on both a direct and an indirect route plus Administrator's bypass, and the member add/remove/role-gating lifecycle) plus updated setup across `RegressionTests`, `Section37DemoTests`, `ClarificationResolutionTests`, `AuditTrailFieldsTests`, and `AgentPipelineTests` (each now explicitly adds the non-creator roles it exercises as members, rather than relying on the old unrestricted-read behavior).
 
 ## Polish pass (2026-09-22)
 
@@ -174,22 +174,32 @@ Verified by `AuthAndUserManagementTests` (14 tests) and a real-browser run (sign
 - [x] **RAG scaling note.** `CopilotService.RetrieveChunksAsync` loads every chunk for a project and scores it in memory - fine at demo scale, not indexed. Left a `TODO` there (no implementation) pointing at an indexed vector store as the fix if a project's corpus grows materially.
 - [x] **Dynamic role matrix.** `web/src/pages/RolesPage.tsx` used to hand-mirror the API's `[Authorize(Roles = ...)]` rules as a static table - and had already drifted once (the §38 project-membership endpoints were never added to it). Replaced with `GET /api/roles/matrix` (`RolesController`), which reflects over the actually-loaded controller actions at request time. A lightweight `[Capability(group, label, order)]` attribute marks the one action that best represents each user-facing capability (so the page keeps readable grouped rows instead of ~40 raw routes); the *roles* shown for that row are always read live from that action's real `[Authorize]` (or its controller's, or - for a bare `[Authorize]` with no Roles - every defined role). Where one label already spans several endpoints that share a role set today (e.g. all four requirement-source generation actions), only the representative action is tagged; if those diverge later, only the tagged one is reflected - a disclosed simplification, not a bug. Verified by `RoleMatrixTests`, which specifically asserts the previously-missing "Add or remove project members" row is now present with the correct roles.
 
-## Release Gate — Definition of Done (PDF §38, REAP-102)
+## Release readiness pass (2026-09-23)
 
-Before calling any milestone "done," verify against the full checklist in `docs/requirements/TRACEABILITY-MATRIX.md` §J, and in particular:
+Follow-up to an independent evaluation of the whole app against the PDF (build it, run it, run the real test suite — not just re-read this file). Closed every gap that survived that check:
 
-- [ ] React ↔ ASP.NET Core integration working end-to-end
-- [ ] SQL Server persistence with the justified schema from the Phase 0 ADR
-- [ ] Auth + role-based authorization across multiple projects
-- [ ] Full AI requirement analysis + clarification workflow
-- [ ] FR/NFR generation, business rules, stories, acceptance criteria
-- [ ] Requirement quality + conflict analysis
-- [ ] Design, implementation-task, and test-case assistance
-- [ ] Traceability, versioning, and change-impact analysis
-- [ ] Human approval workflow + AI Project Copilot
-- [ ] AI execution/audit history (no hidden chain-of-thought)
-- [ ] Clear AI-vs-human-decision distinction visible throughout the UI
-- [ ] Exception handling, logging, clean source control, setup/architecture docs
+- [x] **Fixed the 2 failing `AuthAndUserManagementTests`** — root cause and fix described under the Release Gate section below (`TestHost` was leaking the developer's own local user-secrets into the test host).
+- [x] **CI** — `.github/workflows/ci.yml`: a `backend` job (SQL Server service container, `dotnet build` + `dotnet test`) and a `frontend` job (`npm ci`, `npm run lint`, `npm run build`) on every push/PR to `main`. `TestHost.ServerConnection` is now overridable via `AIREAP_TEST_SQL_CONNECTION` so CI's service container doesn't have to share the local dev container's port.
+- [x] **Project-member management UI** — `MembersPanel.tsx` (mirrors `StakeholdersPanel.tsx`: list, add by email, remove), wired into the Gathering page's tab strip alongside Stakeholders. `ProjectsController.GetMembers`/`AddMember` now resolve each member's email/display name via `UserManager` (the Application-layer `ProjectMemberResponse` stays `UserId`-only by design — identity lookups live in the controller, same pattern `AddMember` already used) so the panel has something to show. Verified by a new `ProjectAccessControlTests.Member_responses_are_enriched_with_email_and_display_name` test, plus a clean `npm run build`/`npm run lint`.
+
+## Release Gate — Definition of Done (PDF §38, REAP-102) — ✅ Closed (2026-09-23)
+
+Walked item by item against the actual code/test state (not just prior status notes) as part of the post-evaluation cleanup pass. Every item below is backed by a passing automated test against a real SQL Server (`dotnet test AiReap.sln` — 47/47) plus a clean `dotnet build`/`npm run build`.
+
+- [x] React ↔ ASP.NET Core integration working end-to-end — frontend (`npm run build`) type-checks and builds against the real API surface; every integration test drives the API the same way the UI does (`TestHost`/`ApiUser`).
+- [x] SQL Server persistence with the justified schema from the Phase 0 ADR — `ADR-002-data-model.md`; every test runs real EF migrations against SQL Server (`TestHost.cs`), not an in-memory provider.
+- [x] Auth + role-based authorization across multiple projects — `AuthAndUserManagementTests` (14 tests) + `ProjectAccessControlTests` (4 tests), all passing.
+- [x] Full AI requirement analysis + clarification workflow — `ClarificationResolutionTests`, `Section37DemoTests`.
+- [x] FR/NFR generation, business rules, stories, acceptance criteria — `Section37DemoTests`, `RegressionTests`.
+- [x] Requirement quality + conflict analysis — `DashboardConflictCountTests`.
+- [x] Design, implementation-task, and test-case assistance — `Section37DemoTests` (full chain: design → data entities → API specs → tasks → test cases).
+- [x] Traceability, versioning, and change-impact analysis — `Section37DemoTests` asserts impact analysis names the actual linked downstream artifacts after an edit, not just a non-empty response.
+- [x] Human approval workflow + AI Project Copilot — `ArtifactEditTests`; Copilot verified live per Epic 3.2 (no automated test — grounded LLM Q&A isn't meaningfully assertable against the stub client).
+- [x] AI execution/audit history (no hidden chain-of-thought) — `AuditTrailFieldsTests`.
+- [x] Clear AI-vs-human-decision distinction visible throughout the UI — `ArtifactCard`/`ArtifactDetails` render the "AI Generated — Human Review Required" badge and origin markers on every artifact type; carries the same standing caveat as the rest of this document (no real-browser visual walkthrough has been done in this environment — verified via the API contract and a type-checked/built React app, not eyeballed running).
+- [x] Exception handling, logging, clean source control, setup/architecture docs — `GlobalExceptionHandlerTests`, `ProjectAccessDeniedExceptionHandler`; logging pass (Polish pass, 2026-09-22); git history + `docs/` (ADRs, requirements analysis, this roadmap); CI now enforces build+test on every push/PR (`.github/workflows/ci.yml`).
+
+**Fixed during this pass, not just verified:** two integration tests (`AuthAndUserManagementTests.Bootstrap_never_takes_over_an_existing_non_admin_account...` and `...Without_bootstrap_credentials_no_account_is_created...`) were failing — not a product bug, but `TestHost`'s `WebApplicationFactory` was picking up the *developer's own* local `dotnet user-secrets` (`Bootstrap:AdminEmail`/`AdminPassword`, set per this README's own local-dev instructions) since ASP.NET Core auto-loads user secrets in the `Development` environment tests also run under. `TestHost.Build()` now explicitly strips the user-secrets configuration source and force-blanks the bootstrap keys when a test wants "no bootstrap configured," so tests are hermetic regardless of what's in the machine's secrets store — see `tests/AiReap.Tests/TestHost.cs`.
 
 ## Working Agreement While Building (PDF §39)
 

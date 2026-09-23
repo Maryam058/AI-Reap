@@ -8,6 +8,8 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Configuration.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -48,7 +50,12 @@ public class ControllableAiChatClient : IAiChatClient
 // (so the migrations themselves are under test). Two hosts can share one database to simulate a restart.
 public class TestHost : IAsyncDisposable
 {
-    public const string ServerConnection = "Server=127.0.0.1,14330;User Id=sa;Password=AiReap!DevPassw0rd;TrustServerCertificate=True";
+    // Overridable so CI can point at its own SQL Server service container (a different host/port
+    // than the local Docker dev container) without editing source. Local dev workflow is unchanged:
+    // no env var set -> same hardcoded default as before.
+    public static readonly string ServerConnection =
+        Environment.GetEnvironmentVariable("AIREAP_TEST_SQL_CONNECTION")
+        ?? "Server=127.0.0.1,14330;User Id=sa;Password=AiReap!DevPassw0rd;TrustServerCertificate=True";
 
     public string DatabaseName { get; }
     public string ConnectionString => $"{ServerConnection};Database={DatabaseName}";
@@ -83,11 +90,35 @@ public class TestHost : IAsyncDisposable
         new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
             b.UseEnvironment("Development"); // seeds roles, same as a real dev run
+
+            // The "Development" environment auto-loads the developer's own `dotnet user-secrets`
+            // for AiReap.Api (UserSecretsId "AiReap.Api"), which can carry a real Bootstrap:AdminEmail/
+            // AdminPassword for manual local testing. Left in place, that leaks into every test host
+            // regardless of what this class configures below, silently creating/promoting an
+            // administrator the test never asked for. Strip it so tests only ever see what TestHost
+            // itself sets - the same isolation a CI machine (with no user secrets at all) gets for free.
+            b.ConfigureAppConfiguration((_, config) =>
+            {
+                var userSecretsSources = config.Sources
+                    .OfType<JsonConfigurationSource>()
+                    .Where(s => s.Path?.Contains("UserSecrets", StringComparison.OrdinalIgnoreCase) == true)
+                    .ToList();
+                foreach (var source in userSecretsSources) config.Sources.Remove(source);
+            });
+
             b.UseSetting("ConnectionStrings:Default", ConnectionString);
             if (_bootstrap)
             {
                 b.UseSetting("Bootstrap:AdminEmail", AdminEmail);
                 b.UseSetting("Bootstrap:AdminPassword", AdminPassword);
+            }
+            else
+            {
+                // Explicitly blank, not just "not set" - guarantees no ambient config (env vars,
+                // machine-wide config, etc.) can supply bootstrap credentials for a test that
+                // specifically wants "no bootstrap configured" behavior.
+                b.UseSetting("Bootstrap:AdminEmail", "");
+                b.UseSetting("Bootstrap:AdminPassword", "");
             }
             b.ConfigureServices(s =>
             {

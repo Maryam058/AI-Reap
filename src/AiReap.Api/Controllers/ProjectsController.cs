@@ -121,14 +121,32 @@ public class ProjectsController : ControllerBase
     // §38 DoD — project membership (access control). BA/Admin only, mirrors stakeholder-management
     // gating. Added by email, not a raw user id: BusinessAnalyst doesn't have access to the
     // Administrator-only /api/users list to look one up.
+    //
+    // ProjectMemberResponse (Application layer) only carries the raw UserId - Application never
+    // depends on Identity (see IProjectService's own comment: identity lookups happen here in the
+    // controller, same as AddMember below). This action resolves each member's email/display name
+    // via UserManager so the UI can show something meaningful instead of a bare user id.
     [HttpGet("{projectId:guid}/members")]
-    public async Task<ActionResult<IReadOnlyList<ProjectMemberResponse>>> GetMembers(Guid projectId, CancellationToken cancellationToken) =>
-        Ok(await _projectService.GetMembersAsync(projectId, cancellationToken));
+    public async Task<ActionResult<IReadOnlyList<ProjectMemberDetailResponse>>> GetMembers(Guid projectId, CancellationToken cancellationToken)
+    {
+        var members = await _projectService.GetMembersAsync(projectId, cancellationToken);
+        var responses = new List<ProjectMemberDetailResponse>(members.Count);
+        foreach (var member in members)
+        {
+            var user = await _userManager.FindByIdAsync(member.UserId);
+            responses.Add(new ProjectMemberDetailResponse(
+                member.Id, member.ProjectId, member.UserId,
+                user?.Email ?? "(deleted user)", user?.DisplayName ?? "(deleted user)",
+                member.AddedByUserId, member.AddedAt));
+        }
+
+        return Ok(responses);
+    }
 
     [HttpPost("{projectId:guid}/members")]
     [Authorize(Roles = $"{Roles.Administrator},{Roles.BusinessAnalyst}")]
     [Capability("Author", "Add or remove project members", 35)]
-    public async Task<ActionResult<ProjectMemberResponse>> AddMember(Guid projectId, AddProjectMemberRequest request, CancellationToken cancellationToken)
+    public async Task<ActionResult<ProjectMemberDetailResponse>> AddMember(Guid projectId, AddProjectMemberRequest request, CancellationToken cancellationToken)
     {
         var user = await _userManager.FindByEmailAsync(request.Email);
         if (user is null)
@@ -137,7 +155,15 @@ public class ProjectsController : ControllerBase
         }
 
         var member = await _projectService.AddMemberAsync(projectId, user.Id, cancellationToken);
-        return member is null ? NotFound() : CreatedAtAction(nameof(GetMembers), new { projectId }, member);
+        if (member is null)
+        {
+            return NotFound();
+        }
+
+        var response = new ProjectMemberDetailResponse(
+            member.Id, member.ProjectId, member.UserId, user.Email ?? request.Email, user.DisplayName,
+            member.AddedByUserId, member.AddedAt);
+        return CreatedAtAction(nameof(GetMembers), new { projectId }, response);
     }
 
     [HttpDelete("{projectId:guid}/members/{userId}")]
@@ -148,3 +174,8 @@ public class ProjectsController : ControllerBase
         return removed ? NoContent() : NotFound();
     }
 }
+
+// API-layer only (depends on Identity for Email/DisplayName) - the Application-layer
+// ProjectMemberResponse stays UserId-only on purpose; see the comment on GetMembers above.
+public record ProjectMemberDetailResponse(
+    Guid Id, Guid ProjectId, string UserId, string Email, string DisplayName, string AddedByUserId, DateTime AddedAt);
