@@ -7,3 +7,13 @@
 
   ➜  Local:   http://localhost:5173/
   ➜  Network: use --host to expose
+10:42:51 AM [vite] (client) hmr update /src/pages/DashboardPage.tsx, /src/pages/PhasePages.tsx, /src/pages/UsersPage.tsx, /src/pages/RolesPage.tsx, /src/components/Layout.tsx, /src/pages/ProjectsPage.tsx, /src/pages/ProjectOverviewPage.tsx, /src/components/ProjectCard.tsx, /src/components/Sidebar.tsx, /src/components/ProjectActionsMenu.tsx, /src/components/SdlcStepper.tsx, /src/components/PhasePage.tsx, /src/components/TraceabilityMatrix.tsx, /src/components/RequirementWorkspace.tsx, /src/components/ArtifactCard.tsx and 2 more
+10:42:56 AM [vite] (client) hmr update /src/pages/ProjectsPage.tsx, /src/pages/DashboardPage.tsx, /src/pages/ProjectFormPages.tsx, /src/pages/AuditLogsPage.tsx, /src/components/ProjectActionsMenu.tsx, /src/pages/ProjectOverviewPage.tsx, /src/pages/PhasePages.tsx, /src/components/StakeholdersPanel.tsx, /src/components/ConflictsPanel.tsx
+10:42:56 AM [vite] (client) hmr invalidate /src/pages/ProjectFormPages.tsx Could not Fast Refresh ("useProjectEditing" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+10:42:56 AM [vite] (client) hmr update /src/App.tsx, /src/pages/PhasePages.tsx
+10:43:01 AM [vite] (client) hmr update /src/pages/ProjectsPage.tsx, /src/pages/DashboardPage.tsx, /src/pages/ProjectFormPages.tsx, /src/pages/AuditLogsPage.tsx, /src/components/ProjectActionsMenu.tsx, /src/pages/ProjectOverviewPage.tsx, /src/pages/PhasePages.tsx, /src/components/StakeholdersPanel.tsx, /src/components/ConflictsPanel.tsx
+10:43:01 AM [vite] (client) hmr invalidate /src/pages/ProjectFormPages.tsx Could not Fast Refresh ("useProjectEditing" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+10:43:01 AM [vite] (client) hmr update /src/App.tsx, /src/pages/PhasePages.tsx
+10:43:34 AM [vite] (client) hmr update /src/pages/PhasePages.tsx
+10:43:43 AM [vite] (client) hmr update /src/pages/PhasePages.tsx
+10:43:47 AM [vite] (client) hmr update /src/pages/PhasePages.tsx
