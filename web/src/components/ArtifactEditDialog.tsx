@@ -4,8 +4,9 @@ import { TextField } from './ui/TextField';
 import { TextArea } from './ui/TextArea';
 import { IconX } from './icons';
 import { artifactsApi } from '../api/artifacts';
-import { ApiError } from '../api/client';
+import { apiErrorText } from '../lib/errors';
 import {
+  ARTIFACT_STATUS,
   ARTIFACT_TYPE_VALUES,
   type AcceptanceCriterionData,
   type ApiSpecificationData,
@@ -46,6 +47,12 @@ export function ArtifactEditDialog({ artifact, token, onClose, onSaved }: Props)
 
   const set = (key: string, value: unknown) => setData((d) => ({ ...d, [key]: value }));
 
+  // §22/§24 — editing signed-off content never keeps the sign-off.
+  const isApproved =
+    artifact.status === ARTIFACT_STATUS.Approved ||
+    artifact.status === ARTIFACT_STATUS.Implemented ||
+    artifact.status === ARTIFACT_STATUS.Verified;
+
   const onSubmit = async () => {
     setSaving(true);
     setError(null);
@@ -54,7 +61,7 @@ export function ArtifactEditDialog({ artifact, token, onClose, onSaved }: Props)
       onSaved();
       onClose();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not save changes.');
+      setError(apiErrorText(err, 'Could not save changes.'));
     } finally {
       setSaving(false);
     }
@@ -78,6 +85,12 @@ export function ArtifactEditDialog({ artifact, token, onClose, onSaved }: Props)
       }
     >
       {error && <p className="error">{error}</p>}
+      {isApproved && (
+        <p className="artifact-review-note">
+          This artifact is approved. Saving creates v{artifact.currentVersion + 1} in "Under Review" — it must be approved
+          again — and flags the artifacts derived from it for review. The approved v{artifact.currentVersion} stays in history.
+        </p>
+      )}
       <TextField label="Title" value={title} onChange={setTitle} />
       <TypeFields artifactType={artifact.artifactType} data={data} set={set} />
       <TextField label="Reason for this change (optional)" value={reason} onChange={setReason} placeholder="Why is this being edited?" />

@@ -2,6 +2,8 @@ using System.Text.Json;
 using AiReap.Application.Artifacts.Payloads;
 using AiReap.Application.Common;
 using AiReap.Application.Persistence;
+using AiReap.Application.Traceability;
+using AiReap.Domain.Common;
 using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
@@ -13,12 +15,14 @@ public class ArtifactService : IArtifactService
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
     private readonly IProjectAccessService _projectAccess;
+    private readonly IImpactAnalysisService _impactAnalysis;
 
-    public ArtifactService(IAiReapDbContext db, ICurrentUser currentUser, IProjectAccessService projectAccess)
+    public ArtifactService(IAiReapDbContext db, ICurrentUser currentUser, IProjectAccessService projectAccess, IImpactAnalysisService impactAnalysis)
     {
         _db = db;
         _currentUser = currentUser;
         _projectAccess = projectAccess;
+        _impactAnalysis = impactAnalysis;
     }
 
     public async Task<IReadOnlyList<ArtifactResponse>> GetForProjectAsync(
@@ -37,7 +41,16 @@ public class ArtifactService : IArtifactService
         }
 
         var artifacts = await query.OrderBy(a => a.Code).ToListAsync(cancellationToken);
-        return artifacts.Select(ToResponse).ToList();
+
+        var openNotices = await _db.ArtifactImpactNotices
+            .Where(n => n.ProjectId == projectId && n.AcknowledgedAt == null)
+            .GroupBy(n => n.AffectedArtifactId)
+            .Select(g => new { g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.Key, x => x.Count, cancellationToken);
+
+        return artifacts
+            .Select(a => ToResponse(a) with { OpenImpactNoticeCount = openNotices.GetValueOrDefault(a.Id) })
+            .ToList();
     }
 
     public async Task<ArtifactResponse?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
@@ -49,7 +62,8 @@ public class ArtifactService : IArtifactService
         }
 
         await _projectAccess.EnsureMemberAsync(artifact.ProjectId, cancellationToken);
-        return ToResponse(artifact);
+        var openNotices = await _db.ArtifactImpactNotices.CountAsync(n => n.AffectedArtifactId == id && n.AcknowledgedAt == null, cancellationToken);
+        return ToResponse(artifact) with { OpenImpactNoticeCount = openNotices };
     }
 
     public async Task<ArtifactResponse?> UpdateAsync(Guid id, UpdateArtifactRequest request, CancellationToken cancellationToken = default)
@@ -62,9 +76,25 @@ public class ArtifactService : IArtifactService
 
         await _projectAccess.EnsureMemberAsync(artifact.ProjectId, cancellationToken);
 
+        if (request.Title is not null && string.IsNullOrWhiteSpace(request.Title))
+        {
+            throw new RequestValidationException("Title cannot be empty.");
+        }
+
+        var newData = request.Data?.GetRawText();
+        var changed = (request.Title is not null && request.Title != artifact.Title)
+            || (request.Priority is not null && request.Priority != artifact.Priority)
+            || (newData is not null && newData != artifact.DataJson);
+
+        // Nothing actually differs - don't mint an empty version, and don't drop an approval over it.
+        if (!changed)
+        {
+            return ToResponse(artifact);
+        }
+
         if (request.Title is not null)
         {
-            artifact.Title = request.Title;
+            artifact.Title = request.Title.Trim();
         }
 
         if (request.Priority is not null)
@@ -72,13 +102,39 @@ public class ArtifactService : IArtifactService
             artifact.Priority = request.Priority;
         }
 
-        if (request.Data is not null)
+        if (newData is not null)
         {
-            artifact.DataJson = request.Data.Value.GetRawText();
+            artifact.DataJson = newData;
         }
 
-        await SaveNewVersionAsync(artifact, request.Reason, ArtifactOrigin.Human, cancellationToken);
+        await ApplyHumanContentChangeAsync(artifact, request.Reason, cancellationToken);
         return ToResponse(artifact);
+    }
+
+    // §22/§24 — approved content is never changed in place under its approval. The edit becomes a
+    // new version in UnderReview; the approved version stays intact in ArtifactVersions (with its
+    // Approved status snapshot) and Artifact.ApprovedVersion keeps pointing at it until a reviewer
+    // approves the new one.
+    //
+    // Changing approved content also raises §22 impact notices on everything downstream (stories,
+    // criteria, APIs, entities, tasks, tests) - flagged for review, never modified.
+    private async Task ApplyHumanContentChangeAsync(Artifact artifact, string? reason, CancellationToken cancellationToken)
+    {
+        var wasApproved = ArtifactStatusTransitions.IsApprovedOrLater(artifact.Status);
+        if (wasApproved)
+        {
+            artifact.Status = ArtifactStatus.UnderReview;
+            reason = string.IsNullOrWhiteSpace(reason)
+                ? $"Edited after approval of v{artifact.ApprovedVersion ?? artifact.CurrentVersion}; re-review required"
+                : $"{reason} (edited after approval of v{artifact.ApprovedVersion ?? artifact.CurrentVersion}; re-review required)";
+        }
+
+        await SaveNewVersionAsync(artifact, reason, ArtifactOrigin.Human, cancellationToken);
+
+        if (wasApproved)
+        {
+            await _impactAnalysis.RaiseNoticesForChangeAsync(artifact, cancellationToken);
+        }
     }
 
     public async Task<ArtifactResponse?> UpdateStatusAsync(Guid id, UpdateArtifactStatusRequest request, CancellationToken cancellationToken = default)
@@ -91,12 +147,21 @@ public class ArtifactService : IArtifactService
 
         await _projectAccess.EnsureMemberAsync(artifact.ProjectId, cancellationToken);
 
+        // Throws InvalidArtifactStatusTransitionException (-> 409) for anything off the state machine,
+        // including Implemented/Verified, which only the system derives.
+        ArtifactStatusTransitions.EnsureHumanTransition(artifact.Status, request.Status);
+
         artifact.Status = request.Status;
         artifact.UpdatedByUserId = _currentUser.UserId;
         artifact.UpdatedAt = DateTime.UtcNow;
 
-        // §24 — Approved/Rejected are review decisions; other transitions (UnderReview,
-        // Implemented, Verified) are workflow progress without a formal review record.
+        if (request.Status == ArtifactStatus.Approved)
+        {
+            artifact.ApprovedVersion = artifact.CurrentVersion;
+        }
+
+        // §24 — Approved/Rejected are review decisions; other transitions (UnderReview, Draft)
+        // are workflow progress without a formal review record.
         if (request.Status is ArtifactStatus.Approved or ArtifactStatus.Rejected)
         {
             _db.ArtifactReviews.Add(new ArtifactReview
@@ -106,7 +171,8 @@ public class ArtifactService : IArtifactService
                 ReviewerUserId = _currentUser.UserId,
                 Decision = request.Status == ArtifactStatus.Approved ? ReviewDecision.Approved : ReviewDecision.Rejected,
                 Comment = request.Comment,
-                ReviewedAt = DateTime.UtcNow
+                ReviewedAt = DateTime.UtcNow,
+                VersionNumber = artifact.CurrentVersion
             });
 
             // §27 — link the human decision back to the AI execution(s) that produced this
@@ -133,10 +199,9 @@ public class ArtifactService : IArtifactService
         // Epic 3.4/REAP-074: Implemented/Verified aren't reviewer decisions - they're derived
         // automatically from real downstream state (linked tasks/test cases being approved),
         // the only "completion signal" this platform actually has (it doesn't run code or
-        // tests itself). Only approving a Task or TestCase can trigger a promotion; there's no
-        // demotion if a task/test is later un-approved - that would need a real state machine
-        // for artifacts, which doesn't exist today, so it's left as a known limitation rather
-        // than half-built.
+        // tests itself). Only approving a Task or TestCase can trigger a promotion, and only along
+        // ArtifactStatusTransitions.CanSystemPromote. There's no automatic demotion if a task/test
+        // is later un-approved (known limitation); a reviewer can reopen the FR (-> UnderReview).
         if (request.Status == ArtifactStatus.Approved && artifact.ArtifactType is ArtifactType.ImplementationTask or ArtifactType.TestCase)
         {
             await PromoteLinkedFunctionalRequirementsAsync(artifact, cancellationToken);
@@ -177,7 +242,8 @@ public class ArtifactService : IArtifactService
                     .ToListAsync(cancellationToken);
                 var tasks = await _db.Artifacts.Where(a => taskIds.Contains(a.Id)).ToListAsync(cancellationToken);
 
-                if (tasks.Count > 0 && tasks.All(t => t.Status == ArtifactStatus.Approved))
+                if (tasks.Count > 0 && tasks.All(t => t.Status == ArtifactStatus.Approved)
+                    && ArtifactStatusTransitions.CanSystemPromote(fr.Status, ArtifactStatus.Implemented))
                 {
                     fr.Status = ArtifactStatus.Implemented;
                     fr.UpdatedAt = DateTime.UtcNow;
@@ -193,7 +259,8 @@ public class ArtifactService : IArtifactService
                     .ToListAsync(cancellationToken);
                 var testCases = await _db.Artifacts.Where(a => testCaseIds.Contains(a.Id)).ToListAsync(cancellationToken);
 
-                if (testCases.Count > 0 && testCases.All(t => t.Status == ArtifactStatus.Approved))
+                if (testCases.Count > 0 && testCases.All(t => t.Status == ArtifactStatus.Approved)
+                    && ArtifactStatusTransitions.CanSystemPromote(fr.Status, ArtifactStatus.Verified))
                 {
                     fr.Status = ArtifactStatus.Verified;
                     fr.UpdatedAt = DateTime.UtcNow;
@@ -223,9 +290,13 @@ public class ArtifactService : IArtifactService
             return;
         }
 
+        // Part of the approval itself (the reviewer approved the answer), so this version keeps the
+        // Approved status and becomes the approved version.
         payload.ClarificationStatus = "Resolved";
         artifact.DataJson = JsonSerializer.Serialize(payload);
         await SaveNewVersionAsync(artifact, "Clarification approved as resolved", ArtifactOrigin.Human, cancellationToken);
+        artifact.ApprovedVersion = artifact.CurrentVersion;
+        await _db.SaveChangesAsync(cancellationToken);
     }
 
     public async Task<ArtifactResponse?> AnswerClarificationAsync(Guid id, ClarificationAnswerRequest request, CancellationToken cancellationToken = default)
@@ -245,7 +316,7 @@ public class ArtifactService : IArtifactService
         payload.ClarificationStatus = request.NotApplicable ? "NotApplicable" : "Answered";
         artifact.DataJson = JsonSerializer.Serialize(payload);
 
-        await SaveNewVersionAsync(artifact, "Clarification answered", ArtifactOrigin.Human, cancellationToken);
+        await ApplyHumanContentChangeAsync(artifact, "Clarification answered", cancellationToken);
         return ToResponse(artifact);
     }
 
@@ -264,7 +335,21 @@ public class ArtifactService : IArtifactService
             v.ChangedByUserId,
             v.ChangedAt,
             v.Reason,
-            v.Origin)).ToList();
+            v.Origin,
+            v.Title,
+            v.Priority,
+            v.Status)).ToList();
+    }
+
+    public async Task<IReadOnlyList<ArtifactReviewResponse>> GetReviewsAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        await EnsureAccessToArtifactAsync(id, cancellationToken);
+
+        return await _db.ArtifactReviews
+            .Where(r => r.ArtifactId == id)
+            .OrderByDescending(r => r.ReviewedAt)
+            .Select(r => new ArtifactReviewResponse(r.Id, r.ReviewerUserId, r.Decision, r.Comment, r.ReviewedAt, r.VersionNumber))
+            .ToListAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyList<ArtifactRelationshipResponse>> GetRelationshipsAsync(Guid id, CancellationToken cancellationToken = default)
@@ -312,6 +397,9 @@ public class ArtifactService : IArtifactService
             ArtifactId = artifact.Id,
             VersionNumber = artifact.CurrentVersion,
             DataSnapshotJson = artifact.DataJson,
+            Title = artifact.Title,
+            Priority = artifact.Priority,
+            Status = artifact.Status,
             ChangedByUserId = _currentUser.UserId,
             ChangedAt = DateTime.UtcNow,
             Reason = reason,

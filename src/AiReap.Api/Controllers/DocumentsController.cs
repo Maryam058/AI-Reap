@@ -54,6 +54,15 @@ public class DocumentsController : ControllerBase
         return CreatedAtAction(nameof(GetForProject), new { projectId }, created);
     }
 
+    // §26 — re-embed chunks indexed with an older/different embedding model (e.g. before the
+    // Gemini key was configured). Idempotent; returns how many chunks were updated.
+    [HttpPost("api/projects/{projectId:guid}/documents/reindex")]
+    [Authorize(Roles = WriterRoles)]
+    public async Task<ActionResult<object>> Reindex(Guid projectId, CancellationToken cancellationToken)
+    {
+        return Ok(new { reindexedChunks = await _documents.ReindexAsync(projectId, cancellationToken) });
+    }
+
     [HttpGet("api/projects/{projectId:guid}/documents")]
     public async Task<ActionResult<IReadOnlyList<DocumentResponse>>> GetForProject(Guid projectId, CancellationToken cancellationToken)
     {

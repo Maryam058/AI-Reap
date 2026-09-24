@@ -66,8 +66,12 @@ public class AiChatClientSelectionTests
     // key looks like, without being one.
     private const string PlausibleRealKey = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
+    // A syntactically plausible Gemini key ("AIza" + 35 chars) that is not a real key.
+    private const string PlausibleGeminiKey = "AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    // Gemini is now the default provider; the Anthropic-specific tests below pin "Anthropic" explicitly.
     private static (ServiceProvider Provider, CapturingLoggerProvider Logs) BuildProvider(
-        string? apiKey, string environmentName, string? aiProvider = null)
+        string? apiKey, string environmentName, string? aiProvider = "Anthropic", string? geminiKey = null)
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -76,6 +80,7 @@ public class AiChatClientSelectionTests
                 ["Ai:Provider"] = aiProvider,
                 ["Ai:Anthropic:ApiKey"] = apiKey,
                 ["Ai:Anthropic:Model"] = "claude-sonnet-5",
+                ["Ai:Gemini:ApiKey"] = geminiKey,
             })
             .Build();
 
@@ -128,7 +133,7 @@ public class AiChatClientSelectionTests
 
         var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
 
-        Assert.IsType<AnthropicAiChatClient>(client);
+        Assert.IsType<AnthropicAiChatClient>(Assert.IsType<ResilientAiChatClient>(client).Inner);
     }
 
     [Theory]
@@ -179,7 +184,7 @@ public class AiChatClientSelectionTests
 
         var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
 
-        Assert.IsType<OllamaAiChatClient>(client);
+        Assert.IsType<OllamaAiChatClient>(Assert.IsType<ResilientAiChatClient>(client).Inner);
     }
 
     [Fact]
@@ -191,19 +196,103 @@ public class AiChatClientSelectionTests
 
         var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
 
-        Assert.IsType<AnthropicAiChatClient>(client);
+        Assert.IsType<AnthropicAiChatClient>(Assert.IsType<ResilientAiChatClient>(client).Inner);
     }
 
     [Fact]
     public async Task AddInfrastructure_throws_a_clear_error_when_Ai_Provider_is_unrecognized()
     {
-        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Development, aiProvider: "Gemini");
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Development, aiProvider: "SomeOtherVendor");
         await using var _ = provider;
         using var scope = provider.CreateScope();
 
         var ex = Assert.Throws<InvalidOperationException>(() => scope.ServiceProvider.GetRequiredService<IAiChatClient>());
 
         Assert.Contains("Ai:Provider", ex.Message);
-        Assert.Contains("Gemini", ex.Message);
+        Assert.Contains("SomeOtherVendor", ex.Message);
+    }
+
+    // ---- Gemini (the default provider) -------------------------------------------------------
+
+    [Theory]
+    [InlineData(null)]          // Ai:Provider unset -> Gemini is the default
+    [InlineData("Gemini")]
+    [InlineData("gemini")]
+    public async Task AddInfrastructure_uses_the_gemini_client_by_default_when_a_key_is_configured(string? aiProvider)
+    {
+        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider, geminiKey: PlausibleGeminiKey);
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
+
+        var resilient = Assert.IsType<ResilientAiChatClient>(client);
+        Assert.IsType<GeminiAiChatClient>(resilient.Inner);
+        Assert.Equal("gemini-3.6-flash", client.ModelName);
+    }
+
+    [Fact]
+    public void Shipped_appsettings_resolve_to_gemini_3_6_flash_without_any_committed_api_key()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "src", "AiReap.Api", "appsettings.json")))
+        {
+            directory = directory.Parent;
+        }
+        Assert.NotNull(directory);
+
+        var configuration = new ConfigurationBuilder()
+            .AddJsonFile(Path.Combine(directory!.FullName, "src", "AiReap.Api", "appsettings.json"), optional: false)
+            .Build();
+        var gemini = configuration.GetSection(GeminiOptions.SectionName).Get<GeminiOptions>()!;
+
+        Assert.Equal("Gemini", configuration["Ai:Provider"]);
+        Assert.Equal("gemini-3.6-flash", gemini.Model);
+        Assert.Equal("low", gemini.ThinkingLevel);
+        // Gemini 3 rejects thinkingLevel + thinkingBudget together, and advises against low temperatures.
+        Assert.Null(gemini.ThinkingBudget);
+        Assert.Null(gemini.Temperature);
+        // The key only ever comes from user-secrets or Ai__Gemini__ApiKey.
+        Assert.True(string.IsNullOrEmpty(gemini.ApiKey));
+    }
+
+    [Theory]
+    [InlineData("Development")]
+    [InlineData("Testing")]
+    public async Task AddInfrastructure_uses_the_stub_for_gemini_in_dev_and_test_when_no_key_is_configured(string environmentName)
+    {
+        var (provider, logs) = BuildProvider(apiKey: null, environmentName, aiProvider: "Gemini");
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        Assert.IsType<StubAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+        Assert.Contains(logs.Messages, m => m.Contains("Gemini API key not configured; using development AI stub."));
+    }
+
+    [Fact]
+    public async Task Missing_gemini_key_outside_development_never_falls_back_to_the_stub_and_fails_calls_as_not_configured()
+    {
+        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider: "Gemini");
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
+        Assert.IsNotType<StubAiChatClient>(client);
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("system", "user"));
+        Assert.Equal(AiFailureKind.NotConfigured, ex.Kind);
+        Assert.Contains("Ai:Gemini:ApiKey", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("AIza...", false)]
+    [InlineData("your-gemini-api-key-goes-here-please-xx", false)]
+    [InlineData("short", false)]
+    [InlineData(PlausibleGeminiKey, true)]
+    public void Gemini_HasUsableApiKey_rejects_blank_and_placeholder_keys(string? apiKey, bool expected)
+    {
+        Assert.Equal(expected, new GeminiOptions { ApiKey = apiKey ?? string.Empty }.HasUsableApiKey);
     }
 }

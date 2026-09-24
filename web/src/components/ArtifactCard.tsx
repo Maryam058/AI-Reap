@@ -4,6 +4,7 @@ import { ArtifactEditDialog } from './ArtifactEditDialog';
 import { IconCheck, IconEdit, IconSparkles, IconX } from './icons';
 import {
   ARTIFACT_PRIORITY_LABELS,
+  ARTIFACT_STATUS,
   ARTIFACT_STATUS_LABELS,
   ARTIFACT_TYPE_VALUES,
   type AcceptanceCriterionData,
@@ -28,6 +29,8 @@ interface Props {
   token: string | null;
   onApprove: (id: string) => Promise<void>;
   onReject: (id: string) => Promise<void>;
+  // §24 — the other human workflow moves (submit for review, return to draft, reopen review).
+  onChangeStatus?: (id: string, status: number) => Promise<void>;
   onSaved: () => void;
   onGenerateAcceptanceCriteria?: (userStoryId: string) => Promise<void>;
   onGenerateTestCases?: (functionalRequirementId: string) => Promise<void>;
@@ -69,6 +72,7 @@ export function ArtifactCard({
   token,
   onApprove,
   onReject,
+  onChangeStatus,
   onSaved,
   onGenerateAcceptanceCriteria,
   onGenerateTestCases,
@@ -76,7 +80,17 @@ export function ArtifactCard({
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
 
-  const isPending = artifact.status === 0 || artifact.status === 1 || artifact.status === 2;
+  // Mirrors the backend state machine (ArtifactStatusTransitions): a reviewer decides on AI-generated
+  // or under-review content; a draft must be submitted first; approved-or-later work can be reopened.
+  const status = artifact.status;
+  const canDecide = status === ARTIFACT_STATUS.AiGenerated || status === ARTIFACT_STATUS.UnderReview;
+  const canSubmit = status === ARTIFACT_STATUS.Draft || status === ARTIFACT_STATUS.Rejected;
+  const canReturnToDraft = status === ARTIFACT_STATUS.UnderReview || status === ARTIFACT_STATUS.Rejected;
+  const isApprovedOrLater =
+    status === ARTIFACT_STATUS.Approved || status === ARTIFACT_STATUS.Implemented || status === ARTIFACT_STATUS.Verified;
+  const editedAfterApproval =
+    status === ARTIFACT_STATUS.UnderReview && artifact.approvedVersion != null && artifact.approvedVersion < artifact.currentVersion;
+  const openNotices = artifact.openImpactNoticeCount ?? 0;
   const isAiOrigin = artifact.origin === 0;
   const isEditable = canEdit && artifact.artifactType !== ARTIFACT_TYPE_VALUES.ClarificationQuestion;
 
@@ -104,8 +118,19 @@ export function ArtifactCard({
             {ARTIFACT_STATUS_LABELS[artifact.status]}
           </span>
           {isAiOrigin && <span className="ai-badge">AI Generated</span>}
+          {openNotices > 0 && (
+            <span className="status-pill tone-warning" title="An upstream artifact this depends on changed after approval. Review it and acknowledge the notice below.">
+              Upstream changed — review
+            </span>
+          )}
         </span>
       </div>
+
+      {editedAfterApproval && (
+        <p className="artifact-review-note">
+          Edited after approval: v{artifact.currentVersion} needs re-review. The approved content is preserved as v{artifact.approvedVersion} in the history.
+        </p>
+      )}
 
       <div className="artifact-body">
         {artifact.artifactType === ARTIFACT_TYPE_VALUES.FunctionalRequirement && (
@@ -147,7 +172,7 @@ export function ArtifactCard({
             Edit
           </button>
         )}
-        {canReview && isPending && (
+        {canReview && canDecide && (
           <>
             <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => act(onApprove)}>
               <IconCheck width={14} height={14} />
@@ -158,6 +183,24 @@ export function ArtifactCard({
               Reject
             </button>
           </>
+        )}
+        {canReview && onChangeStatus && canSubmit && (
+          <button type="button" className="btn btn-secondary btn-sm" disabled={busy}
+            onClick={() => act((id) => onChangeStatus(id, ARTIFACT_STATUS.UnderReview))}>
+            Submit for review
+          </button>
+        )}
+        {canReview && onChangeStatus && canReturnToDraft && (
+          <button type="button" className="btn btn-ghost btn-sm" disabled={busy}
+            onClick={() => act((id) => onChangeStatus(id, ARTIFACT_STATUS.Draft))}>
+            Return to draft
+          </button>
+        )}
+        {canReview && onChangeStatus && isApprovedOrLater && (
+          <button type="button" className="btn btn-ghost btn-sm" disabled={busy}
+            onClick={() => act((id) => onChangeStatus(id, ARTIFACT_STATUS.UnderReview))}>
+            Reopen review
+          </button>
         )}
         {artifact.artifactType === ARTIFACT_TYPE_VALUES.UserStory && onGenerateAcceptanceCriteria && (
           <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act(onGenerateAcceptanceCriteria)}>
@@ -173,7 +216,12 @@ export function ArtifactCard({
         )}
       </div>
 
-      <ArtifactDetails artifactId={artifact.id} artifactType={artifact.artifactType} />
+      <ArtifactDetails
+        artifactId={artifact.id}
+        artifactType={artifact.artifactType}
+        openImpactNoticeCount={openNotices}
+        onNoticeAcknowledged={onSaved}
+      />
 
       {editing && <ArtifactEditDialog artifact={artifact} token={token} onClose={() => setEditing(false)} onSaved={onSaved} />}
     </li>
@@ -189,6 +237,7 @@ function FunctionalRequirementDetails({ data }: { data: FunctionalRequirementDat
       <Detail label="Processing" value={data.processing} />
       <Detail label="Expected result" value={data.expectedResult} />
       {data.dependencies?.length > 0 && <Detail label="Dependencies" value={data.dependencies.join(', ')} />}
+      {(data.sourceReferences?.length ?? 0) > 0 && <Detail label="Sources" value={data.sourceReferences!.join(', ')} />}
     </>
   );
 }

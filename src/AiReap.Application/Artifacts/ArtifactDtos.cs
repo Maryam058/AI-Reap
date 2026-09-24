@@ -16,15 +16,31 @@ public record ArtifactResponse(
     JsonElement Data,
     int CurrentVersion,
     DateTime CreatedAt,
-    DateTime UpdatedAt);
+    DateTime UpdatedAt,
+    int? ApprovedVersion = null,
+    // §22 — upstream changes this artifact has not been reviewed against yet.
+    int OpenImpactNoticeCount = 0);
 
+// Title/Priority/Status are null for versions recorded before full snapshots existed.
 public record ArtifactVersionResponse(
     int VersionNumber,
     JsonElement Data,
     string ChangedByUserId,
     DateTime ChangedAt,
     string? Reason,
-    ArtifactOrigin Origin);
+    ArtifactOrigin Origin,
+    string? Title = null,
+    ArtifactPriority? Priority = null,
+    ArtifactStatus? Status = null);
+
+// §24 — one human review decision, tied to the version it was made on.
+public record ArtifactReviewResponse(
+    Guid Id,
+    string ReviewerUserId,
+    ReviewDecision Decision,
+    string? Comment,
+    DateTime ReviewedAt,
+    int? VersionNumber);
 
 public record ArtifactRelationshipResponse(
     Guid RelatedArtifactId,

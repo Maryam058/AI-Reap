@@ -124,9 +124,20 @@ public class TestGenerationService : ITestGenerationService
         return testArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList();
     }
 
-    private class TestCaseAiResponse
+    private class TestCaseAiResponse : IValidatableAiResponse
     {
         public List<TestCaseItem> TestCases { get; set; } = new();
+
+        public void Validate(AiResponseValidator v) =>
+            v.Items(TestCases, "testCases", (item, path) =>
+            {
+                v.Required(item.Title, $"{path}.title");
+                v.MaxLength(item.Title, 300, $"{path}.title");
+                v.Required(item.ExpectedResult, $"{path}.expectedResult");
+                if (item.Steps is null || item.Steps.Count == 0) v.Fail($"{path}.steps must contain at least one step.");
+                v.NoBlankEntries(item.Steps, $"{path}.steps");
+                v.OneOf(item.TestKind, $"{path}.testKind", AiVocabulary.TestKinds);
+            }, minItems: 1);
     }
 
     private class TestCaseItem

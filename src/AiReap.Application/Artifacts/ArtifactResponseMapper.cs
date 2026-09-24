@@ -17,5 +17,6 @@ public static class ArtifactResponseMapper
         ArtifactJson.ToCamelCaseElement(artifact.DataJson),
         artifact.CurrentVersion,
         artifact.CreatedAt,
-        artifact.UpdatedAt);
+        artifact.UpdatedAt,
+        artifact.ApprovedVersion);
 }

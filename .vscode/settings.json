@@ -16,7 +16,7 @@
             "driver": "MSSQL",
             "name": "AI-REAP Dev",
             "username": "sa",
-            "password": "AiReap!DevPassw0rd",
+            "askForPassword": true,
             "database": "AIReapDb"
         }
     ]

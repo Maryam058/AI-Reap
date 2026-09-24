@@ -66,7 +66,8 @@ public class ImplementationPlanningService : IImplementationPlanningService
 
         var userPrompt = source.RawText + context + frContext + dataContext + apiContext;
         var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<TaskAiResponse>(
-            _chatClient, _logger, "ImplementationPlanning", source.Id.ToString(), SystemPrompt, userPrompt, cancellationToken);
+            _chatClient, _logger, "ImplementationPlanning", source.Id.ToString(), SystemPrompt, userPrompt, cancellationToken,
+            knownArtifactCodes: functionalRequirements.Concat(dataEntities).Concat(apiSpecs).Select(a => a.Code));
 
         var now = DateTime.UtcNow;
         var codes = await ArtifactCodeGenerator.ReserveCodesAsync(_db, source.ProjectId, ArtifactType.ImplementationTask, parsed.Tasks.Count, cancellationToken);
@@ -109,9 +110,20 @@ public class ImplementationPlanningService : IImplementationPlanningService
         return taskArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList();
     }
 
-    private class TaskAiResponse
+    private class TaskAiResponse : IValidatableAiResponse
     {
         public List<TaskItem> Tasks { get; set; } = new();
+
+        public void Validate(AiResponseValidator v) =>
+            v.Items(Tasks, "tasks", (item, path) =>
+            {
+                v.Required(item.Title, $"{path}.title");
+                v.MaxLength(item.Title, 300, $"{path}.title");
+                v.Required(item.Description, $"{path}.description");
+                v.OneOf(item.TaskType, $"{path}.taskType", AiVocabulary.TaskTypes);
+                v.OneOf(item.Priority, $"{path}.priority", AiVocabulary.Priorities, optional: true);
+                v.CodesExist(item.RelatedRequirementCodes, $"{path}.relatedRequirementCodes");
+            }, minItems: 1);
     }
 
     private class TaskItem

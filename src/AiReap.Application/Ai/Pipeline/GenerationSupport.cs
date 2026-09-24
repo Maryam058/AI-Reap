@@ -75,6 +75,9 @@ public static class GenerationSupport
         ArtifactId = artifact.Id,
         VersionNumber = 1,
         DataSnapshotJson = artifact.DataJson,
+        Title = artifact.Title,
+        Priority = artifact.Priority,
+        Status = artifact.Status,
         ChangedByUserId = userId,
         ChangedAt = now,
         Reason = reason,
@@ -84,9 +87,50 @@ public static class GenerationSupport
     // Every pipeline service follows the same call-then-parse shape, so the LLM call and the
     // strict-JSON validation of its response - the two places a production failure actually
     // needs debugging context to diagnose - are logged once, here, instead of ad hoc per service.
+    //
+    // Transient provider failures are retried inside the provider client (ResilientAiChatClient).
+    // Here, a response that arrives but fails shape/semantic validation gets exactly one repair
+    // attempt with the validation errors fed back; if that also fails, the whole operation is
+    // rejected (nothing is persisted). knownArtifactCodes, when given, is the set of artifact codes
+    // the model was shown - references to anything else are rejected.
     public static async Task<(string RawResponse, T Parsed)> CallAiAndParseAsync<T>(
         IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
-        string systemPrompt, string userPrompt, CancellationToken cancellationToken) where T : class
+        string systemPrompt, string userPrompt, CancellationToken cancellationToken,
+        IEnumerable<string>? knownArtifactCodes = null, IEnumerable<string>? knownSourceReferences = null) where T : class
+    {
+        var knownCodes = knownArtifactCodes?.ToList();
+        var knownRefs = knownSourceReferences?.ToList();
+        var prompt = userPrompt;
+
+        for (var attempt = 1; ; attempt++)
+        {
+            var rawResponse = await CallAiAsync(chatClient, logger, operationType, inputReference, systemPrompt, prompt, cancellationToken);
+
+            try
+            {
+                return (rawResponse, AiJsonParser.Parse<T>(rawResponse, knownCodes, knownRefs));
+            }
+            catch (AiOutputValidationException ex) when (attempt == 1 && ex.Repairable)
+            {
+                // Log the problems, not the response body: it may quote user-supplied requirement text.
+                logger.LogWarning(
+                    "AI response rejected, requesting one repair: {OperationType} input={InputReference} errors={Errors}",
+                    operationType, inputReference, string.Join(" | ", ex.Errors));
+                prompt = userPrompt + BuildRepairInstruction(ex.Errors);
+            }
+            catch (AiOutputValidationException ex)
+            {
+                logger.LogError(
+                    "AI response failed validation: {OperationType} input={InputReference} attempt={Attempt} errors={Errors}",
+                    operationType, inputReference, attempt, string.Join(" | ", ex.Errors));
+                throw;
+            }
+        }
+    }
+
+    private static async Task<string> CallAiAsync(
+        IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
+        string systemPrompt, string userPrompt, CancellationToken cancellationToken)
     {
         logger.LogInformation(
             "AI call starting: {OperationType} model={Model} input={InputReference}",
@@ -97,7 +141,15 @@ public static class GenerationSupport
         {
             rawResponse = await chatClient.CompleteAsync(systemPrompt, userPrompt, cancellationToken);
         }
-        catch (Exception ex)
+        catch (AiProviderException ex)
+        {
+            // Expected, classified failure - message only (it is already sanitized), no stack trace noise.
+            logger.LogError(
+                "AI call failed: {OperationType} model={Model} input={InputReference} kind={Kind} status={Status} message={Message}",
+                operationType, chatClient.ModelName, inputReference, ex.Kind, (int?)ex.ProviderStatusCode, ex.Message);
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogError(ex,
                 "AI call failed: {OperationType} model={Model} input={InputReference}",
@@ -108,19 +160,14 @@ public static class GenerationSupport
         logger.LogInformation(
             "AI call succeeded: {OperationType} input={InputReference} responseLength={ResponseLength}",
             operationType, inputReference, rawResponse.Length);
-
-        try
-        {
-            return (rawResponse, AiJsonParser.Parse<T>(rawResponse));
-        }
-        catch (AiOutputValidationException ex)
-        {
-            logger.LogError(ex,
-                "AI response failed JSON validation: {OperationType} input={InputReference}",
-                operationType, inputReference);
-            throw;
-        }
+        return rawResponse;
     }
+
+    private static string BuildRepairInstruction(IReadOnlyList<string> errors) =>
+        "\n\n---\nYour previous response was rejected by automatic validation for these reasons:\n- " +
+        string.Join("\n- ", errors) +
+        "\nReturn a corrected response: ONLY the single JSON object in the required shape, with every problem above fixed. " +
+        "Do not invent facts to fill gaps - leave optional fields empty instead.";
 
     public static void LinkToRelated(IAiReapDbContext db, Artifact newArtifact, IEnumerable<Artifact> related, RelationshipType type, DateTime now)
     {

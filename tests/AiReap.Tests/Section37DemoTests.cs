@@ -130,9 +130,16 @@ public class Section37DemoTests : IAsyncLifetime
         Assert.Equal(changedTitle, updatedArtifact!["title"]!.GetValue<string>());
         Assert.Equal(2, updatedArtifact["currentVersion"]!.GetValue<int>());
 
+        // §22/§24: the changed requirement is no longer approved - it needs a fresh review - while
+        // the approved content (v1) is preserved and still identified as the approved version.
+        Assert.Equal(2, updatedArtifact["status"]!.GetValue<int>()); // UnderReview
+        Assert.Equal(1, updatedArtifact["approvedVersion"]!.GetValue<int>());
+
         var versions = (await _ba.GetAsync($"/api/artifacts/{frId}/versions")).Body!.AsArray();
         Assert.Equal(2, versions.Count);
         Assert.Equal(1, versions.Count(v => v!["origin"]!.GetValue<int>() == 1)); // exactly one human-origin version: the edit
+        var v1 = versions.Single(v => v!["versionNumber"]!.GetValue<int>() == 1)!;
+        Assert.Equal(approved["title"]!.GetValue<string>(), v1["title"]!.GetValue<string>());
 
         // Impact Analysis must name the actual linked downstream artifacts, not merely return
         // something non-empty (RegressionTests already covers "doesn't mutate anything").

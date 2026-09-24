@@ -29,6 +29,11 @@ public class Artifact
 
     public int CurrentVersion { get; set; } = 1;
 
+    // §24 — the version number a reviewer last approved. Survives later edits (which move the
+    // artifact back to UnderReview on a new version), so the approved content stays identifiable
+    // in ArtifactVersions. Null until the artifact is first approved.
+    public int? ApprovedVersion { get; set; }
+
     public string CreatedByUserId { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
     public string? UpdatedByUserId { get; set; }

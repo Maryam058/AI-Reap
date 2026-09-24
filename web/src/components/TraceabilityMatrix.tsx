@@ -9,7 +9,9 @@ import { EmptyState } from './ui/EmptyState';
 import { ErrorState } from './ui/ErrorState';
 import { IconArrowRight, IconLink, IconRefresh } from './icons';
 
-const COLUMNS: { key: keyof Omit<TraceabilityRow, 'functionalRequirementId' | 'functionalRequirementCode' | 'functionalRequirementTitle'>; label: string }[] = [
+// §21 chain: Business Objective -> Requirement -> Story -> Acceptance Criteria -> Design -> Task -> Test.
+// The objective column is rendered before the requirement column; the rest follow it.
+const COLUMNS: { key: keyof Omit<TraceabilityRow, 'functionalRequirementId' | 'functionalRequirementCode' | 'functionalRequirementTitle' | 'businessObjectives'>; label: string }[] = [
   { key: 'businessRules', label: 'Business Rules' },
   { key: 'userStories', label: 'User Stories' },
   { key: 'acceptanceCriteria', label: 'Acceptance Criteria' },
@@ -110,7 +112,7 @@ export function TraceabilityMatrix({ projectId }: { projectId: string }) {
         <header className="panel-head">
           <div>
             <h2>Traceability matrix</h2>
-            <p>Each functional requirement and everything derived from it.</p>
+            <p>Each functional requirement, the business objective it serves, and everything derived from it.</p>
           </div>
           <button type="button" className="btn btn-secondary btn-sm" onClick={load} disabled={busy}>
             <IconRefresh width={14} height={14} /> {busy ? 'Refreshing…' : 'Refresh'}
@@ -120,6 +122,7 @@ export function TraceabilityMatrix({ projectId }: { projectId: string }) {
           <table className="data-table trace-table">
             <thead>
               <tr>
+                <th scope="col">Business Objective</th>
                 <th scope="col" className="sticky-col">
                   Requirement
                 </th>
@@ -133,6 +136,7 @@ export function TraceabilityMatrix({ projectId }: { projectId: string }) {
             <tbody>
               {rows.map((row) => (
                 <tr key={row.functionalRequirementId}>
+                  <Cell refs={row.businessObjectives ?? []} />
                   <th scope="row" className="sticky-col">
                     <span className="code">{row.functionalRequirementCode}</span> {row.functionalRequirementTitle}
                   </th>

@@ -20,29 +20,43 @@ namespace AiReap.Tests;
 public class ControllableAiChatClient : IAiChatClient
 {
     private readonly StubAiChatClient _inner = new();
-    private readonly List<string> _failMarkers = new();
+    private readonly List<(string Marker, Func<string> Outcome)> _scripted = new();
 
     public string ModelName => _inner.ModelName;
 
+    // Every user prompt received, in order (lets a test see e.g. the repair instruction).
+    public List<string> UserPrompts { get; } = new();
+
     // The next call whose system prompt contains this marker throws, once.
-    public void FailOnceWhenPromptContains(string marker)
+    public void FailOnceWhenPromptContains(string marker) =>
+        Script(marker, () => throw new InvalidOperationException($"Simulated AI provider failure ({marker})."));
+
+    // The next call whose system prompt contains this marker throws the given exception, once.
+    public void ThrowOnceWhenPromptContains(string marker, Exception exception) => Script(marker, () => throw exception);
+
+    // The next call whose system prompt contains this marker returns this raw text, once.
+    public void RespondOnceWhenPromptContains(string marker, string rawResponse) => Script(marker, () => rawResponse);
+
+    private void Script(string marker, Func<string> outcome)
     {
-        lock (_failMarkers) _failMarkers.Add(marker);
+        lock (_scripted) _scripted.Add((marker, outcome));
     }
 
     public Task<string> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken = default)
     {
-        lock (_failMarkers)
+        Func<string>? outcome = null;
+        lock (_scripted)
         {
-            var hit = _failMarkers.FirstOrDefault(systemPrompt.Contains);
-            if (hit is not null)
+            UserPrompts.Add(userPrompt);
+            var index = _scripted.FindIndex(s => systemPrompt.Contains(s.Marker));
+            if (index >= 0)
             {
-                _failMarkers.Remove(hit);
-                throw new InvalidOperationException($"Simulated AI provider failure ({hit}).");
+                outcome = _scripted[index].Outcome;
+                _scripted.RemoveAt(index);
             }
         }
 
-        return _inner.CompleteAsync(systemPrompt, userPrompt, cancellationToken);
+        return outcome is not null ? Task.FromResult(outcome()) : _inner.CompleteAsync(systemPrompt, userPrompt, cancellationToken);
     }
 }
 
@@ -50,12 +64,34 @@ public class ControllableAiChatClient : IAiChatClient
 // (so the migrations themselves are under test). Two hosts can share one database to simulate a restart.
 public class TestHost : IAsyncDisposable
 {
-    // Overridable so CI can point at its own SQL Server service container (a different host/port
-    // than the local Docker dev container) without editing source. Local dev workflow is unchanged:
-    // no env var set -> same hardcoded default as before.
-    public static readonly string ServerConnection =
-        Environment.GetEnvironmentVariable("AIREAP_TEST_SQL_CONNECTION")
-        ?? "Server=127.0.0.1,14330;User Id=sa;Password=AiReap!DevPassw0rd;TrustServerCertificate=True";
+    // No credentials in source. CI sets AIREAP_TEST_SQL_CONNECTION (server-level, no Database=).
+    // Locally, if that isn't set, the developer's own `dotnet user-secrets` connection string for
+    // AiReap.Api is reused with its database name removed - the same SQL Server the app runs against.
+    public static readonly string ServerConnection = ResolveServerConnection();
+
+    private static string ResolveServerConnection()
+    {
+        var fromEnvironment = Environment.GetEnvironmentVariable("AIREAP_TEST_SQL_CONNECTION");
+        if (!string.IsNullOrWhiteSpace(fromEnvironment))
+        {
+            return fromEnvironment;
+        }
+
+        var fromUserSecrets = new ConfigurationBuilder()
+            .AddUserSecrets("AiReap.Api")
+            .Build()
+            .GetConnectionString("Default");
+        if (!string.IsNullOrWhiteSpace(fromUserSecrets))
+        {
+            var builder = new SqlConnectionStringBuilder(fromUserSecrets);
+            builder.Remove("Initial Catalog");
+            return builder.ConnectionString;
+        }
+
+        throw new InvalidOperationException(
+            "No SQL Server for integration tests. Set AIREAP_TEST_SQL_CONNECTION (e.g. \"Server=127.0.0.1,14330;User Id=sa;Password=<your password>;TrustServerCertificate=True\") " +
+            "or configure ConnectionStrings:Default in the AiReap.Api user-secrets.");
+    }
 
     public string DatabaseName { get; }
     public string ConnectionString => $"{ServerConnection};Database={DatabaseName}";
@@ -107,6 +143,14 @@ public class TestHost : IAsyncDisposable
             });
 
             b.UseSetting("ConnectionStrings:Default", ConnectionString);
+
+            // Automated tests never call a live AI API, even if a developer has Ai__Gemini__ApiKey
+            // (or another provider key) in their environment: chat is the stub (replaced below),
+            // and blank keys keep embeddings on the deterministic stub too.
+            b.UseSetting("Ai:Provider", "Gemini");
+            b.UseSetting("Ai:Gemini:ApiKey", "");
+            b.UseSetting("Ai:Anthropic:ApiKey", "");
+            b.UseSetting("Ai:OpenAI:ApiKey", "");
             if (_bootstrap)
             {
                 b.UseSetting("Bootstrap:AdminEmail", AdminEmail);

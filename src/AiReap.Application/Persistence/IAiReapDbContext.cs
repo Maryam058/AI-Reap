@@ -15,6 +15,7 @@ public interface IAiReapDbContext
     DbSet<ArtifactVersion> ArtifactVersions { get; }
     DbSet<ArtifactRelationship> ArtifactRelationships { get; }
     DbSet<ArtifactReview> ArtifactReviews { get; }
+    DbSet<ArtifactImpactNotice> ArtifactImpactNotices { get; }
     DbSet<AIExecution> AIExecutions { get; }
     DbSet<Document> Documents { get; }
     DbSet<DocumentChunk> DocumentChunks { get; }

@@ -89,8 +89,16 @@ public class SolutionDesignService : ISolutionDesignService
         return ArtifactResponseMapper.ToResponse(artifact);
     }
 
-    private class DesignAiResponse
+    private class DesignAiResponse : IValidatableAiResponse
     {
+        public void Validate(AiResponseValidator v)
+        {
+            v.Required(Title, "title");
+            v.MaxLength(Title, 300, "title");
+            v.Required(ArchitectureOverview, "architectureOverview");
+            v.NoBlankEntries(Modules, "modules");
+        }
+
         public string Title { get; set; } = "Solution Design";
         public string ArchitectureOverview { get; set; } = string.Empty;
         public List<string> Modules { get; set; } = new();

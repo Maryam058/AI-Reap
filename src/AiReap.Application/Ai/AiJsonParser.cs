@@ -14,25 +14,45 @@ public static class AiJsonParser
         PropertyNameCaseInsensitive = true
     };
 
-    public static T Parse<T>(string rawResponse) where T : class
+    public static T Parse<T>(string rawResponse, IEnumerable<string>? knownArtifactCodes = null,
+        IEnumerable<string>? knownSourceReferences = null) where T : class
     {
+        if (string.IsNullOrWhiteSpace(rawResponse))
+        {
+            throw new AiOutputValidationException("AI response was empty.");
+        }
+
         var json = StripMarkdownFence(rawResponse);
 
+        T? result;
         try
         {
-            var result = JsonSerializer.Deserialize<T>(json, Options);
-            if (result is null)
-            {
-                throw new AiOutputValidationException("AI response deserialized to null.");
-            }
-
-            return result;
+            result = JsonSerializer.Deserialize<T>(json, Options);
         }
         catch (JsonException ex)
         {
             throw new AiOutputValidationException(
                 $"AI response was not valid JSON in the expected shape: {ex.Message}", ex);
         }
+
+        if (result is null)
+        {
+            throw new AiOutputValidationException("AI response deserialized to null.");
+        }
+
+        // §31 — semantic checks (required fields, allowed values, real artifact references).
+        if (result is IValidatableAiResponse validatable)
+        {
+            var validator = new AiResponseValidator(knownArtifactCodes, knownSourceReferences);
+            validatable.Validate(validator);
+            if (!validator.IsValid)
+            {
+                throw new AiOutputValidationException(
+                    $"AI response failed validation: {string.Join(" ", validator.Errors)}", validator.Errors);
+            }
+        }
+
+        return result;
     }
 
     private static string StripMarkdownFence(string text)

@@ -12,6 +12,8 @@ public record ProjectDashboardResponse(
     int PendingReviewCount,
     int RejectedCount,
     int ConflictCount,
-    IReadOnlyList<RecentChangeItem> RecentChanges);
+    IReadOnlyList<RecentChangeItem> RecentChanges,
+    // §22 — downstream artifacts still flagged by an unreviewed upstream change.
+    int OpenImpactNoticeCount = 0);
 
 public record RecentChangeItem(string Code, string Title, string ArtifactType, string Status, DateTime UpdatedAt);

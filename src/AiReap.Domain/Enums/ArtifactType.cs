@@ -14,5 +14,7 @@ public enum ArtifactType
     ApiSpecification,
     DataEntity,
     ImplementationTask,
-    TestCase
+    TestCase,
+    // §21 — head of the traceability chain; seeded from Project.Objectives. Appended: stored as int.
+    BusinessObjective
 }

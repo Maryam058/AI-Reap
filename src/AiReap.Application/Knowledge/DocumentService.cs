@@ -71,6 +71,23 @@ public class DocumentService : IDocumentService
             .ToListAsync(cancellationToken);
     }
 
+    public async Task<int> ReindexAsync(Guid projectId, CancellationToken cancellationToken = default)
+    {
+        var model = _embeddingClient.ModelName;
+        var stale = await _db.DocumentChunks
+            .Where(c => c.Document!.ProjectId == projectId && (c.EmbeddingModel != model || c.Embedding == null))
+            .ToListAsync(cancellationToken);
+
+        foreach (var chunk in stale)
+        {
+            chunk.Embedding = EmbeddingCodec.Pack(await _embeddingClient.EmbedAsync(chunk.ChunkText, cancellationToken));
+            chunk.EmbeddingModel = model;
+        }
+
+        await _db.SaveChangesAsync(cancellationToken);
+        return stale.Count;
+    }
+
     private static List<string> Chunk(string text)
     {
         var normalized = text.Trim();

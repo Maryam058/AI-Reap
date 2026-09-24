@@ -99,6 +99,9 @@ public class RequirementAnalysisService : IRequirementAnalysisService
                 ArtifactId = artifact.Id,
                 VersionNumber = 1,
                 DataSnapshotJson = artifact.DataJson,
+                Title = artifact.Title,
+                Priority = artifact.Priority,
+                Status = artifact.Status,
                 ChangedByUserId = _currentUser.UserId,
                 ChangedAt = now,
                 Reason = "AI requirement analysis",
@@ -123,13 +126,30 @@ public class RequirementAnalysisService : IRequirementAnalysisService
             questionArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList());
     }
 
-    private class AnalysisAiResponse
+    private class AnalysisAiResponse : IValidatableAiResponse
     {
         public List<string> Actors { get; set; } = new();
         public List<string> Capabilities { get; set; } = new();
         public List<string> DataElements { get; set; } = new();
         public List<string> Notes { get; set; } = new();
         public List<MissingInformationItem> MissingInformation { get; set; } = new();
+
+        public void Validate(AiResponseValidator v)
+        {
+            v.NoBlankEntries(Actors, "actors");
+            v.NoBlankEntries(Capabilities, "capabilities");
+            v.NoBlankEntries(DataElements, "dataElements");
+            v.Items(MissingInformation, "missingInformation", (item, path) =>
+            {
+                v.Required(item.Topic, $"{path}.topic");
+                v.MaxLength(item.Topic, 300, $"{path}.topic");
+                v.Required(item.Question, $"{path}.question");
+            });
+            if (Actors.Count == 0 && Capabilities.Count == 0 && MissingInformation.Count == 0)
+            {
+                v.Fail("The analysis is empty: no actors, capabilities or missing information were identified.");
+            }
+        }
     }
 
     private class MissingInformationItem

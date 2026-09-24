@@ -15,3 +15,13 @@ web/dist/
 # Local secrets (never commit real keys/connection strings)
 **/appsettings.Local.json
 **/*.secrets.json
+
+# Runtime artifacts (logs, pid files, tool caches) - never version-controlled
+*.log
+*.pid
+.vite/
+sqltest.txt
+
+# Local environment overrides
+.env.local
+.env.*.local

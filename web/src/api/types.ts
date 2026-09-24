@@ -159,6 +159,7 @@ export const ARTIFACT_TYPE_LABELS: Record<number, string> = {
   8: 'DataEntity',
   9: 'ImplementationTask',
   10: 'TestCase',
+  11: 'BusinessObjective',
 };
 
 export const ARTIFACT_TYPE_VALUES = {
@@ -173,6 +174,17 @@ export const ARTIFACT_TYPE_VALUES = {
   DataEntity: 8,
   ImplementationTask: 9,
   TestCase: 10,
+  BusinessObjective: 11,
+} as const;
+
+export const ARTIFACT_STATUS = {
+  AiGenerated: 0,
+  Draft: 1,
+  UnderReview: 2,
+  Approved: 3,
+  Rejected: 4,
+  Implemented: 5,
+  Verified: 6,
 } as const;
 
 export const ARTIFACT_STATUS_LABELS: Record<number, string> = {
@@ -223,6 +235,10 @@ export interface ArtifactSummary {
   currentVersion: number;
   createdAt: string;
   updatedAt: string;
+  // §24 — the version a reviewer last approved (null until first approval).
+  approvedVersion?: number | null;
+  // §22 — upstream changes this artifact hasn't been reviewed against yet.
+  openImpactNoticeCount?: number;
 }
 
 export interface ArtifactVersion {
@@ -232,6 +248,19 @@ export interface ArtifactVersion {
   changedAt: string;
   reason?: string | null;
   origin: number;
+  // Null for versions recorded before full snapshots existed.
+  title?: string | null;
+  priority?: number | null;
+  status?: number | null;
+}
+
+export interface ArtifactReview {
+  id: string;
+  reviewerUserId: string;
+  decision: number; // 0 Approved | 1 Rejected | 2 CommentOnly
+  comment?: string | null;
+  reviewedAt: string;
+  versionNumber?: number | null;
 }
 
 export interface ArtifactRelationship {
@@ -257,6 +286,8 @@ export interface FunctionalRequirementData {
   processing?: string | null;
   expectedResult?: string | null;
   dependencies: string[];
+  // §26 — project document excerpts this requirement is grounded in, e.g. "notes.pdf#3".
+  sourceReferences?: string[];
 }
 
 export interface NonFunctionalRequirementData {
@@ -359,6 +390,7 @@ export interface TraceabilityRow {
   functionalRequirementId: string;
   functionalRequirementCode: string;
   functionalRequirementTitle: string;
+  businessObjectives: TraceRef[];
   businessRules: TraceRef[];
   userStories: TraceRef[];
   acceptanceCriteria: TraceRef[];
@@ -376,6 +408,34 @@ export interface ImpactedArtifact {
   artifactType: string;
   status: string;
   relationshipType: string;
+  path?: string;
+}
+
+export interface BusinessObjective {
+  id: string;
+  code: string;
+  title: string;
+  requirements: TraceRef[];
+}
+
+// §22 — raised automatically on each downstream artifact when approved content changes.
+export interface ImpactNotice {
+  id: string;
+  sourceArtifactId: string;
+  sourceArtifactCode: string;
+  sourceArtifactTitle: string;
+  sourceVersion: number;
+  affectedArtifactId: string;
+  affectedArtifactCode: string;
+  affectedArtifactTitle: string;
+  affectedArtifactType: number;
+  affectedArtifactStatus: number;
+  path: string;
+  createdByUserId: string;
+  createdAt: string;
+  acknowledgedByUserId?: string | null;
+  acknowledgedAt?: string | null;
+  acknowledgementNote?: string | null;
 }
 
 export interface ImpactAnalysisResult {
@@ -462,6 +522,7 @@ export interface ProjectDashboard {
   rejectedCount: number;
   conflictCount: number;
   recentChanges: RecentChangeItem[];
+  openImpactNoticeCount?: number;
 }
 
 // §26 — RAG document knowledge base.

@@ -1,5 +1,9 @@
 # Running AI-REAP locally with Ollama (no Anthropic API charges)
 
+> **Not the supported configuration (2026-09-24).** The project's real LLM is Google Gemini — see
+> [GEMINI_SETUP.md](GEMINI_SETUP.md). The Ollama implementation is kept only because the
+> `IAiChatClient` seam still supports it; it is not configured, required, or verified.
+
 AI-REAP's AI features (Copilot, requirement analysis/generation, and all six pipeline agents)
 go through a single abstraction, `IAiChatClient`. Two real implementations exist:
 

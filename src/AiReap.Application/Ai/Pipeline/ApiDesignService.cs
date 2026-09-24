@@ -58,7 +58,8 @@ public class ApiDesignService : IApiDesignService
         var frContext = GenerationSupport.BuildContextBlock("Functional requirements derived so far:", functionalRequirements);
 
         var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<ApiDesignAiResponse>(
-            _chatClient, _logger, "ApiDesignGeneration", source.Id.ToString(), SystemPrompt, source.RawText + context + frContext, cancellationToken);
+            _chatClient, _logger, "ApiDesignGeneration", source.Id.ToString(), SystemPrompt, source.RawText + context + frContext, cancellationToken,
+            knownArtifactCodes: functionalRequirements.Select(fr => fr.Code));
 
         var now = DateTime.UtcNow;
         var codes = await ArtifactCodeGenerator.ReserveCodesAsync(_db, source.ProjectId, ArtifactType.ApiSpecification, parsed.ApiSpecifications.Count, cancellationToken);
@@ -101,9 +102,23 @@ public class ApiDesignService : IApiDesignService
         return apiArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList();
     }
 
-    private class ApiDesignAiResponse
+    private class ApiDesignAiResponse : IValidatableAiResponse
     {
         public List<ApiSpecificationItem> ApiSpecifications { get; set; } = new();
+
+        public void Validate(AiResponseValidator v) =>
+            v.Items(ApiSpecifications, "apiSpecifications", (item, path) =>
+            {
+                v.Required(item.Title, $"{path}.title");
+                v.MaxLength(item.Title, 300, $"{path}.title");
+                v.OneOf(item.Method, $"{path}.method", AiVocabulary.HttpMethods);
+                v.Required(item.Route, $"{path}.route");
+                if (!string.IsNullOrWhiteSpace(item.Route) && !item.Route.TrimStart().StartsWith('/'))
+                {
+                    v.Fail($"{path}.route must start with '/'.");
+                }
+                v.CodesExist(item.RelatedRequirementCodes, $"{path}.relatedRequirementCodes");
+            }, minItems: 1);
     }
 
     private class ApiSpecificationItem

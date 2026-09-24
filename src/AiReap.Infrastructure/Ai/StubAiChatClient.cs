@@ -33,12 +33,32 @@ public class StubAiChatClient : IAiChatClient
             _ => "{}"
         };
 
+        // Canned responses link to "FR-001" / "BO-001". Like a real model, only reference artifacts
+        // that were actually given in the prompt (reference validation rejects anything else): use
+        // the first such code present, or no reference at all when there is none.
+        response = ReferenceFirstCodeInPrompt(response, userPrompt, "FR");
+        response = ReferenceFirstCodeInPrompt(response, userPrompt, "BO");
+
         return Task.FromResult(response);
+    }
+
+    private static string ReferenceFirstCodeInPrompt(string response, string userPrompt, string prefix)
+    {
+        var placeholder = $"\"{prefix}-001\"";
+        if (!response.Contains(placeholder, StringComparison.Ordinal))
+        {
+            return response;
+        }
+
+        var firstCode = System.Text.RegularExpressions.Regex.Match(userPrompt, $@"\b{prefix}-\d{{3,}}\b");
+        return firstCode.Success
+            ? response.Replace(placeholder, $"\"{firstCode.Value}\"", StringComparison.Ordinal)
+            : response.Replace($"[{placeholder}]", "[]", StringComparison.Ordinal);
     }
 
     private const string ReviewResponse = """
         {
-          "readinessSummary": "Stub assessment - configure Ai:Anthropic:ApiKey for a real model. See the deterministic findings for the actual gaps.",
+          "readinessSummary": "Stub assessment - configure Ai:Gemini:ApiKey for a real model. See the deterministic findings for the actual gaps.",
           "recommendation": "not_ready"
         }
         """;
@@ -48,7 +68,7 @@ public class StubAiChatClient : IAiChatClient
           "actors": ["Employee", "Manager"],
           "capabilities": ["Submit request", "Review request", "Approve or reject request"],
           "dataElements": ["Request type", "Start date", "End date", "Status"],
-          "notes": ["This is a stub response — configure Ai:Anthropic:ApiKey for a real model."],
+          "notes": ["This is a stub response — configure Ai:Gemini:ApiKey for a real model."],
           "missingInformation": [
             {"topic": "Approval hierarchy", "question": "Can approval be delegated, and is multi-level approval required?", "reason": "Not stated in the raw requirement."},
             {"topic": "Notifications", "question": "Should the submitter be notified when the request is approved or rejected?", "reason": "Not stated in the raw requirement."}
@@ -62,7 +82,7 @@ public class StubAiChatClient : IAiChatClient
             {"title": "Submit request", "actor": "Employee", "priority": "High",
              "preconditions": "Employee is authenticated.", "inputs": "Request type, details",
              "processing": "Validate input and persist the request.", "expectedResult": "Request stored with status Pending.",
-             "dependencies": []}
+             "dependencies": [], "businessObjectiveCodes": ["BO-001"]}
           ],
           "nonFunctionalRequirements": [
             {"title": "Response time", "category": "Performance",
@@ -113,7 +133,7 @@ public class StubAiChatClient : IAiChatClient
     private const string DesignResponse = """
         {
           "title": "Solution Design",
-          "architectureOverview": "Stub response — configure Ai:Anthropic:ApiKey for a grounded design proposal.",
+          "architectureOverview": "Stub response — configure Ai:Gemini:ApiKey for a grounded design proposal.",
           "modules": ["RequestService"], "integrationPoints": null, "authentication": "JWT bearer",
           "backgroundProcessing": null, "caching": null, "logging": "Structured logging via the platform's standard middleware.",
           "deploymentConsiderations": null
@@ -163,7 +183,7 @@ public class StubAiChatClient : IAiChatClient
 
     private const string CopilotResponse = """
         {
-          "answer": "Stub response — configure Ai:Anthropic:ApiKey for a grounded answer. Check the structured facts above for the actual current counts.",
+          "answer": "Stub response — configure Ai:Gemini:ApiKey for a grounded answer. Check the structured facts above for the actual current counts.",
           "citedChunkRefs": [],
           "relatedArtifactCodes": []
         }

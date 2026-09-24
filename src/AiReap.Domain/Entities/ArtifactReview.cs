@@ -11,6 +11,9 @@ public class ArtifactReview
 
     public string ReviewerUserId { get; set; } = string.Empty;
     public ReviewDecision Decision { get; set; }
+
+    // The artifact version this decision was made on (null on rows written before it existed).
+    public int? VersionNumber { get; set; }
     public string? Comment { get; set; }
     public DateTime ReviewedAt { get; set; }
 }

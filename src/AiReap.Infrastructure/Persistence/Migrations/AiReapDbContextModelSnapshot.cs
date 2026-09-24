@@ -165,6 +165,9 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<int?>("ApprovedVersion")
+                        .HasColumnType("int");
+
                     b.Property<int>("ArtifactType")
                         .HasColumnType("int");
 
@@ -223,6 +226,57 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.ToTable("Artifacts");
                 });
 
+            modelBuilder.Entity("AiReap.Domain.Entities.ArtifactImpactNotice", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("AcknowledgedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("AcknowledgedByUserId")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("AcknowledgementNote")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<Guid>("AffectedArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreatedByUserId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Path")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("SourceArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("SourceVersion")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SourceArtifactId");
+
+                    b.HasIndex("AffectedArtifactId", "AcknowledgedAt");
+
+                    b.HasIndex("ProjectId", "AcknowledgedAt");
+
+                    b.ToTable("ArtifactImpactNotices");
+                });
+
             modelBuilder.Entity("AiReap.Domain.Entities.ArtifactRelationship", b =>
                 {
                     b.Property<Guid>("Id")
@@ -273,6 +327,9 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<int?>("VersionNumber")
+                        .HasColumnType("int");
+
                     b.HasKey("Id");
 
                     b.HasIndex("ArtifactId");
@@ -303,8 +360,18 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.Property<int>("Origin")
                         .HasColumnType("int");
 
+                    b.Property<int?>("Priority")
+                        .HasColumnType("int");
+
                     b.Property<string>("Reason")
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<int?>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Title")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
 
                     b.Property<int>("VersionNumber")
                         .HasColumnType("int");
@@ -761,6 +828,27 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.Navigation("Project");
 
                     b.Navigation("RequirementSource");
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.ArtifactImpactNotice", b =>
+                {
+                    b.HasOne("AiReap.Domain.Entities.Artifact", null)
+                        .WithMany()
+                        .HasForeignKey("AffectedArtifactId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("AiReap.Domain.Entities.Project", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("AiReap.Domain.Entities.Artifact", null)
+                        .WithMany()
+                        .HasForeignKey("SourceArtifactId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("AiReap.Domain.Entities.ArtifactRelationship", b =>

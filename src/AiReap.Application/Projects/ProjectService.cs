@@ -1,5 +1,6 @@
 using AiReap.Application.Common;
 using AiReap.Application.Persistence;
+using AiReap.Application.Traceability;
 using AiReap.Domain.Common;
 using AiReap.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -52,6 +53,7 @@ public class ProjectService : IProjectService
         });
 
         await _db.SaveChangesAsync(cancellationToken);
+        await BusinessObjectives.SyncAsync(_db, project.Id, project.Objectives, _currentUser.UserId, cancellationToken);
 
         return ToResponse(project);
     }
@@ -100,6 +102,7 @@ public class ProjectService : IProjectService
         project.UpdatedAt = DateTime.UtcNow;
 
         await _db.SaveChangesAsync(cancellationToken);
+        await BusinessObjectives.SyncAsync(_db, project.Id, project.Objectives, _currentUser.UserId, cancellationToken);
 
         return ToResponse(project);
     }

@@ -20,6 +20,7 @@ public class AiReapDbContext : IdentityDbContext<ApplicationUser>, IAiReapDbCont
     public DbSet<ArtifactVersion> ArtifactVersions => Set<ArtifactVersion>();
     public DbSet<ArtifactRelationship> ArtifactRelationships => Set<ArtifactRelationship>();
     public DbSet<ArtifactReview> ArtifactReviews => Set<ArtifactReview>();
+    public DbSet<ArtifactImpactNotice> ArtifactImpactNotices => Set<ArtifactImpactNotice>();
     public DbSet<AIExecution> AIExecutions => Set<AIExecution>();
     public DbSet<Document> Documents => Set<Document>();
     public DbSet<DocumentChunk> DocumentChunks => Set<DocumentChunk>();
@@ -83,6 +84,21 @@ public class AiReapDbContext : IdentityDbContext<ApplicationUser>, IAiReapDbCont
                 .WithMany()
                 .HasForeignKey(a => a.RequirementSourceId)
                 .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        builder.Entity<ArtifactVersion>(b => b.Property(v => v.Title).HasMaxLength(300));
+
+        builder.Entity<ArtifactImpactNotice>(b =>
+        {
+            b.Property(n => n.Path).IsRequired().HasMaxLength(1000);
+            b.Property(n => n.AcknowledgementNote).HasMaxLength(2000);
+            // Restrict everywhere (like AgentRuns): avoids SQL Server multiple-cascade-path errors, and a
+            // notice is audit history, deleted explicitly rather than as a side effect.
+            b.HasOne<Project>().WithMany().HasForeignKey(n => n.ProjectId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne<Artifact>().WithMany().HasForeignKey(n => n.SourceArtifactId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne<Artifact>().WithMany().HasForeignKey(n => n.AffectedArtifactId).OnDelete(DeleteBehavior.Restrict);
+            b.HasIndex(n => new { n.AffectedArtifactId, n.AcknowledgedAt });
+            b.HasIndex(n => new { n.ProjectId, n.AcknowledgedAt });
         });
 
         builder.Entity<ArtifactRelationship>(b =>

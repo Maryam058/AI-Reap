@@ -72,7 +72,8 @@ public class RequirementQualityService : IRequirementQualityService
         }
 
         var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<QualityAiResponse>(
-            _chatClient, _logger, "RequirementQualityAnalysis", source.Id.ToString(), SystemPrompt, sb.ToString(), cancellationToken);
+            _chatClient, _logger, "RequirementQualityAnalysis", source.Id.ToString(), SystemPrompt, sb.ToString(), cancellationToken,
+            knownArtifactCodes: candidates.Select(a => a.Code));
 
         var findings = parsed.Findings
             .Select(f => (Finding: f, Artifact: candidates.FirstOrDefault(a => a.Code == f.ArtifactCode)))
@@ -89,9 +90,17 @@ public class RequirementQualityService : IRequirementQualityService
         return findings;
     }
 
-    private class QualityAiResponse
+    private class QualityAiResponse : IValidatableAiResponse
     {
         public List<QualityFindingItem> Findings { get; set; } = new();
+
+        public void Validate(AiResponseValidator v) =>
+            v.Items(Findings, "findings", (item, path) =>
+            {
+                v.CodeExists(item.ArtifactCode, $"{path}.artifactCode");
+                v.Required(item.Issue, $"{path}.issue");
+                v.Required(item.Recommendation, $"{path}.recommendation");
+            });
     }
 
     private class QualityFindingItem

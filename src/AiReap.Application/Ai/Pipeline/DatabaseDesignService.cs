@@ -58,7 +58,8 @@ public class DatabaseDesignService : IDatabaseDesignService
         var frContext = GenerationSupport.BuildContextBlock("Functional requirements derived so far:", functionalRequirements);
 
         var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<DatabaseDesignAiResponse>(
-            _chatClient, _logger, "DatabaseDesignGeneration", source.Id.ToString(), SystemPrompt, source.RawText + context + frContext, cancellationToken);
+            _chatClient, _logger, "DatabaseDesignGeneration", source.Id.ToString(), SystemPrompt, source.RawText + context + frContext, cancellationToken,
+            knownArtifactCodes: functionalRequirements.Select(fr => fr.Code));
 
         var now = DateTime.UtcNow;
         var codes = await ArtifactCodeGenerator.ReserveCodesAsync(_db, source.ProjectId, ArtifactType.DataEntity, parsed.DataEntities.Count, cancellationToken);
@@ -98,9 +99,22 @@ public class DatabaseDesignService : IDatabaseDesignService
         return entityArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList();
     }
 
-    private class DatabaseDesignAiResponse
+    private class DatabaseDesignAiResponse : IValidatableAiResponse
     {
         public List<DataEntityItem> DataEntities { get; set; } = new();
+
+        public void Validate(AiResponseValidator v) =>
+            v.Items(DataEntities, "dataEntities", (item, path) =>
+            {
+                v.Required(item.Title, $"{path}.title");
+                v.MaxLength(item.Title, 300, $"{path}.title");
+                v.Items(item.Fields, $"{path}.fields", (field, fieldPath) =>
+                {
+                    v.Required(field.Name, $"{fieldPath}.name");
+                    v.Required(field.DataType, $"{fieldPath}.dataType");
+                }, minItems: 1);
+                v.CodesExist(item.RelatedRequirementCodes, $"{path}.relatedRequirementCodes");
+            }, minItems: 1);
     }
 
     private class DataEntityItem

@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { phasePath } from '../lib/sdlc';
 import { useAuth } from '../auth/AuthContext';
-import { ApiError } from '../api/client';
+import { apiErrorText } from '../lib/errors';
 import { requirementSourcesApi } from '../api/requirementSources';
 import { artifactsApi } from '../api/artifacts';
 import {
@@ -32,6 +32,8 @@ export function RequirementWorkspace({
   const { token, hasRole } = useAuth();
   const canWrite = hasRole('Administrator') || hasRole('BusinessAnalyst');
   const canReview = canWrite || hasRole('Reviewer');
+  // §4 — QA generates and manages test cases (the API allows QA to edit TestCase artifacts only).
+  const canManageTests = canWrite || hasRole('QA');
 
   const [sources, setSources] = useState<RequirementSource[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -55,7 +57,7 @@ export function RequirementWorkspace({
         setSelectedId(list[0].id);
       }
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to load requirement sources.');
+      setError(apiErrorText(err, 'Failed to load requirement sources.'));
     }
   };
 
@@ -68,7 +70,7 @@ export function RequirementWorkspace({
       setQuestions(q);
       setArtifacts(a.filter((x) => x.artifactType !== ARTIFACT_TYPE_VALUES.ClarificationQuestion));
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to load requirement data.');
+      setError(apiErrorText(err, 'Failed to load requirement data.'));
     }
   };
 
@@ -96,7 +98,8 @@ export function RequirementWorkspace({
       await fn();
       onChange?.();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Action failed.');
+      // AI provider/validation failures and rejected status changes carry a user-facing explanation.
+      setError(apiErrorText(err, 'Action failed. Please try again.'));
     } finally {
       setBusy(null);
     }
@@ -213,6 +216,13 @@ export function RequirementWorkspace({
       if (selectedId) await loadDerived(selectedId);
     });
 
+  // §24 workflow moves other than approve/reject (submit for review, return to draft, reopen).
+  const onChangeStatus = (id: string, status: number) =>
+    runAction(`status-${id}`, async () => {
+      await artifactsApi.updateStatus(id, { status }, token);
+      if (selectedId) await loadDerived(selectedId);
+    });
+
   const functionalRequirements = artifacts.filter((a) => a.artifactType === ARTIFACT_TYPE_VALUES.FunctionalRequirement);
   const nonFunctionalRequirements = artifacts.filter((a) => a.artifactType === ARTIFACT_TYPE_VALUES.NonFunctionalRequirement);
   const businessRules = artifacts.filter((a) => a.artifactType === ARTIFACT_TYPE_VALUES.BusinessRule);
@@ -245,7 +255,7 @@ export function RequirementWorkspace({
     if (selectedId) loadDerived(selectedId);
   };
 
-  const reviewProps = { canReview, canEdit: canWrite, token, onApprove, onReject, onSaved: onArtifactSaved };
+  const reviewProps = { canReview, canEdit: canWrite, token, onApprove, onReject, onChangeStatus, onSaved: onArtifactSaved };
   const generateButton = (key: string, label: string, busyLabel: string, run: () => unknown, disabled: boolean, primary = false, hint?: string) => (
     <button
       type="button"
@@ -567,7 +577,7 @@ export function RequirementWorkspace({
 
           {view === 'testing' && (
             <>
-              {canWrite && functionalRequirements.length > 0 && (
+              {canManageTests && functionalRequirements.length > 0 && (
                 <section className="req-section">
                   <div className="req-section-head">
                     <h3>Generate test cases per requirement</h3>
@@ -602,7 +612,9 @@ export function RequirementWorkspace({
                   description={needsFr ? 'Generate functional requirements first — test cases are derived from them.' : 'Generate test cases from a functional requirement above.'}
                 />
               )}
-              {testCases.length > 0 && <ArtifactSection id="sec-tests" title="Test Cases" items={testCases} {...reviewProps} />}
+              {testCases.length > 0 && (
+                <ArtifactSection id="sec-tests" title="Test Cases" items={testCases} {...reviewProps} canEdit={canManageTests} />
+              )}
             </>
           )}
         </div>
@@ -651,6 +663,7 @@ function ArtifactSection({
   token,
   onApprove,
   onReject,
+  onChangeStatus,
   onSaved,
   onGenerateAcceptanceCriteria,
   onGenerateTestCases,
@@ -663,6 +676,7 @@ function ArtifactSection({
   token: string | null;
   onApprove: (id: string) => Promise<void>;
   onReject: (id: string) => Promise<void>;
+  onChangeStatus: (id: string, status: number) => Promise<void>;
   onSaved: () => void;
   onGenerateAcceptanceCriteria?: (id: string) => Promise<void>;
   onGenerateTestCases?: (id: string) => Promise<void>;
@@ -683,6 +697,7 @@ function ArtifactSection({
             token={token}
             onApprove={onApprove}
             onReject={onReject}
+            onChangeStatus={onChangeStatus}
             onSaved={onSaved}
             onGenerateAcceptanceCriteria={onGenerateAcceptanceCriteria}
             onGenerateTestCases={onGenerateTestCases}

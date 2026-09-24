@@ -31,6 +31,7 @@ builder.Services.AddHttpContextAccessor();
 
 // Order matters: tried in registration order, first to claim the exception wins.
 builder.Services.AddExceptionHandler<ProjectAccessDeniedExceptionHandler>();
+builder.Services.AddExceptionHandler<ApplicationExceptionHandler>();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
 
@@ -58,6 +59,7 @@ builder.Services.AddScoped<ITraceabilityService, TraceabilityService>();
 builder.Services.AddScoped<IImpactAnalysisService, ImpactAnalysisService>();
 builder.Services.AddScoped<IAuditTrailService, AuditTrailService>();
 builder.Services.AddScoped<IDocumentService, DocumentService>();
+builder.Services.AddScoped<IKnowledgeRetriever, KnowledgeRetriever>();
 builder.Services.AddScoped<ICopilotService, CopilotService>();
 
 // §36 — the agent chain. Registration order is irrelevant; AgentOrchestrator sorts by AgentKind.
@@ -72,11 +74,30 @@ builder.Services.AddScoped<IAgentOrchestrator, AgentOrchestrator>();
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 builder.Services.AddSingleton<JwtTokenService>();
 
+// Secrets are never committed: they come from `dotnet user-secrets` (Development) or environment
+// variables (ConnectionStrings__Default, Jwt__Key, Ai__Gemini__ApiKey). See README "Configuration".
+if (string.IsNullOrWhiteSpace(builder.Configuration.GetConnectionString("Default")))
+{
+    throw new InvalidOperationException(
+        "ConnectionStrings:Default is not configured. Set it with `dotnet user-secrets set \"ConnectionStrings:Default\" \"...\" " +
+        "--project src/AiReap.Api` or the ConnectionStrings__Default environment variable.");
+}
+
 var jwtOptions = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
 if (string.IsNullOrWhiteSpace(jwtOptions.Key))
 {
     throw new InvalidOperationException(
-        "Jwt:Key is not configured. Set it via appsettings.Development.json or the Jwt__Key environment variable.");
+        "Jwt:Key is not configured. Set it with `dotnet user-secrets set \"Jwt:Key\" \"<64+ random characters>\" --project src/AiReap.Api` " +
+        "or the Jwt__Key environment variable.");
+}
+
+// A short key is brute-forceable, and the placeholder that used to be committed to the repository
+// is public - neither may sign tokens outside a developer's own machine.
+if (!builder.Environment.IsDevelopment()
+    && (Encoding.UTF8.GetByteCount(jwtOptions.Key) < 32 || jwtOptions.Key.StartsWith("dev-only-signing-key", StringComparison.Ordinal)))
+{
+    throw new InvalidOperationException(
+        "Jwt:Key is too short or is the public development placeholder. Configure a random key of at least 32 bytes for this environment.");
 }
 
 builder.Services

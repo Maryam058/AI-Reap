@@ -8,4 +8,8 @@ public interface IDocumentService
     Task<DocumentResponse> UploadAsync(Guid projectId, string fileName, string contentType, string text, CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<DocumentResponse>> GetForProjectAsync(Guid projectId, CancellationToken cancellationToken = default);
+
+    // Re-embeds chunks whose vectors came from a different embedding model (e.g. the hash stub used
+    // before a Gemini key was configured), so they become searchable again. Returns how many.
+    Task<int> ReindexAsync(Guid projectId, CancellationToken cancellationToken = default);
 }

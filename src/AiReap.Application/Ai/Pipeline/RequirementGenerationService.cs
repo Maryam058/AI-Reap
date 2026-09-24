@@ -2,7 +2,9 @@ using System.Text.Json;
 using AiReap.Application.Artifacts;
 using AiReap.Application.Artifacts.Payloads;
 using AiReap.Application.Common;
+using AiReap.Application.Knowledge;
 using AiReap.Application.Persistence;
+using AiReap.Application.Traceability;
 using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
@@ -12,7 +14,7 @@ namespace AiReap.Application.Ai.Pipeline;
 
 public class RequirementGenerationService : IRequirementGenerationService
 {
-    private const string PromptTemplateVersion = "RequirementGeneration-v1";
+    private const string PromptTemplateVersion = "RequirementGeneration-v2";
 
     private const string SystemPrompt = """
         You are a requirements engineer (§9/§10 of an SDLC automation spec). Given a raw
@@ -24,13 +26,21 @@ public class RequirementGenerationService : IRequirementGenerationService
         assumptionStatus as "proposed_assumption" - never claim a value is "confirmed" unless a
         human explicitly stated that exact number in the input or clarifications.
 
+        If project document excerpts are provided, use them only to inform requirements that the
+        raw requirement or clarifications support, and list the labels of the excerpts a
+        requirement relies on in sourceReferences (e.g. "notes.pdf#3"); use [] otherwise.
+
+        If business objectives are listed, set businessObjectiveCodes on each functional
+        requirement to the codes (e.g. "BO-001") of the objectives it directly serves. Use only
+        codes from that list; use [] when none clearly applies - never invent a code.
+
         Respond with ONLY a single JSON object, no markdown fences, no commentary, matching
         exactly this shape:
         {
           "functionalRequirements": [
             {"title": "string", "actor": "string", "priority": "Low|Medium|High|Critical",
              "preconditions": "string", "inputs": "string", "processing": "string",
-             "expectedResult": "string", "dependencies": ["string"]}
+             "expectedResult": "string", "dependencies": ["string"], "businessObjectiveCodes": ["BO-001"], "sourceReferences": ["notes.pdf#0"]}
           ],
           "nonFunctionalRequirements": [
             {"title": "string",
@@ -45,16 +55,20 @@ public class RequirementGenerationService : IRequirementGenerationService
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
     private readonly IProjectAccessService _projectAccess;
+    private readonly IKnowledgeRetriever _retriever;
     private readonly ILogger<RequirementGenerationService> _logger;
+
+    private const int DocumentExcerpts = 4;
 
     public RequirementGenerationService(
         IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser, IProjectAccessService projectAccess,
-        ILogger<RequirementGenerationService> logger)
+        IKnowledgeRetriever retriever, ILogger<RequirementGenerationService> logger)
     {
         _chatClient = chatClient;
         _db = db;
         _currentUser = currentUser;
         _projectAccess = projectAccess;
+        _retriever = retriever;
         _logger = logger;
     }
 
@@ -65,10 +79,24 @@ public class RequirementGenerationService : IRequirementGenerationService
         await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
 
         var context = await ClarificationContextBuilder.BuildAsync(_db, requirementSourceId, cancellationToken);
-        var userPrompt = source.RawText + context;
+
+        // §21 — objectives come from the project record, so FRs can be traced back to them.
+        var project = await _db.Projects.FirstAsync(p => p.Id == source.ProjectId, cancellationToken);
+        var objectives = await BusinessObjectives.SyncAsync(_db, project.Id, project.Objectives, _currentUser.UserId, cancellationToken);
+        var objectiveContext = GenerationSupport.BuildContextBlock("Business objectives of this project:", objectives);
+
+        // §26 — ground generation in the project's uploaded documents (meeting notes, specs, ...).
+        var retrieval = await _retriever.RetrieveAsync(project.Id, source.RawText, DocumentExcerpts, cancellationToken);
+        var documentContext = retrieval.Chunks.Count == 0
+            ? string.Empty
+            : $"\n\nProject document excerpts (label in brackets):\n{KnowledgeRetriever.FormatExcerpts(retrieval.Chunks)}";
+
+        var userPrompt = source.RawText + context + objectiveContext + documentContext;
 
         var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<GenerationAiResponse>(
-            _chatClient, _logger, "RequirementGeneration", source.Id.ToString(), SystemPrompt, userPrompt, cancellationToken);
+            _chatClient, _logger, "RequirementGeneration", source.Id.ToString(), SystemPrompt, userPrompt, cancellationToken,
+            knownArtifactCodes: objectives.Select(o => o.Code),
+            knownSourceReferences: retrieval.Chunks.Select(c => c.Reference));
 
         var now = DateTime.UtcNow;
 
@@ -85,7 +113,8 @@ public class RequirementGenerationService : IRequirementGenerationService
                 Inputs = item.Inputs,
                 Processing = item.Processing,
                 ExpectedResult = item.ExpectedResult,
-                Dependencies = item.Dependencies
+                Dependencies = item.Dependencies,
+                SourceReferences = item.SourceReferences
             };
 
             frArtifacts.Add(CreateArtifact(
@@ -121,6 +150,14 @@ public class RequirementGenerationService : IRequirementGenerationService
         {
             _db.Artifacts.Add(artifact);
             _db.ArtifactVersions.Add(InitialVersion(artifact, now));
+        }
+
+        // FR -DerivedFrom-> BO: the requirement exists to serve that objective.
+        for (var i = 0; i < frArtifacts.Count; i++)
+        {
+            var served = objectives.Where(o => parsed.FunctionalRequirements[i].BusinessObjectiveCodes
+                .Contains(o.Code, StringComparer.OrdinalIgnoreCase));
+            GenerationSupport.LinkToRelated(_db, frArtifacts[i], served, RelationshipType.DerivedFrom, now);
         }
 
         GenerationSupport.AddExecutions(
@@ -161,6 +198,9 @@ public class RequirementGenerationService : IRequirementGenerationService
         ArtifactId = artifact.Id,
         VersionNumber = 1,
         DataSnapshotJson = artifact.DataJson,
+        Title = artifact.Title,
+        Priority = artifact.Priority,
+        Status = artifact.Status,
         ChangedByUserId = _currentUser.UserId,
         ChangedAt = now,
         Reason = "AI requirement generation",
@@ -170,10 +210,29 @@ public class RequirementGenerationService : IRequirementGenerationService
     private static ArtifactPriority ParsePriority(string? priority) =>
         Enum.TryParse<ArtifactPriority>(priority, ignoreCase: true, out var result) ? result : ArtifactPriority.Medium;
 
-    private class GenerationAiResponse
+    private class GenerationAiResponse : IValidatableAiResponse
     {
         public List<FunctionalRequirementItem> FunctionalRequirements { get; set; } = new();
         public List<NonFunctionalRequirementItem> NonFunctionalRequirements { get; set; } = new();
+
+        public void Validate(AiResponseValidator v)
+        {
+            v.Items(FunctionalRequirements, "functionalRequirements", (item, path) =>
+            {
+                v.Required(item.Title, $"{path}.title");
+                v.MaxLength(item.Title, 300, $"{path}.title");
+                v.Required(item.Actor, $"{path}.actor");
+                v.OneOf(item.Priority, $"{path}.priority", AiVocabulary.Priorities, optional: true);
+                v.CodesExist(item.BusinessObjectiveCodes, $"{path}.businessObjectiveCodes");
+                v.SourceReferencesExist(item.SourceReferences, $"{path}.sourceReferences");
+            }, minItems: 1);
+            v.Items(NonFunctionalRequirements, "nonFunctionalRequirements", (item, path) =>
+            {
+                v.Required(item.Title, $"{path}.title");
+                v.MaxLength(item.Title, 300, $"{path}.title");
+                v.OneOf(item.Category, $"{path}.category", AiVocabulary.NfrCategories);
+            });
+        }
     }
 
     private class FunctionalRequirementItem
@@ -186,6 +245,8 @@ public class RequirementGenerationService : IRequirementGenerationService
         public string? Processing { get; set; }
         public string? ExpectedResult { get; set; }
         public List<string> Dependencies { get; set; } = new();
+        public List<string> BusinessObjectiveCodes { get; set; } = new();
+        public List<string> SourceReferences { get; set; } = new();
     }
 
     private class NonFunctionalRequirementItem

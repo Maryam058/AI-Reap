@@ -14,6 +14,9 @@ public class ArtifactsController : ControllerBase
 {
     private const string WriterRoles = $"{Roles.Administrator},{Roles.BusinessAnalyst}";
     private const string ReviewerRoles = $"{Roles.Administrator},{Roles.BusinessAnalyst},{Roles.Reviewer}";
+    // §4 — "QA: view requirements and generate/manage test cases". QA may author test cases only;
+    // Update enforces that restriction per artifact.
+    private const string WriterOrQaRoles = $"{Roles.Administrator},{Roles.BusinessAnalyst},{Roles.QA}";
 
     private readonly IArtifactService _artifacts;
     private readonly IUserStoryService _userStoryService;
@@ -42,10 +45,24 @@ public class ArtifactsController : ControllerBase
 
     // §23 — human edit; creates a new version rather than overwriting history.
     [HttpPatch("api/artifacts/{id:guid}")]
-    [Authorize(Roles = WriterRoles)]
-    [Capability("Author", "Edit artifacts and answer clarification questions", 50)]
+    [Authorize(Roles = WriterOrQaRoles)]
+    [Capability("Author", "Edit artifacts (QA: test cases only)", 50)]
     public async Task<ActionResult<ArtifactResponse>> Update(Guid id, UpdateArtifactRequest request, CancellationToken cancellationToken)
     {
+        if (!User.IsInRole(Roles.Administrator) && !User.IsInRole(Roles.BusinessAnalyst))
+        {
+            var existing = await _artifacts.GetByIdAsync(id, cancellationToken);
+            if (existing is null)
+            {
+                return NotFound();
+            }
+
+            if (existing.ArtifactType != ArtifactType.TestCase)
+            {
+                return Forbid();
+            }
+        }
+
         var updated = await _artifacts.UpdateAsync(id, request, cancellationToken);
         return updated is null ? NotFound() : Ok(updated);
     }
@@ -75,6 +92,13 @@ public class ArtifactsController : ControllerBase
         return Ok(await _artifacts.GetVersionsAsync(id, cancellationToken));
     }
 
+    // §24 — review decisions (who approved/rejected which version, with comment).
+    [HttpGet("api/artifacts/{id:guid}/reviews")]
+    public async Task<ActionResult<IReadOnlyList<ArtifactReviewResponse>>> GetReviews(Guid id, CancellationToken cancellationToken)
+    {
+        return Ok(await _artifacts.GetReviewsAsync(id, cancellationToken));
+    }
+
     [HttpGet("api/artifacts/{id:guid}/relationships")]
     public async Task<ActionResult<IReadOnlyList<ArtifactRelationshipResponse>>> GetRelationships(Guid id, CancellationToken cancellationToken)
     {
@@ -92,7 +116,7 @@ public class ArtifactsController : ControllerBase
 
     // §20 — only valid when id is a FunctionalRequirement artifact.
     [HttpPost("api/artifacts/{id:guid}/generate-test-cases")]
-    [Authorize(Roles = WriterRoles)]
+    [Authorize(Roles = WriterOrQaRoles)]
     public async Task<ActionResult> GenerateTestCases(Guid id, CancellationToken cancellationToken)
     {
         var created = await _testGenerationService.GenerateAsync(id, cancellationToken);

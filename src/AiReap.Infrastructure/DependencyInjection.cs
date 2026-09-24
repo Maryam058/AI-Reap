@@ -35,13 +35,15 @@ public static class DependencyInjection
         services.Configure<AnthropicOptions>(configuration.GetSection(AnthropicOptions.SectionName));
         services.Configure<AiOptions>(configuration.GetSection(AiOptions.SectionName));
         services.Configure<OllamaOptions>(configuration.GetSection(OllamaOptions.SectionName));
+        services.Configure<GeminiOptions>(configuration.GetSection(GeminiOptions.SectionName));
+        services.Configure<AiResilienceOptions>(configuration.GetSection(AiResilienceOptions.SectionName));
 
-        // The Anthropic client, the Ollama client, and the stub are all always registered (so
-        // the app never fails to start regardless of which provider ends up selected, and
-        // switching providers is a config change with no wiring changes - requirement: keep the
-        // real Anthropic implementation reachable with no architectural changes). Which one
-        // IAiChatClient actually resolves to is decided per-request in ResolveAiChatClient below,
-        // once a real IHostEnvironment/IOptions snapshot is available.
+        // Every provider client and the stub are always registered (so the app never fails to
+        // start regardless of which provider ends up selected, and switching providers is a config
+        // change with no wiring changes). Which one IAiChatClient actually resolves to is decided
+        // per-request in ResolveAiChatClient below, once a real IHostEnvironment/IOptions snapshot
+        // is available.
+        services.AddHttpClient<GeminiAiChatClient>();
         services.AddHttpClient<AnthropicAiChatClient>();
         services.AddHttpClient<OllamaAiChatClient>();
         services.AddSingleton<StubAiChatClient>();
@@ -50,8 +52,17 @@ public static class DependencyInjection
 
         services.Configure<OpenAiOptions>(configuration.GetSection(OpenAiOptions.SectionName));
 
+        // §26 embeddings: Gemini (semantic, same key as chat) when it's the configured provider and
+        // a key is present; else OpenAI if its key is set; else the deterministic hash stub.
+        var geminiOptions = configuration.GetSection(GeminiOptions.SectionName).Get<GeminiOptions>() ?? new GeminiOptions();
+        var chatProvider = configuration[$"{AiOptions.SectionName}:Provider"];
         var openAiApiKey = configuration[$"{OpenAiOptions.SectionName}:ApiKey"];
-        if (!string.IsNullOrWhiteSpace(openAiApiKey))
+        if (geminiOptions.HasUsableApiKey
+            && (string.IsNullOrWhiteSpace(chatProvider) || string.Equals(chatProvider.Trim(), AiOptions.Gemini, StringComparison.OrdinalIgnoreCase)))
+        {
+            services.AddHttpClient<IEmbeddingClient, GeminiEmbeddingClient>();
+        }
+        else if (!string.IsNullOrWhiteSpace(openAiApiKey))
         {
             services.AddHttpClient<IEmbeddingClient, OpenAiEmbeddingClient>();
         }
@@ -65,27 +76,32 @@ public static class DependencyInjection
         return services;
     }
 
-    // Ai:Provider picks the implementation explicitly: "Ollama" always resolves to the local
-    // Ollama client (no API key involved, so no environment-based fallback logic applies - it's
-    // either reachable or OllamaAiChatClient throws a clear error on the first call). "Anthropic"
-    // (the default when Provider is unset) preserves the original behavior below unchanged. Any
-    // other value is a configuration mistake and fails fast at resolution time rather than
-    // silently falling back to something the operator didn't ask for.
+    // Ai:Provider picks the implementation explicitly. "Gemini" (the default when Provider is
+    // unset) is the supported real provider. "Anthropic" and "Ollama" keep their original selection
+    // behavior. Any other value is a configuration mistake and fails fast at resolution time rather
+    // than silently falling back to something the operator didn't ask for. Every real client is
+    // wrapped in ResilientAiChatClient (timeout, retry with backoff, error classification); the
+    // stub never is.
     private static IAiChatClient ResolveAiChatClient(IServiceProvider sp)
     {
         var aiOptions = sp.GetRequiredService<IOptions<AiOptions>>().Value;
-        var provider = string.IsNullOrWhiteSpace(aiOptions.Provider) ? "Anthropic" : aiOptions.Provider.Trim();
+        var provider = string.IsNullOrWhiteSpace(aiOptions.Provider) ? AiOptions.Gemini : aiOptions.Provider.Trim();
 
-        if (string.Equals(provider, "Ollama", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(provider, AiOptions.Gemini, StringComparison.OrdinalIgnoreCase))
         {
-            return sp.GetRequiredService<OllamaAiChatClient>();
+            return ResolveGemini(sp);
         }
 
-        if (!string.Equals(provider, "Anthropic", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(provider, AiOptions.Ollama, StringComparison.OrdinalIgnoreCase))
+        {
+            return Resilient(sp, sp.GetRequiredService<OllamaAiChatClient>(), AiOptions.Ollama);
+        }
+
+        if (!string.Equals(provider, AiOptions.Anthropic, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
                 $"Ai:Provider is set to '{aiOptions.Provider}', which is not a recognized AI provider. " +
-                "Use 'Anthropic' or 'Ollama'.");
+                "Use 'Gemini' (default), 'Anthropic' or 'Ollama'.");
         }
 
         // Real key present -> always the real client, in every environment. No usable key -> the
@@ -98,7 +114,7 @@ public static class DependencyInjection
         var options = sp.GetRequiredService<IOptions<AnthropicOptions>>().Value;
         if (options.HasUsableApiKey)
         {
-            return sp.GetRequiredService<AnthropicAiChatClient>();
+            return Resilient(sp, sp.GetRequiredService<AnthropicAiChatClient>(), AiOptions.Anthropic);
         }
 
         var environment = sp.GetRequiredService<IHostEnvironment>();
@@ -115,4 +131,32 @@ public static class DependencyInjection
             "environment. This environment is not permitted to silently fall back to the development AI stub, " +
             "so real AI analysis cannot run until a valid Anthropic API key is configured.");
     }
+
+    // Key present -> the real Gemini client in every environment. No usable key -> the deterministic
+    // stub in Development/Testing only (logged, and recorded as model "stub-canned-model" in the AI
+    // audit trail, so it is never mistaken for real output). Anywhere else the Gemini client is
+    // still returned and fails each AI call with AiProviderException(NotConfigured), which the API
+    // maps to a 503 naming the missing setting - never canned data dressed up as real AI output.
+    private static IAiChatClient ResolveGemini(IServiceProvider sp)
+    {
+        var options = sp.GetRequiredService<IOptions<GeminiOptions>>().Value;
+        if (!options.HasUsableApiKey)
+        {
+            var environment = sp.GetRequiredService<IHostEnvironment>();
+            if (environment.IsDevelopment() || environment.IsEnvironment("Testing"))
+            {
+                sp.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("AiReap.Infrastructure.Ai.AiChatClientSelection")
+                    .LogWarning("Gemini API key not configured; using development AI stub.");
+                return sp.GetRequiredService<StubAiChatClient>();
+            }
+        }
+
+        return Resilient(sp, sp.GetRequiredService<GeminiAiChatClient>(), AiOptions.Gemini);
+    }
+
+    private static ResilientAiChatClient Resilient(IServiceProvider sp, IAiChatClient inner, string providerName) =>
+        new(inner, providerName,
+            sp.GetRequiredService<IOptions<AiResilienceOptions>>().Value,
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<ResilientAiChatClient>());
 }

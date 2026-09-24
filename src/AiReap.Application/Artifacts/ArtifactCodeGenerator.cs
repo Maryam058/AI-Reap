@@ -20,7 +20,8 @@ public static class ArtifactCodeGenerator
         [ArtifactType.ApiSpecification] = "API",
         [ArtifactType.DataEntity] = "DE",
         [ArtifactType.ImplementationTask] = "TASK",
-        [ArtifactType.TestCase] = "TC"
+        [ArtifactType.TestCase] = "TC",
+        [ArtifactType.BusinessObjective] = "BO"
     };
 
     public static async Task<List<string>> ReserveCodesAsync(

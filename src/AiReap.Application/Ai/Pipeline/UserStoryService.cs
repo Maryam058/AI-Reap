@@ -84,7 +84,8 @@ public class UserStoryService : IUserStoryService
         var userPrompt = source.RawText + context + (functionalRequirements.Count > 0 ? frContext.ToString() : string.Empty);
 
         var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<StoryAiResponse>(
-            _chatClient, _logger, "UserStoryGeneration", source.Id.ToString(), StorySystemPrompt, userPrompt, cancellationToken);
+            _chatClient, _logger, "UserStoryGeneration", source.Id.ToString(), StorySystemPrompt, userPrompt, cancellationToken,
+            knownArtifactCodes: functionalRequirements.Select(fr => fr.Code));
 
         var now = DateTime.UtcNow;
         var codes = await ArtifactCodeGenerator.ReserveCodesAsync(
@@ -123,6 +124,9 @@ public class UserStoryService : IUserStoryService
                 ArtifactId = artifact.Id,
                 VersionNumber = 1,
                 DataSnapshotJson = artifact.DataJson,
+                Title = artifact.Title,
+                Priority = artifact.Priority,
+                Status = artifact.Status,
                 ChangedByUserId = _currentUser.UserId,
                 ChangedAt = now,
                 Reason = "AI user story generation",
@@ -223,6 +227,9 @@ public class UserStoryService : IUserStoryService
                 ArtifactId = artifact.Id,
                 VersionNumber = 1,
                 DataSnapshotJson = artifact.DataJson,
+                Title = artifact.Title,
+                Priority = artifact.Priority,
+                Status = artifact.Status,
                 ChangedByUserId = _currentUser.UserId,
                 ChangedAt = now,
                 Reason = "AI acceptance criteria generation",
@@ -251,9 +258,20 @@ public class UserStoryService : IUserStoryService
         return acArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList();
     }
 
-    private class StoryAiResponse
+    private class StoryAiResponse : IValidatableAiResponse
     {
         public List<UserStoryItem> UserStories { get; set; } = new();
+
+        public void Validate(AiResponseValidator v) =>
+            v.Items(UserStories, "userStories", (item, path) =>
+            {
+                v.Required(item.Title, $"{path}.title");
+                v.MaxLength(item.Title, 300, $"{path}.title");
+                v.Required(item.Persona, $"{path}.persona");
+                v.Required(item.ValueStatement, $"{path}.valueStatement");
+                v.OneOf(item.Priority, $"{path}.priority", AiVocabulary.Priorities, optional: true);
+                v.CodesExist(item.RelatedRequirementCodes, $"{path}.relatedRequirementCodes");
+            }, minItems: 1);
     }
 
     private class UserStoryItem
@@ -265,9 +283,20 @@ public class UserStoryService : IUserStoryService
         public List<string> RelatedRequirementCodes { get; set; } = new();
     }
 
-    private class AcceptanceCriteriaAiResponse
+    private class AcceptanceCriteriaAiResponse : IValidatableAiResponse
     {
         public List<AcceptanceCriterionItem> AcceptanceCriteria { get; set; } = new();
+
+        public void Validate(AiResponseValidator v) =>
+            v.Items(AcceptanceCriteria, "acceptanceCriteria", (item, path) =>
+            {
+                v.Required(item.Title, $"{path}.title");
+                v.MaxLength(item.Title, 300, $"{path}.title");
+                v.Required(item.Given, $"{path}.given");
+                v.Required(item.When, $"{path}.when");
+                v.Required(item.Then, $"{path}.then");
+                v.OneOf(item.Kind, $"{path}.kind", AiVocabulary.AcceptanceCriterionKinds);
+            }, minItems: 1);
     }
 
     private class AcceptanceCriterionItem

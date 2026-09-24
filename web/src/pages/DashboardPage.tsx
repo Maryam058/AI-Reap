@@ -27,6 +27,7 @@ interface ProjectData {
   stakeholderCount: number | null;
   matrix: TraceabilityRow[] | null;
   conflictCount: number | null;
+  openImpactNoticeCount: number | null;
 }
 
 const SAMPLE_SIZE = 12;
@@ -63,6 +64,7 @@ export function DashboardPage() {
               stakeholderCount: s.status === 'fulfilled' ? s.value.length : null,
               matrix: m.status === 'fulfilled' ? m.value : null,
               conflictCount: d.status === 'fulfilled' ? d.value.conflictCount : null,
+              openImpactNoticeCount: d.status === 'fulfilled' ? (d.value.openImpactNoticeCount ?? 0) : null,
             };
           }),
         ).then((rows) => !cancelled && setData(rows));
@@ -116,9 +118,12 @@ export function DashboardPage() {
     const doneTasks = tasks.filter((t) => t.status === 5 || t.status === 6).length;
     const stakeholders = rows.reduce((n, r) => n + (r.stakeholderCount ?? 0), 0);
     const conflicts = rows.reduce((n, r) => n + (r.conflictCount ?? 0), 0);
+    // §22 — downstream artifacts still flagged by an approved upstream change nobody has reviewed yet.
+    const impactNotices = rows.reduce((n, r) => n + (r.openImpactNoticeCount ?? 0), 0);
     const allMatrixRows = rows.flatMap((r) => r.matrix ?? []);
     const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 100) : 0);
     return {
+      impactNotices,
       byType,
       reqByProject,
       approvalRate: pct(reqBuckets.approved + reqBuckets.completed, requirements.length),
@@ -211,6 +216,7 @@ export function DashboardPage() {
         <MetricCard icon={<IconShieldCheck />} tone="success" value={dataReady ? stats.testCases.length : '…'} label="Test cases" />
         <MetricCard icon={<IconClock />} tone="warning" value={dataReady ? stats.activeTasks : '…'} label="Active tasks" />
         <MetricCard icon={<IconAlert />} tone="warning" value={dataReady ? stats.conflicts : '…'} label="Conflicts detected" />
+        <MetricCard icon={<IconAlert />} tone="warning" value={dataReady ? stats.impactNotices : '…'} label="Changes awaiting impact review" />
       </div>
       {sampled && dataReady && <p className="footnote">Requirement, test and task figures cover your {SAMPLE_SIZE} most recently updated projects.</p>}
 

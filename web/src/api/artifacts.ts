@@ -1,6 +1,7 @@
 import { apiClient } from './client';
 import type {
   ArtifactRelationship,
+  ArtifactReview,
   ArtifactSummary,
   ArtifactVersion,
   ClarificationAnswerRequest,
@@ -37,4 +38,7 @@ export const artifactsApi = {
 
   getVersions: (artifactId: string, token: string | null) =>
     apiClient.get<ArtifactVersion[]>(`/api/artifacts/${artifactId}/versions`, token),
+
+  getReviews: (artifactId: string, token: string | null) =>
+    apiClient.get<ArtifactReview[]>(`/api/artifacts/${artifactId}/reviews`, token),
 };

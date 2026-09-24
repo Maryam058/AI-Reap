@@ -59,7 +59,8 @@ public class ConflictDetectionService : IConflictDetectionService
         }
 
         var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<ConflictAiResponse>(
-            _chatClient, _logger, "ConflictDetection", projectId.ToString(), SystemPrompt, sb.ToString(), cancellationToken);
+            _chatClient, _logger, "ConflictDetection", projectId.ToString(), SystemPrompt, sb.ToString(), cancellationToken,
+            knownArtifactCodes: candidates.Select(a => a.Code));
 
         var existingRelationships = await _db.ArtifactRelationships
             .Where(r => (r.RelationshipType == RelationshipType.DuplicateOf || r.RelationshipType == RelationshipType.ConflictsWith) &&
@@ -111,9 +112,22 @@ public class ConflictDetectionService : IConflictDetectionService
         return findings;
     }
 
-    private class ConflictAiResponse
+    private class ConflictAiResponse : IValidatableAiResponse
     {
         public List<ConflictFindingItem> Findings { get; set; } = new();
+
+        public void Validate(AiResponseValidator v) =>
+            v.Items(Findings, "findings", (item, path) =>
+            {
+                v.CodeExists(item.CodeA, $"{path}.codeA");
+                v.CodeExists(item.CodeB, $"{path}.codeB");
+                if (string.Equals(item.CodeA?.Trim(), item.CodeB?.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    v.Fail($"{path} pairs {item.CodeA} with itself.");
+                }
+                v.OneOf(item.RelationshipType, $"{path}.relationshipType", AiVocabulary.ConflictTypes);
+                v.Required(item.Reason, $"{path}.reason");
+            });
     }
 
     private class ConflictFindingItem

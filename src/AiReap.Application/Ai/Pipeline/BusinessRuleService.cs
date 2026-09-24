@@ -71,7 +71,8 @@ public class BusinessRuleService : IBusinessRuleService
         var userPrompt = source.RawText + context + (functionalRequirements.Count > 0 ? frContext.ToString() : string.Empty);
 
         var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<BusinessRuleAiResponse>(
-            _chatClient, _logger, "BusinessRuleExtraction", source.Id.ToString(), SystemPrompt, userPrompt, cancellationToken);
+            _chatClient, _logger, "BusinessRuleExtraction", source.Id.ToString(), SystemPrompt, userPrompt, cancellationToken,
+            knownArtifactCodes: functionalRequirements.Select(fr => fr.Code));
 
         var now = DateTime.UtcNow;
         var codes = await ArtifactCodeGenerator.ReserveCodesAsync(
@@ -108,6 +109,9 @@ public class BusinessRuleService : IBusinessRuleService
                 ArtifactId = artifact.Id,
                 VersionNumber = 1,
                 DataSnapshotJson = artifact.DataJson,
+                Title = artifact.Title,
+                Priority = artifact.Priority,
+                Status = artifact.Status,
                 ChangedByUserId = _currentUser.UserId,
                 ChangedAt = now,
                 Reason = "AI business rule extraction",
@@ -143,9 +147,18 @@ public class BusinessRuleService : IBusinessRuleService
         return ruleArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList();
     }
 
-    private class BusinessRuleAiResponse
+    private class BusinessRuleAiResponse : IValidatableAiResponse
     {
         public List<BusinessRuleItem> BusinessRules { get; set; } = new();
+
+        public void Validate(AiResponseValidator v) =>
+            v.Items(BusinessRules, "businessRules", (item, path) =>
+            {
+                v.Required(item.Title, $"{path}.title");
+                v.MaxLength(item.Title, 300, $"{path}.title");
+                v.Required(item.Statement, $"{path}.statement");
+                v.CodesExist(item.RelatedRequirementCodes, $"{path}.relatedRequirementCodes");
+            });
     }
 
     private class BusinessRuleItem

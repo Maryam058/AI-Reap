@@ -1337,6 +1337,16 @@ pre {
   color: var(--success-strong);
 }
 
+/* §24 — "AI Generated — Human Review Required" and "edited after approval" notes on artifact cards. */
+.artifact-review-note {
+  margin: 0.25rem 0 0.5rem;
+  padding: 0.35rem 0.6rem;
+  border-left: 3px solid var(--warning, #d97706);
+  background: var(--ai-soft);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
 .impact-warning {
   color: var(--danger);
   font-size: 0.85rem;

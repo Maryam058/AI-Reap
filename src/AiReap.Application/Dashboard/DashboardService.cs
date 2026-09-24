@@ -57,6 +57,8 @@ public class DashboardService : IDashboardService
             PendingReviewCount: artifacts.Count(a => a.Status is ArtifactStatus.AiGenerated or ArtifactStatus.Draft or ArtifactStatus.UnderReview),
             RejectedCount: artifacts.Count(a => a.Status == ArtifactStatus.Rejected),
             ConflictCount: conflictCount,
-            RecentChanges: recentChanges);
+            RecentChanges: recentChanges,
+            OpenImpactNoticeCount: await _db.ArtifactImpactNotices.CountAsync(
+                n => n.ProjectId == projectId && n.AcknowledgedAt == null, cancellationToken));
     }
 }

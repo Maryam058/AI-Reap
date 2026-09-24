@@ -52,8 +52,8 @@ public class AuditTrailFieldsTests : IAsyncLifetime
         // one execution per artifact, not one execution for the whole call
         Assert.NotEqual(frRow["id"]!.GetValue<string>(), nfrRow["id"]!.GetValue<string>());
         Assert.Equal("RequirementGeneration", frRow["operationType"]!.GetValue<string>());
-        Assert.Equal("RequirementGeneration-v1", frRow["promptTemplateVersion"]!.GetValue<string>());
-        Assert.Equal("RequirementGeneration-v1", nfrRow["promptTemplateVersion"]!.GetValue<string>());
+        Assert.Equal("RequirementGeneration-v2", frRow["promptTemplateVersion"]!.GetValue<string>());
+        Assert.Equal("RequirementGeneration-v2", nfrRow["promptTemplateVersion"]!.GetValue<string>());
         Assert.Null(frRow["accepted"]);
         Assert.Null(nfrRow["accepted"]);
         // both rows carry the same underlying AI response (one call, fanned out per artifact)
