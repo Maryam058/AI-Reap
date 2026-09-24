@@ -40,9 +40,33 @@ public class AnthropicAiChatClient : IAiChatClient
             new[] { new AnthropicMessage("user", userPrompt) });
 
         using var httpResponse = await _httpClient.PostAsJsonAsync("v1/messages", request, cancellationToken);
-        httpResponse.EnsureSuccessStatusCode();
+
+        // EnsureSuccessStatusCode() alone only says "401 (Unauthorized)" with no further detail,
+        // which is indistinguishable in the logs between a missing key, a revoked/placeholder key,
+        // or a genuine Anthropic outage. Anthropic's error body (never our request, so no secrets
+        // in it) names the actual reason (e.g. "invalid x-api-key") - surface it so the real cause
+        // is visible in server-side logs without needing a debugger.
+        if (!httpResponse.IsSuccessStatusCode)
+        {
+            var errorBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+            throw new HttpRequestException(
+                $"Anthropic API request failed with status {(int)httpResponse.StatusCode} ({httpResponse.StatusCode}): {errorBody}",
+                inner: null,
+                statusCode: httpResponse.StatusCode);
+        }
 
         var body = await httpResponse.Content.ReadFromJsonAsync<AnthropicResponse>(cancellationToken: cancellationToken);
+
+        // A response cut off mid-generation is not valid JSON and would otherwise surface as an
+        // opaque "not valid JSON" parse failure further up the pipeline - fail here with the real
+        // reason instead, since it's directly actionable (raise MaxTokens) unlike a parse error.
+        if (body?.StopReason == "max_tokens")
+        {
+            throw new AiOutputValidationException(
+                $"The AI response was truncated at the configured MaxTokens limit ({_options.MaxTokens}) before it finished. " +
+                "Increase Ai:Anthropic:MaxTokens or reduce the size of the requirement source.");
+        }
+
         var text = body?.Content?.FirstOrDefault(c => c.Type == "text")?.Text;
 
         return text ?? string.Empty;
@@ -59,7 +83,8 @@ public class AnthropicAiChatClient : IAiChatClient
         [property: JsonPropertyName("content")] string Content);
 
     private record AnthropicResponse(
-        [property: JsonPropertyName("content")] List<AnthropicContentBlock>? Content);
+        [property: JsonPropertyName("content")] List<AnthropicContentBlock>? Content,
+        [property: JsonPropertyName("stop_reason")] string? StopReason);
 
     private record AnthropicContentBlock(
         [property: JsonPropertyName("type")] string Type,

@@ -22,7 +22,7 @@ docs/                      requirements analysis, ADRs, roadmap
 
 ## Running locally
 
-**Backend** — needs SQL Server reachable at the connection string in `src/AiReap.Api/appsettings.json` (defaults to `(localdb)\mssqllocaldb`; swap for any reachable SQL Server, e.g. a local Docker container):
+**Backend** — needs SQL Server reachable at the connection string in `src/AiReap.Api/appsettings.json` (the single connection string used in every environment: the Docker SQL Server container on `127.0.0.1,14330`, database `AIReapDb`; override with the `ConnectionStrings__Default` environment variable if yours differs):
 
 ```
 dotnet user-secrets set "Jwt:Key" "<a long random string>" --project src/AiReap.Api
