@@ -1,66 +1,91 @@
-using System.Net.Http.Json;
-using System.Text.Json.Serialization;
+using System.Net.Http.Headers;
 using AiReap.Application.Ai;
 using Microsoft.Extensions.Options;
 
 namespace AiReap.Infrastructure.Ai;
 
 // Backs the /api/ai/status diagnostic endpoint. Never runs a generation (that would spend quota or
-// money on every health check). The Gemini branch calls models.get, which checks both the key and
-// that the configured model exists without consuming generation quota. The Anthropic branch only
-// reports whether a usable key is configured. The Ollama branch calls Ollama's own local
-// /api/tags, which is free, to check both reachability and whether the configured model is
-// actually installed.
+// money on every health check). The Gemini and Groq checks call each provider's free model-lookup
+// endpoint, which verifies both the key and that the configured model exists without consuming
+// generation quota; the configured fallback provider is checked alongside the primary. The
+// Anthropic branch only reports whether a usable key is configured.
 public class AiHealthCheckService : IAiHealthCheckService
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly AiOptions _aiOptions;
     private readonly AnthropicOptions _anthropicOptions;
-    private readonly OllamaOptions _ollamaOptions;
     private readonly GeminiOptions _geminiOptions;
+    private readonly GroqOptions _groqOptions;
 
     public AiHealthCheckService(
         IHttpClientFactory httpClientFactory,
         IOptions<AiOptions> aiOptions,
         IOptions<AnthropicOptions> anthropicOptions,
-        IOptions<OllamaOptions> ollamaOptions,
-        IOptions<GeminiOptions> geminiOptions)
+        IOptions<GeminiOptions> geminiOptions,
+        IOptions<GroqOptions> groqOptions)
     {
         _httpClientFactory = httpClientFactory;
         _aiOptions = aiOptions.Value;
         _anthropicOptions = anthropicOptions.Value;
-        _ollamaOptions = ollamaOptions.Value;
         _geminiOptions = geminiOptions.Value;
+        _groqOptions = groqOptions.Value;
     }
 
-    public Task<AiProviderStatus> CheckAsync(CancellationToken cancellationToken = default)
+    public async Task<AiProviderStatus> CheckAsync(CancellationToken cancellationToken = default)
     {
         var provider = string.IsNullOrWhiteSpace(_aiOptions.Provider) ? AiOptions.Gemini : _aiOptions.Provider.Trim();
 
-        if (string.Equals(provider, AiOptions.Gemini, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(provider, AiOptions.Anthropic, StringComparison.OrdinalIgnoreCase))
         {
-            return CheckGeminiAsync(cancellationToken);
+            return CheckAnthropic();
         }
 
-        return string.Equals(provider, AiOptions.Ollama, StringComparison.OrdinalIgnoreCase)
-            ? CheckOllamaAsync(cancellationToken)
-            : Task.FromResult(CheckAnthropic());
+        var primary = await CheckCloudAsync(provider, cancellationToken);
+        var fallbackName = _aiOptions.FallbackProvider?.Trim();
+        if (string.IsNullOrEmpty(fallbackName)
+            || string.Equals(fallbackName, "None", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(fallbackName, provider, StringComparison.OrdinalIgnoreCase))
+        {
+            return primary;
+        }
+
+        return primary with { Fallback = await CheckCloudAsync(fallbackName, cancellationToken) };
     }
 
-    private async Task<AiProviderStatus> CheckGeminiAsync(CancellationToken cancellationToken)
+    private Task<AiProviderStatus> CheckCloudAsync(string provider, CancellationToken cancellationToken)
     {
-        if (!_geminiOptions.HasUsableApiKey)
+        if (string.Equals(provider, AiOptions.Groq, StringComparison.OrdinalIgnoreCase))
         {
-            return new AiProviderStatus(AiOptions.Gemini, Configured: false, ModelAvailable: false, _geminiOptions.Model,
-                "Ai:Gemini:ApiKey is not configured. In Development the canned stub is used instead of Gemini.");
+            // Model ids contain '/' ("openai/gpt-oss-120b"), which Groq expects unescaped in the path.
+            var path = "openai/v1/models/" + string.Join('/', _groqOptions.Model.Split('/').Select(Uri.EscapeDataString));
+            return CheckAsync(AiOptions.Groq, _groqOptions.HasUsableApiKey, "Ai:Groq:ApiKey", _groqOptions.BaseUrl, path,
+                _groqOptions.Model, "Ai:Groq:Model",
+                request => request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _groqOptions.ApiKey.Trim()),
+                cancellationToken);
+        }
+
+        return CheckAsync(AiOptions.Gemini, _geminiOptions.HasUsableApiKey, "Ai:Gemini:ApiKey", _geminiOptions.BaseUrl,
+            $"v1beta/models/{Uri.EscapeDataString(_geminiOptions.Model)}", _geminiOptions.Model, "Ai:Gemini:Model",
+            request => request.Headers.Add("x-goog-api-key", _geminiOptions.ApiKey.Trim()),
+            cancellationToken);
+    }
+
+    private async Task<AiProviderStatus> CheckAsync(
+        string provider, bool hasKey, string keySetting, string baseUrl, string modelPath, string model, string modelSetting,
+        Action<HttpRequestMessage> authenticate, CancellationToken cancellationToken)
+    {
+        if (!hasKey)
+        {
+            return new AiProviderStatus(provider, Configured: false, ModelAvailable: false, model,
+                $"{keySetting} is not configured. With no Gemini or Groq key, Development uses the canned stub instead of real AI.");
         }
 
         var httpClient = _httpClientFactory.CreateClient();
-        httpClient.BaseAddress = new Uri(_geminiOptions.BaseUrl);
+        httpClient.BaseAddress = new Uri(baseUrl);
         httpClient.Timeout = TimeSpan.FromSeconds(10);
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"v1beta/models/{Uri.EscapeDataString(_geminiOptions.Model)}");
-        request.Headers.Add("x-goog-api-key", _geminiOptions.ApiKey.Trim());
+        using var request = new HttpRequestMessage(HttpMethod.Get, modelPath);
+        authenticate(request);
 
         try
         {
@@ -68,17 +93,17 @@ public class AiHealthCheckService : IAiHealthCheckService
             var detail = (int)response.StatusCode switch
             {
                 >= 200 and < 300 => null,
-                400 or 401 or 403 => "Gemini rejected the configured API key.",
-                404 => $"Model '{_geminiOptions.Model}' is not available to this API key. Check Ai:Gemini:Model.",
-                429 => "Gemini rate limit or quota currently exceeded.",
-                _ => $"Gemini returned HTTP {(int)response.StatusCode}."
+                400 or 401 or 403 => $"{provider} rejected the configured API key.",
+                404 => $"Model '{model}' is not available to this API key. Check {modelSetting}.",
+                429 => $"{provider} rate limit or quota currently exceeded.",
+                _ => $"{provider} returned HTTP {(int)response.StatusCode}."
             };
-            return new AiProviderStatus(AiOptions.Gemini, Configured: true, ModelAvailable: response.IsSuccessStatusCode, _geminiOptions.Model, detail);
+            return new AiProviderStatus(provider, Configured: true, ModelAvailable: response.IsSuccessStatusCode, model, detail);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
-            return new AiProviderStatus(AiOptions.Gemini, Configured: true, ModelAvailable: false, _geminiOptions.Model,
-                "The Gemini API could not be reached (network error or timeout).");
+            return new AiProviderStatus(provider, Configured: true, ModelAvailable: false, model,
+                $"The {provider} API could not be reached (network error or timeout).");
         }
     }
 
@@ -90,44 +115,4 @@ public class AiHealthCheckService : IAiHealthCheckService
         Detail: _anthropicOptions.HasUsableApiKey
             ? null
             : "Ai:Anthropic:ApiKey is not configured (or is a placeholder).");
-
-    private async Task<AiProviderStatus> CheckOllamaAsync(CancellationToken cancellationToken)
-    {
-        var httpClient = _httpClientFactory.CreateClient();
-        httpClient.BaseAddress = new Uri(_ollamaOptions.BaseUrl);
-        httpClient.Timeout = TimeSpan.FromSeconds(5);
-
-        try
-        {
-            var tags = await httpClient.GetFromJsonAsync<OllamaTagsResponse>("api/tags", cancellationToken);
-            var installedModels = tags?.Models?.Select(m => m.Name).Where(n => n is not null).ToList() ?? new List<string?>();
-
-            var configuredBaseName = _ollamaOptions.Model.Split(':')[0];
-            var modelAvailable = installedModels.Any(name =>
-                string.Equals(name, _ollamaOptions.Model, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(name?.Split(':')[0], configuredBaseName, StringComparison.OrdinalIgnoreCase));
-
-            return new AiProviderStatus(
-                "Ollama",
-                Configured: true,
-                ModelAvailable: modelAvailable,
-                Model: _ollamaOptions.Model,
-                Detail: modelAvailable
-                    ? null
-                    : $"Model '{_ollamaOptions.Model}' is not installed. Run: ollama pull {_ollamaOptions.Model}");
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-        {
-            return new AiProviderStatus(
-                "Ollama",
-                Configured: true,
-                ModelAvailable: false,
-                Model: _ollamaOptions.Model,
-                Detail: $"Ollama is not running or is unreachable at {_ollamaOptions.BaseUrl}. Start Ollama and try again.");
-        }
-    }
-
-    private record OllamaTagsResponse([property: JsonPropertyName("models")] List<OllamaTagModel>? Models);
-
-    private record OllamaTagModel([property: JsonPropertyName("name")] string? Name);
 }

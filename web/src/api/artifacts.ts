@@ -41,4 +41,8 @@ export const artifactsApi = {
 
   getReviews: (artifactId: string, token: string | null) =>
     apiClient.get<ArtifactReview[]>(`/api/artifacts/${artifactId}/reviews`, token),
+
+  /** Comment-only review of the current version (e.g. a Developer's design review). Never approves or rejects. */
+  addCommentReview: (artifactId: string, comment: string, token: string | null) =>
+    apiClient.post<ArtifactReview>(`/api/artifacts/${artifactId}/reviews`, { comment }, token),
 };

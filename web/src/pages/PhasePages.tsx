@@ -3,7 +3,7 @@ import { useAuth } from '../auth/AuthContext';
 import { useProject } from '../context/ProjectContext';
 import { useProjectInsights } from '../hooks/useProjectInsights';
 import { ARTIFACT_TYPE_VALUES } from '../api/types';
-import { SDLC_PHASES, phasePath } from '../lib/sdlc';
+import { phasePath, WORK_AREAS } from '../lib/workAreas';
 import { PageHeader } from '../components/ui/PageHeader';
 import { Tabs } from '../components/ui/Tabs';
 import { PhasePage, PlannedCard } from '../components/PhasePage';
@@ -20,7 +20,7 @@ import { AuditTrailPanel } from '../components/AuditTrailPanel';
 import { useProjectEditing } from './ProjectFormPages';
 import { IconBarChart, IconCheckCircle, IconCode, IconLayers, IconLink, IconShieldCheck, IconSparkles } from '../components/icons';
 
-const phase = (key: string) => SDLC_PHASES.find((p) => p.key === key)!;
+const phase = (key: string) => WORK_AREAS.find((p) => p.key === key)!;
 
 function Stat({ label, value, hint }: { label: string; value: number | string; hint?: string }) {
   return (
@@ -48,7 +48,7 @@ export function GatheringPage() {
   const requested = params.get('tab');
   const tab: GatheringTab =
     requested === 'stakeholders' || requested === 'members' || requested === 'sources' ? requested : 'context';
-  const { project } = useProject();
+  const { project, bumpContent } = useProject();
   const editing = useProjectEditing();
 
   return (
@@ -88,7 +88,7 @@ export function GatheringPage() {
               <ProjectSummary values={editing.saved} />
             </section>
           ))}
-        {tab === 'stakeholders' && <StakeholdersPanel projectId={project.id} />}
+        {tab === 'stakeholders' && <StakeholdersPanel projectId={project.id} onChange={bumpContent} />}
         {tab === 'members' && <MembersPanel projectId={project.id} />}
         {tab === 'sources' && <Workspace view="gathering" />}
       </div>
@@ -120,7 +120,7 @@ export function AnalysisPage() {
 /* ------------------------------------------------------------------ 3. Validation */
 
 export function ValidationPage() {
-  const { project, contentVersion } = useProject();
+  const { project, contentVersion, bumpContent } = useProject();
   const { dashboard, artifacts } = useProjectInsights(project.id, contentVersion);
   const requirements = artifacts?.filter((a) => a.artifactType === ARTIFACT_TYPE_VALUES.FunctionalRequirement || a.artifactType === ARTIFACT_TYPE_VALUES.NonFunctionalRequirement) ?? null;
 
@@ -157,7 +157,7 @@ export function ValidationPage() {
         </section>
       )}
       <Workspace view="validation" />
-      <ConflictsPanel projectId={project.id} />
+      <ConflictsPanel projectId={project.id} onChange={bumpContent} />
       <PlannedCard
         icon={<IconCheckCircle width={18} height={18} />}
         title="Completeness checks & AI suggestions"
@@ -242,7 +242,7 @@ export function CopilotPage() {
   const [params, setParams] = useSearchParams();
   const requested = params.get('tab');
   const tab: CopilotTab = requested === 'pipeline' || requested === 'documents' || requested === 'audit' ? requested : 'ask';
-  const fromPhase = SDLC_PHASES.find((p) => p.key === params.get('phase'));
+  const fromPhase = WORK_AREAS.find((p) => p.key === params.get('phase'));
 
   return (
     <>

@@ -104,11 +104,14 @@ public class TestHost : IAsyncDisposable
     public const string UserPassword = "Passw0rd!123";
 
     private readonly bool _bootstrap;
+    private readonly IAiChatClient? _chatClient;
     private ApiUser? _admin;
 
-    public TestHost(string? existingDatabase = null, bool bootstrapAdmin = true)
+    // chatClient replaces the scripted stub, for tests that need the real provider stack (over fake HTTP).
+    public TestHost(string? existingDatabase = null, bool bootstrapAdmin = true, IAiChatClient? chatClient = null)
     {
         _bootstrap = bootstrapAdmin;
+        _chatClient = chatClient;
         _ownsDatabase = existingDatabase is null;
         DatabaseName = existingDatabase ?? $"AiReapTests_{Guid.NewGuid():N}";
         if (_ownsDatabase)
@@ -149,6 +152,8 @@ public class TestHost : IAsyncDisposable
             // and blank keys keep embeddings on the deterministic stub too.
             b.UseSetting("Ai:Provider", "Gemini");
             b.UseSetting("Ai:Gemini:ApiKey", "");
+            b.UseSetting("Ai:Groq:ApiKey", "");
+            b.UseSetting("GROQ_API_KEY", ""); // the machine-level key must not reach tests either
             b.UseSetting("Ai:Anthropic:ApiKey", "");
             b.UseSetting("Ai:OpenAI:ApiKey", "");
             if (_bootstrap)
@@ -167,7 +172,7 @@ public class TestHost : IAsyncDisposable
             b.ConfigureServices(s =>
             {
                 s.RemoveAll<IAiChatClient>();
-                s.AddSingleton<IAiChatClient>(Ai);
+                s.AddSingleton<IAiChatClient>(_chatClient ?? Ai);
             });
         });
 

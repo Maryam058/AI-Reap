@@ -4,7 +4,9 @@ import { useAuth } from '../auth/AuthContext';
 import { useSidebar } from '../context/SidebarContext';
 import { readLastProject, useProjectContext } from '../context/ProjectContext';
 import { NAV_GROUPS, SEGMENT_DEFAULT_TAB, type NavGroup, type NavModule } from '../navigation/navConfig';
-import { deriveSdlc, phasePath, type PhaseState } from '../lib/sdlc';
+import { phasePath } from '../lib/workAreas';
+import { lifecycleProgress, LIFECYCLE_STAGES, stageLabel, stageState, type StageState } from '../lib/lifecycle';
+import { useProjectLifecycle } from '../hooks/useLifecycle';
 import { statusLabel, statusVariant } from '../lib/format';
 import { IconCheck, IconChevronDown, IconChevronLeft, IconFolder, IconSparkles, IconX } from './icons';
 
@@ -66,8 +68,7 @@ export function Sidebar() {
   // Outside a project the workflow links point at the last project the user opened, if any.
   const last = projectId ? null : readLastProject();
   const targetProjectId = projectId ?? last?.id ?? null;
-  const sdlc = project ? deriveSdlc(project.status) : null;
-  const stateByKey: Record<string, PhaseState> = Object.fromEntries((sdlc?.phases ?? []).map((p) => [p.key, p.state]));
+  const progress = project ? lifecycleProgress(project.status) : null;
   const tab = new URLSearchParams(search).get('tab');
 
   const isActive = (mod: NavModule): boolean => {
@@ -83,11 +84,10 @@ export function Sidebar() {
     return (tab ?? fallback) === (mod.tab ?? fallback);
   };
 
-  /** Combined state across the SDLC phases a module covers; only shown once a project is open. */
-  const moduleState = (mod: NavModule): PhaseState | undefined => {
-    if (!projectId || !mod.phases) return undefined;
-    const states = mod.phases.map((k) => stateByKey[k]).filter(Boolean);
-    if (states.length === 0) return undefined;
+  /** Where the project's lifecycle stage is relative to the stages a module serves; only once a project is open. */
+  const moduleState = (mod: NavModule): StageState | undefined => {
+    if (!project || !mod.stages) return undefined;
+    const states = mod.stages.map((s) => stageState(s, project.status));
     if (states.every((s) => s === 'completed')) return 'completed';
     return states.includes('current') ? 'current' : 'upcoming';
   };
@@ -117,11 +117,11 @@ export function Sidebar() {
             <span className="nav-label">{mod.label}</span>
             {planned && <span className="nav-soon">Soon</span>}
             {state === 'completed' && (
-              <span className="nav-state completed" role="img" aria-label="Phase completed">
+              <span className="nav-state completed" role="img" aria-label="Lifecycle stage passed">
                 <IconCheck width={10} height={10} strokeWidth={3.5} />
               </span>
             )}
-            {state === 'current' && <span className="nav-state current" role="img" aria-label="Current phase" />}
+            {state === 'current' && <span className="nav-state current" role="img" aria-label="Current lifecycle stage" />}
           </>
         )}
         {rail && state === 'current' && <span className="nav-rail-dot" aria-hidden="true" />}
@@ -148,7 +148,7 @@ export function Sidebar() {
     const modules = group.modules.filter((m) => !m.role || hasRole(m.role));
     if (modules.length === 0) return null;
     const open = rail || !group.collapsible || !closed[group.key];
-    const meta = group.key === 'sdlc' && sdlc ? `${sdlc.percent}%` : null;
+    const meta = group.key === 'sdlc' && progress ? `${progress.percent}%` : null;
     return (
       <section className="nav-group" key={group.key} aria-label={group.label}>
         {rail ? (
@@ -187,32 +187,8 @@ export function Sidebar() {
         </Link>
       </div>
       {projectId ? (
-        project && sdlc ? (
-          <>
-            <Link to={`/projects/${project.id}`} className={`nav-project-name${pathname === `/projects/${project.id}` ? ' current' : ''}`} title={project.name}>
-              {project.name}
-            </Link>
-            <div className="nav-project-meta">
-              <span className={`status-pill tone-${statusVariant(project.status)}`}>{statusLabel(project.status)}</span>
-              <span>{sdlc.percent}% SDLC</span>
-            </div>
-            <ol className="phase-track" aria-label="SDLC phases">
-              {sdlc.phases.map((p) => (
-                <li key={p.key} className={`phase-seg ${p.state}`} title={`${p.step}. ${p.navLabel} — ${p.state === 'current' ? 'in progress' : p.state}`} />
-              ))}
-            </ol>
-            <div className="nav-project-phase">
-              {sdlc.current ? (
-                <>
-                  <span className="nav-state current" aria-hidden="true" /> Now: <strong>{sdlc.current.navLabel}</strong>
-                </>
-              ) : (
-                <>
-                  <IconCheck width={12} height={12} strokeWidth={3} /> All phases complete
-                </>
-              )}
-            </div>
-          </>
+        project && progress ? (
+          <SidebarLifecycle projectId={project.id} status={project.status} stamp={project.updatedAt} active={pathname === `/projects/${project.id}`} name={project.name} />
         ) : (
           <div className="skeleton skeleton-line" />
         )
@@ -254,6 +230,47 @@ export function Sidebar() {
           {tip.label}
         </div>
       )}
+    </>
+  );
+}
+
+/** The open project's lifecycle position: stage, 8-segment track, and any pending Reviewer request. */
+function SidebarLifecycle({ projectId, status, stamp, active, name }: { projectId: string; status: number; stamp: string; active: boolean; name: string }) {
+  const { state } = useProjectLifecycle(projectId, `${status}|${stamp}`);
+  const progress = lifecycleProgress(status);
+  const pending = !!state?.pendingTransition;
+  return (
+    <>
+      <Link to={`/projects/${projectId}`} className={`nav-project-name${active ? ' current' : ''}`} title={name}>
+        {name}
+      </Link>
+      <div className="nav-project-meta">
+        <span className={`status-pill tone-${statusVariant(status)}`}>{statusLabel(status)}</span>
+        <span>
+          Stage {progress.stageNumber}/{LIFECYCLE_STAGES.length}
+        </span>
+      </div>
+      <ol className="phase-track" aria-label="Project lifecycle">
+        {LIFECYCLE_STAGES.map((s) => {
+          const st = stageState(s.status, status);
+          return <li key={s.status} className={`phase-seg ${st}${pending && st === 'current' ? ' awaiting' : ''}`} title={`${s.status + 1}. ${s.label}`} />;
+        })}
+      </ol>
+      <div className="nav-project-phase">
+        {progress.finished ? (
+          <>
+            <IconCheck width={12} height={12} strokeWidth={3} /> Lifecycle completed
+          </>
+        ) : pending ? (
+          <>
+            <span className="nav-state current" aria-hidden="true" /> <strong>Awaiting review</strong> to {stageLabel(state!.pendingTransition!.toStatus)}
+          </>
+        ) : (
+          <>
+            <span className="nav-state current" aria-hidden="true" /> Now: <strong>{stageLabel(status)}</strong>
+          </>
+        )}
+      </div>
     </>
   );
 }

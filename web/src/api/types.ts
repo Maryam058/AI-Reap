@@ -261,6 +261,7 @@ export interface ArtifactReview {
   comment?: string | null;
   reviewedAt: string;
   versionNumber?: number | null;
+  reviewerRole?: string | null; // role acted under, e.g. Developer for a design review; null on older rows
 }
 
 export interface ArtifactRelationship {
@@ -525,6 +526,140 @@ export interface ProjectDashboard {
   openImpactNoticeCount?: number;
 }
 
+// ---- Project lifecycle (§5) ------------------------------------------------------------
+// Project.status is the lifecycle stage (0 Draft … 7 Completed). Everything below comes from
+// ProjectLifecycleService (Application/Lifecycle); the UI never computes evidence or permissions.
+
+/** One exit check of a lifecycle stage: what must hold before the project may leave it. */
+export interface LifecycleCheck {
+  label: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface StageEvidence {
+  stage: number;
+  label: string;
+  ownerRole: string;
+  checks: LifecycleCheck[];
+  passed: boolean;
+}
+
+// StageTransitionKind: 0 Baseline | 1 Advance | 2 Rollback
+// StageTransitionState: 0 Pending | 1 Completed | 2 Rejected | 3 Withdrawn
+// ReviewDecision: 0 Approved | 1 Rejected | 2 CommentOnly
+export const TRANSITION_KIND = { Baseline: 0, Advance: 1, Rollback: 2 } as const;
+export const TRANSITION_STATE = { Pending: 0, Completed: 1, Rejected: 2, Withdrawn: 3 } as const;
+export const REVIEW_DECISION = { Approved: 0, Rejected: 1, CommentOnly: 2 } as const;
+
+export interface StageReview {
+  id: string;
+  reviewerUserId: string;
+  reviewerRole?: string | null;
+  decision: number;
+  comment?: string | null;
+  reviewedAt: string;
+}
+
+export interface StageTransition {
+  id: string;
+  projectId: string;
+  sequence: number;
+  kind: number;
+  state: number;
+  fromStatus?: number | null;
+  toStatus: number;
+  requestedByUserId: string;
+  requestedByRole?: string | null;
+  requestedAt: string;
+  requestNote?: string | null;
+  decidedByUserId?: string | null;
+  decidedByRole?: string | null;
+  decidedAt?: string | null;
+  decisionReason?: string | null;
+  isOverride: boolean;
+  overrideReason?: string | null;
+  evidence: LifecycleCheck[];
+  reviews: StageReview[];
+}
+
+/** What the caller may do right now, decided by the backend. */
+export interface LifecycleActions {
+  canAdvance: boolean;
+  canSubmitForApproval: boolean;
+  canDecide: boolean;
+  canWithdraw: boolean;
+  canRollback: boolean;
+  canOverride: boolean;
+}
+
+export interface ProjectLifecycleState {
+  projectId: string;
+  status: number;
+  stageLabel: string;
+  ownerRole: string;
+  nextStatus?: number | null;
+  nextIsGated: boolean;
+  requiresSignOff: boolean;
+  exitChecks: LifecycleCheck[];
+  readyToAdvance: boolean;
+  pendingTransition?: StageTransition | null;
+  evidenceGaps: StageEvidence[];
+  actions: LifecycleActions;
+  history: StageTransition[];
+}
+
+export interface LifecycleStagePolicy {
+  status: number;
+  label: string;
+  ownerRole: string;
+  next?: number | null;
+  leavingIsGated: boolean;
+  gateApproverRole?: string | null;
+}
+
+export interface AdvanceStageRequest {
+  targetStatus: number;
+  note?: string;
+  overrideReason?: string;
+}
+
+export interface DecideStageTransitionRequest {
+  approve: boolean;
+  reason?: string;
+  overrideReason?: string;
+}
+
+// WorkOutcome (Domain/Enums/WorkOutcome.cs). Tasks: TaskCompleted | TaskReopened.
+// Test cases: TestPassed | TestFailed | TestBlocked. The latest record is the current outcome.
+export const WORK_OUTCOME = { TaskCompleted: 0, TaskReopened: 1, TestPassed: 2, TestFailed: 3, TestBlocked: 4 } as const;
+export type WorkOutcome = (typeof WORK_OUTCOME)[keyof typeof WORK_OUTCOME];
+
+export interface ArtifactWorkRecord {
+  id: string;
+  artifactId: string;
+  versionNumber: number;
+  outcome: WorkOutcome;
+  note?: string | null;
+  recordedByUserId: string;
+  recordedByRole?: string | null;
+  recordedAt: string;
+}
+
+// ProjectNotificationKind: 0 Handover | 1 ApprovalRequested | 2 TransitionRejected
+export const NOTIFICATION_KIND = { Handover: 0, ApprovalRequested: 1, TransitionRejected: 2 } as const;
+
+export interface ProjectNotification {
+  id: string;
+  projectId: string;
+  projectName: string;
+  transitionId: string;
+  kind: number;
+  message: string;
+  createdAt: string;
+  acknowledgedAt?: string | null;
+}
+
 // §26 — RAG document knowledge base.
 export interface ProjectDocument {
   id: string;
@@ -560,6 +695,9 @@ export interface AgentDefinition {
   inputs: string;
   outputs: string;
   approverRoles: string[];
+  /** Lifecycle stage(s) the agent's output serves. Agents never move the project. */
+  lifecycleStages: number[];
+  lifecycleContribution: string;
 }
 
 export interface AgentArtifactRef {
@@ -577,7 +715,8 @@ export interface AgentOutput {
   reviewGuidance: string;
 }
 
-export interface AgentStage {
+/** One agent step of a run (an AI pipeline step - not a project lifecycle stage). */
+export interface AgentStep {
   id: string;
   agent: number;
   order: number;
@@ -591,6 +730,7 @@ export interface AgentStage {
   decidedByUserId?: string | null;
   decidedAt?: string | null;
   decisionComment?: string | null;
+  lifecycleStages: number[];
 }
 
 export interface AgentRun {
@@ -601,5 +741,57 @@ export interface AgentRun {
   startedByUserId: string;
   startedAt: string;
   completedAt?: string | null;
-  stages: AgentStage[];
+  /** The run's agent steps (the API keeps the field name `stages` for compatibility). */
+  stages: AgentStep[];
+  /** Project lifecycle stage when the run started; null for runs from before it was recorded. */
+  projectStatusAtStart?: number | null;
+}
+
+export interface AgentRunStepSummary {
+  agent: number;
+  displayName: string;
+  lifecycleStages: number[];
+  status: number;
+  approverRoles: string[];
+  decidedByUserId?: string | null;
+  decidedAt?: string | null;
+  aheadOfProjectStage: boolean;
+}
+
+export interface AgentRunSummaryItem {
+  runId: string;
+  requirementSourceId: string;
+  status: number;
+  startedAt: string;
+  completedAt?: string | null;
+  projectStatusAtStart?: number | null;
+  stepsApproved: number;
+  stepsRejected: number;
+  stepCount: number;
+  currentStep?: AgentRunStepSummary | null;
+  awaitingHumanDecision: boolean;
+  steps: AgentRunStepSummary[];
+}
+
+export interface AgentStageActivity {
+  stage: number;
+  label: string;
+  agents: string[];
+  stepsAwaitingDecision: number;
+  stepsApproved: number;
+  stepsRejected: number;
+  stepsFailed: number;
+}
+
+export interface AgentRunSummary {
+  projectId: string;
+  currentProjectStatus: number;
+  totalRuns: number;
+  active: number;
+  awaitingDecision: number;
+  failed: number;
+  completed: number;
+  rejected: number;
+  byLifecycleStage: AgentStageActivity[];
+  recentRuns: AgentRunSummaryItem[];
 }

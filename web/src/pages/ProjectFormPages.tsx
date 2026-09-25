@@ -56,7 +56,7 @@ export function NewProjectPage() {
 
   return (
     <>
-      <PageHeader eyebrow="New project" title="Create a new SDLC project" subtitle="Describe the project once. AI-REAP carries this context through every phase, from requirements to traceability." />
+      <PageHeader eyebrow="New project" title="Create a new SDLC project" subtitle="Describe the project once. AI-REAP carries this context through every lifecycle stage, from Draft to Completed." />
       <ProjectWizard values={values} onChange={(k: FieldKey, v: string) => setValues((s) => ({ ...s, [k]: v }))} onSubmit={onSubmit} onCancel={() => navigate('/projects')} busy={busy} error={error} />
     </>
   );

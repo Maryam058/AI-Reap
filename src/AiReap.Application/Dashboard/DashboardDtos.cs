@@ -1,3 +1,5 @@
+using AiReap.Application.Sdlc;
+
 namespace AiReap.Application.Dashboard;
 
 // §28 — project-level metrics.
@@ -14,6 +16,8 @@ public record ProjectDashboardResponse(
     int ConflictCount,
     IReadOnlyList<RecentChangeItem> RecentChanges,
     // §22 — downstream artifacts still flagged by an unreviewed upstream change.
-    int OpenImpactNoticeCount = 0);
+    int OpenImpactNoticeCount = 0,
+    // §28 — evidence-based completion of each SDLC phase (see SdlcProgressService).
+    IReadOnlyList<SdlcPhaseProgress>? Phases = null);
 
 public record RecentChangeItem(string Code, string Title, string ArtifactType, string Status, DateTime UpdatedAt);

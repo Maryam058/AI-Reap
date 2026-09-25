@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { phasePath } from '../lib/sdlc';
+import { phasePath } from '../lib/workAreas';
 import { useAuth } from '../auth/AuthContext';
 import { apiErrorText } from '../lib/errors';
 import { requirementSourcesApi } from '../api/requirementSources';
@@ -338,9 +338,9 @@ export function RequirementWorkspace({
           description={
             isGathering
               ? canWrite
-                ? 'Paste notes or upload a document above. Every later phase — analysis, validation, design — starts from this raw input.'
+                ? 'Paste notes or upload a document above. Every later lifecycle stage — Analysis, Design and beyond — builds on this raw input.'
                 : 'A business analyst needs to add a requirement source before anything appears here.'
-              : 'Start by capturing the business needs for this project. This phase works on the requirement sources added during Requirements Gathering.'
+              : 'Start by capturing the business needs for this project. This work area uses the requirement sources added during Requirements Gathering.'
           }
           action={
             !isGathering && (

@@ -1,19 +1,27 @@
 import { Link } from 'react-router-dom';
-import type { Project } from '../api/types';
-import { deriveSdlc } from '../lib/sdlc';
+import type { Project, ProjectLifecycleState } from '../api/types';
+import { isGatedStage, lifecycleProgress, LIFECYCLE_STAGES, stageLabel } from '../lib/lifecycle';
 import { formatRelativeTime, statusLabel, statusVariant } from '../lib/format';
 import { ProgressBar } from './ui/ProgressBar';
-import { SdlcDots } from './SdlcStepper';
+import { LifecycleDots } from './LifecycleStepper';
 import { ProjectActionsMenu } from './ProjectActionsMenu';
-import { IconArrowRight } from './icons';
+import { IconAlert, IconArrowRight, IconLock } from './icons';
 
-export function ProjectCard({ project, onUpdated }: { project: Project; onUpdated: (p: Project) => void }) {
-  const sdlc = deriveSdlc(project.status);
+/** A project in the list: its lifecycle stage (Project.status), progress across the 8 stages, and any pending request. */
+export function ProjectCard({ project, lifecycle, onUpdated }: { project: Project; lifecycle?: ProjectLifecycleState; onUpdated: (p: Project) => void }) {
+  const progress = lifecycleProgress(project.status);
+  const pending = lifecycle?.pendingTransition ?? null;
+  const gaps = lifecycle?.evidenceGaps.length ?? 0;
 
   return (
     <article className="project-card">
       <div className="project-card-top">
         <span className={`status-pill tone-${statusVariant(project.status)}`}>{statusLabel(project.status)}</span>
+        {pending && (
+          <span className="status-pill tone-warning" title={`Waiting for a Reviewer to approve ${stageLabel(pending.fromStatus)} → ${stageLabel(pending.toStatus)}`}>
+            <IconLock width={11} height={11} /> Awaiting review
+          </span>
+        )}
         <ProjectActionsMenu project={project} onUpdated={onUpdated} />
       </div>
 
@@ -23,17 +31,27 @@ export function ProjectCard({ project, onUpdated }: { project: Project; onUpdate
       <p className="project-card-desc">{project.description || 'No description yet.'}</p>
 
       <div className="project-card-phase">
-        <span className="project-card-label">Current phase</span>
-        <strong>{sdlc.current?.navLabel ?? 'All phases complete'}</strong>
+        <span className="project-card-label">Next stage</span>
+        <strong>
+          {progress.finished ? 'Lifecycle completed' : stageLabel(project.status + 1)}
+          {!progress.finished && isGatedStage(project.status) && <span className="muted"> · Reviewer gate</span>}
+        </strong>
       </div>
 
       <div className="project-card-progress">
         <div className="progress-meta">
-          <span>SDLC progress</span>
-          <strong>{sdlc.percent}%</strong>
+          <span>
+            Stage {progress.stageNumber} of {LIFECYCLE_STAGES.length}
+          </span>
+          <strong>{progress.percent}%</strong>
         </div>
-        <ProgressBar percent={sdlc.percent} />
-        <SdlcDots phases={sdlc.phases} />
+        <ProgressBar percent={progress.percent} />
+        <LifecycleDots status={project.status} pending={!!pending} />
+        {gaps > 0 && (
+          <span className="lc-gap-note">
+            <IconAlert width={12} height={12} /> Evidence gap in {gaps} earlier {gaps === 1 ? 'stage' : 'stages'}
+          </span>
+        )}
       </div>
 
       <div className="project-card-footer">

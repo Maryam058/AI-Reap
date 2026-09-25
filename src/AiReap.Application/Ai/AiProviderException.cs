@@ -20,7 +20,7 @@ public enum AiFailureKind
     ContentBlocked
 }
 
-// Every provider client (Gemini, Anthropic, Ollama) translates its transport/HTTP failures into
+// Every provider client (Gemini, Groq, Anthropic) translates its transport/HTTP failures into
 // this one type, so retry policy and API error mapping are provider-independent. Message and
 // ProviderMessage never contain the API key or prompt text.
 public class AiProviderException : Exception
@@ -28,7 +28,7 @@ public class AiProviderException : Exception
     public AiProviderException(
         AiFailureKind kind, string provider, string message,
         HttpStatusCode? providerStatusCode = null, string? providerMessage = null,
-        TimeSpan? retryAfter = null, Exception? inner = null)
+        TimeSpan? retryAfter = null, Exception? inner = null, bool quotaExhausted = false)
         : base(message, inner)
     {
         Kind = kind;
@@ -36,6 +36,7 @@ public class AiProviderException : Exception
         ProviderStatusCode = providerStatusCode;
         ProviderMessage = providerMessage;
         RetryAfter = retryAfter;
+        QuotaExhausted = quotaExhausted;
     }
 
     public AiFailureKind Kind { get; }
@@ -43,6 +44,11 @@ public class AiProviderException : Exception
     public HttpStatusCode? ProviderStatusCode { get; }
     public string? ProviderMessage { get; }
     public TimeSpan? RetryAfter { get; }
+
+    // RateLimited only: the provider says a long-window quota is used up (e.g. Gemini's per-day
+    // free-tier limit, or a model with no quota at all for this key). Retrying within the same
+    // request cannot succeed and would only spend more requests, so the retry decorator fails fast.
+    public bool QuotaExhausted { get; }
 
     // Worth retrying automatically: the same request may well succeed shortly.
     public bool IsTransient => Kind is AiFailureKind.RateLimited or AiFailureKind.Timeout or AiFailureKind.Unavailable;

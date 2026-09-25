@@ -1,15 +1,20 @@
 # Gemini setup and live verification
 
-AI-REAP's real LLM is **Google Gemini**, reached through the same `IAiChatClient` seam every
-generator uses (`GeminiAiChatClient`, selected by `Ai:Provider = Gemini`). Nothing outside
+AI-REAP's primary LLM is **Google Gemini**, with **Groq** as an automatic fallback, both reached
+through the same `IAiChatClient` seam every generator uses (`GeminiAiChatClient` selected by
+`Ai:Provider = Gemini`; `GroqAiChatClient` by `Ai:FallbackProvider = Groq`). Nothing outside
 `AiReap.Infrastructure/Ai` knows which provider is in use.
 
 ```
 Generator service ─► GenerationSupport.CallAiAndParseAsync
                         │  (prompt with required JSON shape)
                         ▼
-                     IAiChatClient = ResilientAiChatClient ─► GeminiAiChatClient ─► Gemini API
-                        │  timeout · retry with backoff (429/5xx/network/timeout) · error classification
+                     IAiChatClient = FallbackAiChatClient
+                        ├─► ResilientAiChatClient ─► GeminiAiChatClient ─► Gemini API   (always first)
+                        │      429 / quota / 5xx / network / timeout?
+                        └─► RequestBudgetAiChatClient ─► ResilientAiChatClient ─► GroqAiChatClient ─► Groq API  (fallback;
+                               condenses prompts over Ai:Groq:MaxRequestTokens)
+                        │  timeout · retry with backoff (5xx/network/timeout; no 429 retry on Gemini) · error classification
                         ▼
                      AiJsonParser: JSON shape ─► semantic validation (IValidatableAiResponse)
                         │  invalid? one repair attempt with the errors fed back, else reject (nothing saved)
@@ -31,7 +36,9 @@ Generator service ─► GenerationSupport.CallAiAndParseAsync
 
    | Setting | Default | Notes |
    |---|---|---|
-   | `Ai:Provider` | `Gemini` | `Anthropic`/`Ollama` implementations still exist but are not required. |
+   | `Ai:Provider` | `Gemini` | Primary provider. `Groq` or `Anthropic` also accepted. |
+   | `Ai:FallbackProvider` | `Groq` | Used automatically when the primary is rate-limited/out of quota/unavailable. `None` disables it. |
+   | `Ai:PrimaryCooldownSeconds` | `600` | After a Gemini 429, skip Gemini (go straight to Groq) for Google's retry delay, or this long for a daily/zero quota; capped at this value. |
    | `Ai:Gemini:Model` | `gemini-3.6-flash` | Any `generateContent` model your key can use. Google no longer grants `gemini-2.5-*` to new users. |
    | `Ai:Gemini:MaxOutputTokens` | `16384` | Includes thinking tokens. Truncated output is reported as `ai_invalid_output`, never saved. |
    | `Ai:Gemini:ThinkingLevel` | `low` | Gemini 3 thinking effort (`minimal`/`low`/`medium`/`high`; Gemini 3 cannot turn thinking off). Empty uses the model default. |
@@ -41,13 +48,51 @@ Generator service ─► GenerationSupport.CallAiAndParseAsync
    | `Ai:Resilience:TimeoutSeconds` | `120` | Per attempt. |
    | `Ai:Resilience:MaxAttempts` | `3` | Transient failures only. |
    | `Ai:Resilience:MaxRetryAfterSeconds` | `30` | A longer provider back-off (e.g. daily quota) fails fast with 429 instead of holding the request open. |
+   | `Ai:Resilience:MaxRateLimitAttempts` | `2` | Total attempts on a 429 (one retry, after Google's `retryDelay` when given). A daily or zero-limit quota (`QuotaFailure` per-day quota id, or `limit: 0`) is never retried. |
 
 4. Restart the API and check `GET /api/ai/status` — it calls Gemini's `models.get` (no generation,
    no generation quota) and reports whether the key is accepted and the model exists.
 
 The free tier has per-minute and per-day request limits set by Google (they change over time; see
 <https://ai.google.dev/gemini-api/docs/rate-limits>). Hitting them returns HTTP 429 from AI-REAP with
-`code: ai_rate_limited` and a `Retry-After` header when Google provides one.
+`code: ai_rate_limited`, the message "Gemini rate limit reached. Please wait and try again…", a
+`Retry-After` header plus `retryAfterSeconds` when Google provides a delay, and `quotaExhausted: true`
+when the per-day (or zero) quota is used up, so no automatic retry could help. With Groq configured
+this only happens when Groq is exhausted too (see below).
+
+## 1a. Groq fallback
+
+Groq (OpenAI-compatible `openai/v1/chat/completions`, plain `HttpClient`, `response_format:
+json_object`) takes over automatically - no config change - when Gemini fails with:
+
+* **HTTP 429 / `RESOURCE_EXHAUSTED`**: per-minute or daily quota. Gemini is **not retried** first, and
+  is then skipped for Google's `retryDelay` (daily/zero quota: `Ai:PrimaryCooldownSeconds`).
+* **5xx / network failure / timeout**: after the normal `Ai:Resilience` retries.
+
+It does **not** fall back on a rejected/invalid key, missing configuration, a rejected request (bad
+model, 400), blocked content, invalid JSON output (that gets the normal repair attempt) or a cancelled
+request - those are surfaced as-is. If Groq fails too, the error names both providers and uses Groq's
+failure kind (e.g. `429 ai_rate_limited` with the sooner retry hint).
+
+Key: `dotnet user-secrets set "Ai:Groq:ApiKey" "<key>" --project src/AiReap.Api`, or
+`Ai__Groq__ApiKey`, or - only when neither is set - the conventional `GROQ_API_KEY` environment variable.
+
+| Setting | Default | Notes |
+|---|---|---|
+| `Ai:Groq:Model` | `openai/gpt-oss-120b` | 131k context, JSON mode, strongest reasoning model on Groq. Free tier: ~8k tokens/min, 1k requests/day. |
+| `Ai:Groq:MaxCompletionTokens` | `16384` | Includes reasoning tokens. Truncation is `ai_invalid_output`, never saved. |
+| `Ai:Groq:MaxRequestTokens` | `8000` | Largest single request Groq accepts (the free tier's tokens-per-minute limit; Groq answers 413 above it). Raise on a paid tier; `0` disables. |
+| `Ai:Groq:ReservedOutputTokens` | `2000` | Part of `MaxRequestTokens` kept for the response. Input budget = `MaxRequestTokens - ReservedOutputTokens` (6,000 by default). |
+| `Ai:Groq:ReasoningEffort` | `low` | gpt-oss `low`/`medium`/`high`; empty omits it (needed for models without this option). |
+| `Ai:Groq:Temperature` | _(unset)_ | Model default. |
+
+The AI audit trail (`AIExecution.Model`) records the model that actually answered: `gemini-3.6-flash`,
+`groq:openai/gpt-oss-120b`, or `stub-canned-model`. Logs show `AI provider Gemini attempted`,
+`... failed (RateLimited ...); falling back to Groq`, `AI fallback provider Groq succeeded` / `also failed`.
+`GET /api/ai/status` reports the fallback's key/model check under `fallback`.
+
+In Development with **neither** key, the canned stub is used and a warning says so; it is never used
+while either real provider is configured. Only a Groq key → Groq alone (logged).
 
 ## 2. Error responses
 
@@ -56,9 +101,9 @@ and a `retryable` flag (`ApplicationExceptionHandler`); the frontend shows the `
 
 | HTTP | `code` | Meaning |
 |---|---|---|
-| 503 | `ai_not_configured` | No usable Gemini key (outside Development, where the stub is not allowed). |
+| 503 | `ai_not_configured` | No usable Gemini or Groq key (outside Development, where the stub is not allowed). |
 | 502 | `ai_auth_failed` | Google rejected the key. |
-| 429 | `ai_rate_limited` | Rate limit / free-tier quota. Retryable. |
+| 429 | `ai_rate_limited` | Rate limit / free-tier quota. Retryable later; `retryAfterSeconds` and `quotaExhausted` say when. |
 | 504 | `ai_timeout` | No response within `Ai:Resilience:TimeoutSeconds` (after retries). Retryable. |
 | 503 | `ai_unavailable` | Gemini 5xx or network failure (after retries). Retryable. |
 | 502 | `ai_request_rejected` | Google rejected the request (unknown model, unsupported region, billing). `detail` carries Google's reason. |
@@ -71,8 +116,9 @@ message) and never the prompt or response body.
 
 ## 3. Automated tests vs. live verification
 
-* `dotnet test` **never** calls Gemini: `TestHost` replaces `IAiChatClient` with the deterministic stub
-  and blanks every provider key. Gemini request/response handling, error mapping, retry and timeout
+* `dotnet test` **never** calls Gemini or Groq: `TestHost` replaces `IAiChatClient` with the deterministic stub
+  and blanks every provider key (including `GROQ_API_KEY`). Groq handling and the fallback rules are covered by
+  `GroqAiChatClientTests` / `FallbackAiChatClientTests` with a faked HTTP transport. Gemini request/response handling, error mapping, retry and timeout
   are covered by `GeminiAiChatClientTests` / `ResilientAiChatClientTests` with a faked HTTP transport.
 * The live path is verified manually with `scripts/verify-gemini.ps1` against a running API:
 

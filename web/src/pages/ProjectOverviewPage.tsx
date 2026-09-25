@@ -1,23 +1,43 @@
-import { Link } from 'react-router-dom';
+import { useCallback, useEffect } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
+import { projectsApi } from '../api/projects';
 import { useProject } from '../context/ProjectContext';
 import { useProjectInsights } from '../hooks/useProjectInsights';
-import { deriveSdlc, phasePath } from '../lib/sdlc';
+import { lifecycleProgress, stageLabel } from '../lib/lifecycle';
+import { phasePath, workAreaForStage } from '../lib/workAreas';
 import { BUCKET_COLOR, BUCKET_LABEL, BUCKET_ORDER, countBuckets, isRequirement } from '../lib/requirements';
 import { formatFullDateTime, formatRelativeTime, statusLabel, statusVariant } from '../lib/format';
 import { PageHeader } from '../components/ui/PageHeader';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Avatar } from '../components/ui/Avatar';
-import { SdlcStepper } from '../components/SdlcStepper';
 import { ProjectActionsMenu } from '../components/ProjectActionsMenu';
+import { LifecyclePanel } from '../components/LifecyclePanel';
+import { AgentActivitySummary } from '../components/AgentActivitySummary';
 import { IconArrowRight, IconDocument, IconEdit, IconInbox, IconSparkles, IconUsers } from '../components/icons';
 
 export function ProjectOverviewPage() {
-  const { hasRole } = useAuth();
+  const { hasRole, token } = useAuth();
   const { project, setProject, contentVersion } = useProject();
   const insights = useProjectInsights(project.id, contentVersion);
-  const sdlc = deriveSdlc(project.status);
+  const progress = lifecycleProgress(project.status);
+  const stageArea = workAreaForStage(project.status);
   const canEdit = hasRole('Administrator') || hasRole('BusinessAnalyst');
+  const { hash } = useLocation();
+
+  // A lifecycle change moves Project.status on the server; re-read the project so the whole shell follows.
+  const refreshProject = useCallback(async () => {
+    try {
+      setProject(await projectsApi.get(project.id, token));
+    } catch {
+      // The lifecycle panel already shows the outcome; the header catches up on the next load.
+    }
+  }, [project.id, token, setProject]);
+
+  // Notifications link to #lifecycle.
+  useEffect(() => {
+    if (hash === '#lifecycle') document.getElementById('lifecycle')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [hash]);
 
   const { dashboard, artifacts, stakeholders, matrix, loading } = insights;
   const requirements = artifacts?.filter(isRequirement) ?? null;
@@ -25,16 +45,28 @@ export function ProjectOverviewPage() {
 
   // The single most useful next step, chosen only from real counts.
   const next = (() => {
-    const phaseTarget = sdlc.current ? phasePath(project.id, sdlc.current.segment) : phasePath(project.id, 'traceability');
+    const stageTarget = phasePath(project.id, stageArea.segment);
+    // A Completed project has no lifecycle move left, so leftover review items (e.g. answered
+    // clarification questions not yet resolved, draft objectives) are information, not a next step.
+    if (progress.finished) {
+      const leftover = dashboard?.pendingReviewCount ?? 0;
+      return {
+        title: 'This project has completed its lifecycle',
+        text:
+          leftover > 0
+            ? `Review end-to-end coverage in the traceability matrix. ${leftover} artifact ${leftover === 1 ? 'item still requires' : 'items still require'} review; ${leftover === 1 ? 'it is' : 'they are'} not needed for the completed lifecycle.`
+            : 'Review end-to-end coverage in the traceability matrix.',
+        to: phasePath(project.id, 'traceability'),
+        cta: 'Open Traceability',
+      };
+    }
     if (requirements && requirements.length === 0)
       return { title: 'Capture your first requirements', text: 'Add stakeholder notes or a document and let AI-REAP structure them.', to: phasePath(project.id, 'gathering'), cta: 'Start Requirements Gathering' };
     if (dashboard && dashboard.openClarificationCount > 0)
       return { title: `Resolve ${dashboard.openClarificationCount} open clarification ${dashboard.openClarificationCount === 1 ? 'question' : 'questions'}`, text: 'Unanswered questions leave requirements ambiguous.', to: phasePath(project.id, 'validation'), cta: 'Open Validation' };
     if (dashboard && dashboard.pendingReviewCount > 0)
       return { title: `Review ${dashboard.pendingReviewCount} pending ${dashboard.pendingReviewCount === 1 ? 'artifact' : 'artifacts'}`, text: 'Approve or reject AI-generated work before moving on.', to: phasePath(project.id, 'analysis'), cta: 'Review requirements' };
-    return sdlc.finished
-      ? { title: 'This project has completed every SDLC phase', text: 'Review end-to-end coverage in the traceability matrix.', to: phasePath(project.id, 'traceability'), cta: 'Open Traceability' }
-      : { title: `Continue with ${sdlc.current?.navLabel ?? 'the next phase'}`, text: sdlc.current?.description ?? '', to: phaseTarget, cta: `Open ${sdlc.current?.label ?? 'phase'}` };
+    return { title: `Continue the ${stageLabel(project.status)} work`, text: stageArea.description, to: stageTarget, cta: `Open ${stageArea.label}` };
   })();
 
   const rowsWith = (pick: (r: NonNullable<typeof matrix>[number]) => number) => (matrix && matrix.length > 0 ? matrix.filter((r) => pick(r) > 0).length : null);
@@ -59,24 +91,9 @@ export function ProjectOverviewPage() {
         }
       />
 
-      <section className="panel sdlc-panel" aria-labelledby="sdlc-title">
-        <header className="panel-head">
-          <div>
-            <h2 id="sdlc-title">SDLC progress</h2>
-            <p>
-              {sdlc.finished ? 'Every phase is complete.' : `Currently in ${sdlc.current?.navLabel}.`} {sdlc.completed} of {sdlc.phases.length} phases complete.
-            </p>
-          </div>
-          <div className="big-percent" aria-label={`${sdlc.percent}% complete`}>
-            {sdlc.percent}
-            <span>%</span>
-          </div>
-        </header>
-        <div className="progress-track progress-lg" aria-hidden="true">
-          <div className="progress-fill" style={{ width: `${Math.max(sdlc.percent, 2)}%` }} />
-        </div>
-        <SdlcStepper phases={sdlc.phases} projectId={project.id} />
-      </section>
+      <LifecyclePanel project={project} version={contentVersion} onProjectChanged={refreshProject} />
+
+      <AgentActivitySummary projectId={project.id} version={`${contentVersion}|${project.status}`} />
 
       <div className="overview-grid">
         <div className="overview-main">
@@ -187,16 +204,18 @@ export function ProjectOverviewPage() {
             </h2>
             <dl className="kv">
               <div>
-                <dt>Status</dt>
-                <dd>{statusLabel(project.status)}</dd>
+                <dt>Lifecycle stage</dt>
+                <dd>
+                  {statusLabel(project.status)} ({progress.stageNumber} of 8)
+                </dd>
               </div>
               <div>
-                <dt>Current phase</dt>
-                <dd>{sdlc.current?.navLabel ?? 'All phases complete'}</dd>
+                <dt>Next stage</dt>
+                <dd>{progress.finished ? 'None - completed' : stageLabel(project.status + 1)}</dd>
               </div>
               <div>
-                <dt>Progress</dt>
-                <dd>{sdlc.percent}%</dd>
+                <dt>Lifecycle progress</dt>
+                <dd>{progress.percent}%</dd>
               </div>
               <div>
                 <dt>Last updated</dt>

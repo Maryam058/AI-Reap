@@ -39,6 +39,8 @@ public class AnalysisAgent : IAgent
     public string Inputs => "Requirement source and answered clarification questions.";
     public string Outputs => "FR, NFR, BusinessRule, UserStory, AcceptanceCriterion artifacts; quality and conflict findings.";
     public IReadOnlyList<string> ApproverRoles => AgentSupport.AdminAnd(Roles.BusinessAnalyst);
+    public IReadOnlyList<ProjectStatus> LifecycleStages => [ProjectStatus.Analysis];
+    public string LifecycleContribution => "Drafts the Analysis work: requirements, rules, stories and acceptance criteria, plus quality and conflict checks. People approve them to satisfy Analysis.";
 
     public async Task<AgentOutput> RunAsync(AgentContext context, CancellationToken cancellationToken)
     {

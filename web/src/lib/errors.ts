@@ -13,6 +13,10 @@ const USER_FACING_CODES = new Set([
   'ai_invalid_output',
   'invalid_status_transition',
   'validation_failed',
+  // §5 lifecycle: failing exit checks, wrong state / skipped stage / lost race, role or separation of duties.
+  'lifecycle_evidence_failed',
+  'conflict',
+  'forbidden',
 ]);
 
 interface ProblemDetails {
@@ -36,6 +40,13 @@ export function apiErrorCode(err: unknown): string | null {
   if (!(err instanceof ApiError)) return null;
   const parsed = parseBody(err) as ProblemDetails | undefined;
   return parsed && typeof parsed === 'object' && typeof parsed.code === 'string' ? parsed.code : null;
+}
+
+/** The failing exit checks a lifecycle 409 (`lifecycle_evidence_failed`) carries, or []. */
+export function failingChecksOf(err: unknown): { label: string; passed: boolean; detail: string }[] {
+  if (!(err instanceof ApiError)) return [];
+  const parsed = parseBody(err) as { failingChecks?: unknown } | undefined;
+  return parsed && Array.isArray(parsed.failingChecks) ? (parsed.failingChecks as { label: string; passed: boolean; detail: string }[]) : [];
 }
 
 /** True when the API says trying the same request again later may succeed (rate limit, timeout, outage). */

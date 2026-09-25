@@ -67,18 +67,27 @@ public partial class GeminiEmbeddingClient : IEmbeddingClient
             if (!response.IsSuccessStatusCode)
             {
                 string? message = null;
+                List<JsonElement>? details = null;
                 try
                 {
                     using var doc = JsonDocument.Parse(body);
-                    message = doc.RootElement.GetProperty("error").GetProperty("message").GetString();
+                    var error = doc.RootElement.GetProperty("error");
+                    message = error.GetProperty("message").GetString();
+                    if (error.TryGetProperty("details", out var d) && d.ValueKind == JsonValueKind.Array)
+                    {
+                        details = d.EnumerateArray().Select(e => e.Clone()).ToList();
+                    }
                 }
                 catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException)
                 {
                 }
 
+                var kind = AiProviderException.KindFromStatus(response.StatusCode);
+                var quotaExhausted = kind == AiFailureKind.RateLimited && GeminiRateLimit.IsLongWindowQuota(details, message);
                 var safe = KeyPattern().Replace(message ?? $"HTTP {(int)response.StatusCode}", "[redacted-key]");
-                throw new AiProviderException(AiProviderException.KindFromStatus(response.StatusCode), GeminiAiChatClient.ProviderName,
-                    $"Gemini embeddings request failed (HTTP {(int)response.StatusCode}): {safe}", response.StatusCode, safe);
+                throw new AiProviderException(kind, GeminiAiChatClient.ProviderName,
+                    $"Gemini embeddings request failed (HTTP {(int)response.StatusCode}): {safe}", response.StatusCode, safe,
+                    GeminiRateLimit.RetryDelay(response.Headers, details, DateTimeOffset.UtcNow), quotaExhausted: quotaExhausted);
             }
 
             using var json = JsonDocument.Parse(body);

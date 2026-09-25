@@ -103,6 +103,6 @@ $audit = Invoke-Api GET "/api/projects/$($project.id)/ai-executions"
 $models = ($audit | ForEach-Object { $_.model } | Sort-Object -Unique) -join ', '
 Write-Host "  executions=$($audit.Count) models=$models"
 if ($models -match "stub") { throw "The audit trail shows the stub model - the API is not using Gemini." }
-Pass "every AI execution recorded with the Gemini model"
+Pass "every AI execution recorded with a real model ($models; groq:* means Groq served it as the fallback)"
 
 Write-Host "`nGemini live verification PASSED. Project '$($project.name)' was left in place for inspection." -ForegroundColor Green

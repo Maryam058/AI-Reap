@@ -4,7 +4,7 @@ import { useAuth } from '../auth/AuthContext';
 import { traceabilityApi } from '../api/traceability';
 import type { TraceRef, TraceabilityRow } from '../api/types';
 import { testCoveragePercent } from '../lib/coverage';
-import { phasePath } from '../lib/sdlc';
+import { phasePath } from '../lib/workAreas';
 import { EmptyState } from './ui/EmptyState';
 import { ErrorState } from './ui/ErrorState';
 import { IconArrowRight, IconLink, IconRefresh } from './icons';

@@ -4,8 +4,9 @@ import { useAuth } from '../auth/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useSidebar } from '../context/SidebarContext';
 import { ProjectProvider, useProjectContext } from '../context/ProjectContext';
-import { SDLC_PHASES } from '../lib/sdlc';
+import { WORK_AREAS } from '../lib/workAreas';
 import { Sidebar } from './Sidebar';
+import { NotificationBell } from './NotificationBell';
 import { Breadcrumbs, type Crumb } from './Breadcrumbs';
 import { Avatar } from './ui/Avatar';
 import { IconFolder, IconLogout, IconMenu, IconMoon, IconSearch, IconSun } from './icons';
@@ -30,7 +31,7 @@ function useCrumbs(pathname: string, projectName: string | undefined): Crumb[] {
     if (!segment) return [...base, { label: projectName ?? 'Project' }];
     const project: Crumb = { label: projectName ?? 'Project', to: `/projects/${id}` };
     if (segment === 'edit') return [...base, project, { label: 'Edit' }];
-    const phase = SDLC_PHASES.find((p) => p.segment === segment);
+    const phase = WORK_AREAS.find((p) => p.segment === segment);
     const label = phase ? phase.navLabel.replace(/^Requirements /, '') : segment === 'copilot' ? 'AI Assistant' : segment;
     return [...base, project, { label: SEGMENT_GROUP[segment] ?? 'Project' }, { label }];
   }
@@ -107,6 +108,7 @@ function Shell({ children }: { children: ReactNode }) {
           </div>
           <GlobalSearch />
           <div className="topbar-actions">
+            <NotificationBell />
             <button
               className="icon-btn"
               onClick={toggleTheme}

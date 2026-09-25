@@ -1,7 +1,9 @@
 using AiReap.Api.Authorization;
 using AiReap.Application.Ai.Pipeline;
+using AiReap.Application.Lifecycle;
 using AiReap.Application.Projects;
 using AiReap.Domain.Common;
+using AiReap.Domain.Enums;
 using AiReap.Infrastructure.Identity;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
@@ -17,12 +19,14 @@ public class ProjectsController : ControllerBase
     private readonly IProjectService _projectService;
     private readonly IConflictDetectionService _conflictDetectionService;
     private readonly UserManager<ApplicationUser> _userManager;
+    private readonly IProjectLifecycleService _lifecycle;
 
-    public ProjectsController(IProjectService projectService, IConflictDetectionService conflictDetectionService, UserManager<ApplicationUser> userManager)
+    public ProjectsController(IProjectService projectService, IConflictDetectionService conflictDetectionService, UserManager<ApplicationUser> userManager, IProjectLifecycleService lifecycle)
     {
         _projectService = projectService;
         _conflictDetectionService = conflictDetectionService;
         _userManager = userManager;
+        _lifecycle = lifecycle;
     }
 
     // §4: project creation is a Business Analyst / Administrator responsibility.
@@ -60,21 +64,29 @@ public class ProjectsController : ControllerBase
         return project is null ? NotFound() : Ok(project);
     }
 
-    // §24: status transitions represent approval-workflow milestones — Business Analyst
-    // drives most of them, Reviewer/Manager drives Approved, Administrator can always act.
-    // §5/REAP-021 — only the current stage or the next one in the fixed lifecycle is a legal target.
+    // Legacy endpoint, kept for existing clients. It no longer writes Project.Status itself: moving to
+    // the next stage goes through ProjectLifecycleService, with the same stage ownership, exit checks,
+    // gating, history, notifications and concurrency rules as POST .../lifecycle/transitions.
+    //   same status  -> 200, unchanged (the old "stay put" case)
+    //   next stage   -> 200 when it moved, 202 when it became a pending request (Design / Testing)
+    //   anything else (skip, backwards) -> 409; going back is POST .../lifecycle/rollback with a reason
     [HttpPatch("{projectId:guid}/status")]
-    [Authorize(Roles = $"{Roles.Administrator},{Roles.BusinessAnalyst},{Roles.Reviewer}")]
-    [Capability("Review", "Move a project to its next SDLC stage", 80)]
     public async Task<ActionResult<ProjectResponse>> UpdateStatus(Guid projectId, UpdateProjectStatusRequest request, CancellationToken cancellationToken)
     {
-        var (project, error) = await _projectService.UpdateStatusAsync(projectId, request, cancellationToken);
-        if (error is not null)
+        var project = await _projectService.GetByIdAsync(projectId, cancellationToken);
+        if (project is null)
         {
-            return BadRequest(error);
+            return NotFound();
         }
 
-        return project is null ? NotFound() : Ok(project);
+        if (request.Status == project.Status)
+        {
+            return Ok(project);
+        }
+
+        var transition = await _lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(request.Status), cancellationToken);
+        var updated = await _projectService.GetByIdAsync(projectId, cancellationToken);
+        return transition.State == StageTransitionState.Pending ? Accepted(updated) : Ok(updated);
     }
 
     // §15 — scans all functional requirements in the project for duplicates/conflicts.

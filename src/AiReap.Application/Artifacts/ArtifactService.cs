@@ -169,6 +169,7 @@ public class ArtifactService : IArtifactService
                 Id = Guid.NewGuid(),
                 ArtifactId = artifact.Id,
                 ReviewerUserId = _currentUser.UserId,
+                ReviewerRole = ActingRole(Roles.Reviewer, Roles.BusinessAnalyst, Roles.Administrator),
                 Decision = request.Status == ArtifactStatus.Approved ? ReviewDecision.Approved : ReviewDecision.Rejected,
                 Comment = request.Comment,
                 ReviewedAt = DateTime.UtcNow,
@@ -196,83 +197,10 @@ public class ArtifactService : IArtifactService
             await ResolveClarificationIfAnsweredAsync(artifact, cancellationToken);
         }
 
-        // Epic 3.4/REAP-074: Implemented/Verified aren't reviewer decisions - they're derived
-        // automatically from real downstream state (linked tasks/test cases being approved),
-        // the only "completion signal" this platform actually has (it doesn't run code or
-        // tests itself). Only approving a Task or TestCase can trigger a promotion, and only along
-        // ArtifactStatusTransitions.CanSystemPromote. There's no automatic demotion if a task/test
-        // is later un-approved (known limitation); a reviewer can reopen the FR (-> UnderReview).
-        if (request.Status == ArtifactStatus.Approved && artifact.ArtifactType is ArtifactType.ImplementationTask or ArtifactType.TestCase)
-        {
-            await PromoteLinkedFunctionalRequirementsAsync(artifact, cancellationToken);
-        }
+        // Implemented/Verified are no longer derived from approving a task or test case - approval
+        // only accepts the plan. They follow recorded work instead (ArtifactWorkService).
 
         return ToResponse(artifact);
-    }
-
-    private async Task PromoteLinkedFunctionalRequirementsAsync(Artifact triggeringArtifact, CancellationToken cancellationToken)
-    {
-        var linkedFrIds = triggeringArtifact.ArtifactType == ArtifactType.ImplementationTask
-            ? await _db.ArtifactRelationships
-                .Where(r => r.SourceArtifactId == triggeringArtifact.Id && r.RelationshipType == RelationshipType.Implements)
-                .Select(r => r.TargetArtifactId)
-                .ToListAsync(cancellationToken)
-            : await _db.ArtifactRelationships
-                .Where(r => r.TargetArtifactId == triggeringArtifact.Id && r.RelationshipType == RelationshipType.TestedBy)
-                .Select(r => r.SourceArtifactId)
-                .ToListAsync(cancellationToken);
-
-        if (linkedFrIds.Count == 0)
-        {
-            return;
-        }
-
-        var functionalRequirements = await _db.Artifacts
-            .Where(a => linkedFrIds.Contains(a.Id) && a.ArtifactType == ArtifactType.FunctionalRequirement)
-            .ToListAsync(cancellationToken);
-
-        var changed = false;
-        foreach (var fr in functionalRequirements)
-        {
-            if (fr.Status == ArtifactStatus.Approved)
-            {
-                var taskIds = await _db.ArtifactRelationships
-                    .Where(r => r.TargetArtifactId == fr.Id && r.RelationshipType == RelationshipType.Implements)
-                    .Select(r => r.SourceArtifactId)
-                    .ToListAsync(cancellationToken);
-                var tasks = await _db.Artifacts.Where(a => taskIds.Contains(a.Id)).ToListAsync(cancellationToken);
-
-                if (tasks.Count > 0 && tasks.All(t => t.Status == ArtifactStatus.Approved)
-                    && ArtifactStatusTransitions.CanSystemPromote(fr.Status, ArtifactStatus.Implemented))
-                {
-                    fr.Status = ArtifactStatus.Implemented;
-                    fr.UpdatedAt = DateTime.UtcNow;
-                    changed = true;
-                }
-            }
-
-            if (fr.Status == ArtifactStatus.Implemented)
-            {
-                var testCaseIds = await _db.ArtifactRelationships
-                    .Where(r => r.SourceArtifactId == fr.Id && r.RelationshipType == RelationshipType.TestedBy)
-                    .Select(r => r.TargetArtifactId)
-                    .ToListAsync(cancellationToken);
-                var testCases = await _db.Artifacts.Where(a => testCaseIds.Contains(a.Id)).ToListAsync(cancellationToken);
-
-                if (testCases.Count > 0 && testCases.All(t => t.Status == ArtifactStatus.Approved)
-                    && ArtifactStatusTransitions.CanSystemPromote(fr.Status, ArtifactStatus.Verified))
-                {
-                    fr.Status = ArtifactStatus.Verified;
-                    fr.UpdatedAt = DateTime.UtcNow;
-                    changed = true;
-                }
-            }
-        }
-
-        if (changed)
-        {
-            await _db.SaveChangesAsync(cancellationToken);
-        }
     }
 
     // §8 — only Answered transitions to Resolved. NotApplicable is already a closed/terminal
@@ -341,6 +269,45 @@ public class ArtifactService : IArtifactService
             v.Status)).ToList();
     }
 
+    // §17/§4 — a comment-only review: feedback on the artifact's current version that neither approves
+    // nor rejects it and leaves its status alone. Any project member may add one; it is recorded under
+    // the role the reviewer acted as, which is how a Developer's design review is told apart from a
+    // Reviewer's approval.
+    public async Task<ArtifactReviewResponse?> AddCommentReviewAsync(Guid id, string? comment, CancellationToken cancellationToken = default)
+    {
+        var artifact = await _db.Artifacts.FirstOrDefaultAsync(a => a.Id == id, cancellationToken);
+        if (artifact is null)
+        {
+            return null;
+        }
+
+        await _projectAccess.EnsureMemberAsync(artifact.ProjectId, cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(comment))
+        {
+            throw new RequestValidationException("A comment-only review needs a comment.");
+        }
+
+        var review = new ArtifactReview
+        {
+            Id = Guid.NewGuid(),
+            ArtifactId = artifact.Id,
+            ReviewerUserId = _currentUser.UserId,
+            ReviewerRole = ActingRole(Roles.Developer, Roles.QA, Roles.Reviewer, Roles.BusinessAnalyst, Roles.Administrator),
+            Decision = ReviewDecision.CommentOnly,
+            Comment = comment.Trim(),
+            ReviewedAt = DateTime.UtcNow,
+            VersionNumber = artifact.CurrentVersion
+        };
+        _db.ArtifactReviews.Add(review);
+        await _db.SaveChangesAsync(cancellationToken);
+
+        return new ArtifactReviewResponse(review.Id, review.ReviewerUserId, review.Decision, review.Comment, review.ReviewedAt, review.VersionNumber, review.ReviewerRole);
+    }
+
+    // The first of the given roles the caller holds, in preference order.
+    private string? ActingRole(params string[] preference) => preference.FirstOrDefault(_currentUser.IsInRole);
+
     public async Task<IReadOnlyList<ArtifactReviewResponse>> GetReviewsAsync(Guid id, CancellationToken cancellationToken = default)
     {
         await EnsureAccessToArtifactAsync(id, cancellationToken);
@@ -348,7 +315,7 @@ public class ArtifactService : IArtifactService
         return await _db.ArtifactReviews
             .Where(r => r.ArtifactId == id)
             .OrderByDescending(r => r.ReviewedAt)
-            .Select(r => new ArtifactReviewResponse(r.Id, r.ReviewerUserId, r.Decision, r.Comment, r.ReviewedAt, r.VersionNumber))
+            .Select(r => new ArtifactReviewResponse(r.Id, r.ReviewerUserId, r.Decision, r.Comment, r.ReviewedAt, r.VersionNumber, r.ReviewerRole))
             .ToListAsync(cancellationToken);
     }
 

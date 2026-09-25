@@ -1,14 +1,17 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useProject } from '../context/ProjectContext';
-import { deriveSdlc, nextPhase, PHASE_STATE_LABEL, phasePath, previousPhase, SDLC_PHASES } from '../lib/sdlc';
+import { stageLabel, stageState } from '../lib/lifecycle';
+import { nextWorkArea, phasePath, previousWorkArea, workArea } from '../lib/workAreas';
 import { PageHeader } from './ui/PageHeader';
-import { SdlcStepper } from './SdlcStepper';
+import { LifecycleStepper } from './LifecycleStepper';
 import { IconArrowLeft, IconArrowRight, IconSparkles } from './icons';
 
 /**
- * Shared frame for every SDLC phase workspace: title, one-line purpose, live phase state,
- * the project's SDLC track, the phase content, and previous/next phase navigation.
+ * Shared frame for every work area (gathering, analysis, validation, design, development, testing,
+ * traceability): title, purpose, the lifecycle stage(s) the area's work serves, the project's
+ * actual lifecycle position, the content, and previous/next work-area navigation. Work areas are
+ * navigation; the lifecycle stage is Project.status and only moves on the project overview.
  */
 export function PhasePage({
   phaseKey,
@@ -24,11 +27,14 @@ export function PhasePage({
   children: ReactNode;
 }) {
   const { project } = useProject();
-  const sdlc = deriveSdlc(project.status);
-  const phase = SDLC_PHASES.find((p) => p.key === phaseKey);
-  const state = sdlc.phases.find((p) => p.key === phaseKey)?.state ?? 'upcoming';
-  const prev = previousPhase(phaseKey);
-  const next = nextPhase(phaseKey);
+  const area = workArea(phaseKey);
+  const serves = area?.serves ?? [];
+  // How this area's stages relate to where the project actually is.
+  const states = serves.map((s) => stageState(s, project.status));
+  const relation = states.includes('current') ? 'current' : states.every((s) => s === 'completed') ? 'completed' : 'upcoming';
+  const relationText = relation === 'current' ? 'current stage' : relation === 'completed' ? 'stage already passed' : 'ahead of the project';
+  const prev = previousWorkArea(phaseKey);
+  const next = nextWorkArea(phaseKey);
 
   return (
     <>
@@ -36,9 +42,9 @@ export function PhasePage({
         title={title}
         subtitle={description}
         badge={
-          phase && (
-            <span className={`phase-badge ${state}`}>
-              Step {phase.step} of {SDLC_PHASES.length} · {PHASE_STATE_LABEL[state]}
+          serves.length > 0 && (
+            <span className={`phase-badge ${relation}`} title={`The project is in ${stageLabel(project.status)}`}>
+              Serves {serves.map(stageLabel).join(' & ')} · {relationText}
             </span>
           )
         }
@@ -53,17 +59,17 @@ export function PhasePage({
       />
 
       <div className="phase-strip">
-        <SdlcStepper phases={sdlc.phases} projectId={project.id} activeKey={phaseKey} compact />
+        <LifecycleStepper status={project.status} compact highlight={serves} to={`/projects/${project.id}#lifecycle`} />
       </div>
 
       <div className="phase-body">{children}</div>
 
-      <nav className="phase-nav" aria-label="Phase navigation">
+      <nav className="phase-nav" aria-label="Work area navigation">
         {prev ? (
           <Link to={phasePath(project.id, prev.segment)} className="phase-nav-link prev">
             <IconArrowLeft width={16} height={16} />
             <span>
-              <small>Previous</small>
+              <small>Previous work area</small>
               {prev.navLabel}
             </span>
           </Link>
@@ -73,7 +79,7 @@ export function PhasePage({
         {next && (
           <Link to={phasePath(project.id, next.segment)} className="phase-nav-link next">
             <span>
-              <small>Next phase</small>
+              <small>Next work area</small>
               {next.navLabel}
             </span>
             <IconArrowRight width={16} height={16} />

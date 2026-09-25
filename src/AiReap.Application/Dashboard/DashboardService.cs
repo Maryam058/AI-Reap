@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AiReap.Application.Artifacts.Payloads;
 using AiReap.Application.Persistence;
+using AiReap.Application.Sdlc;
 using AiReap.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 
@@ -9,10 +10,12 @@ namespace AiReap.Application.Dashboard;
 public class DashboardService : IDashboardService
 {
     private readonly IAiReapDbContext _db;
+    private readonly ISdlcProgressService _sdlcProgress;
 
-    public DashboardService(IAiReapDbContext db)
+    public DashboardService(IAiReapDbContext db, ISdlcProgressService sdlcProgress)
     {
         _db = db;
+        _sdlcProgress = sdlcProgress;
     }
 
     public async Task<ProjectDashboardResponse> GetAsync(Guid projectId, CancellationToken cancellationToken = default)
@@ -59,6 +62,7 @@ public class DashboardService : IDashboardService
             ConflictCount: conflictCount,
             RecentChanges: recentChanges,
             OpenImpactNoticeCount: await _db.ArtifactImpactNotices.CountAsync(
-                n => n.ProjectId == projectId && n.AcknowledgedAt == null, cancellationToken));
+                n => n.ProjectId == projectId && n.AcknowledgedAt == null, cancellationToken),
+            Phases: await _sdlcProgress.GetAsync(projectId, cancellationToken));
     }
 }

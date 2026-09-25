@@ -21,6 +21,10 @@ public interface IAiReapDbContext
     DbSet<DocumentChunk> DocumentChunks { get; }
     DbSet<AgentRun> AgentRuns { get; }
     DbSet<AgentStageRun> AgentStageRuns { get; }
+    DbSet<ProjectStageTransition> ProjectStageTransitions { get; }
+    DbSet<ProjectStageReview> ProjectStageReviews { get; }
+    DbSet<ProjectNotification> ProjectNotifications { get; }
+    DbSet<ArtifactWorkRecord> ArtifactWorkRecords { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

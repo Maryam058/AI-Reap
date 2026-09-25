@@ -14,7 +14,16 @@ import { IconEdit, IconPlus, IconTrash, IconUsers } from './icons';
 const emptyForm = { name: '', roleInProject: '', contactInfo: '' };
 
 /** Stakeholder register for a project: list, add, edit, remove. Uses the existing stakeholder endpoints. */
-export function StakeholdersPanel({ projectId, onCountChange }: { projectId: string; onCountChange?: (n: number) => void }) {
+export function StakeholdersPanel({
+  projectId,
+  onCountChange,
+  onChange,
+}: {
+  projectId: string;
+  onCountChange?: (n: number) => void;
+  /** Fires after an add, edit or remove. */
+  onChange?: () => void;
+}) {
   const { token, hasRole } = useAuth();
   const { toast } = useToast();
   const canManage = hasRole('Administrator') || hasRole('BusinessAnalyst');
@@ -68,6 +77,7 @@ export function StakeholdersPanel({ projectId, onCountChange }: { projectId: str
       else await projectsApi.addStakeholder(projectId, request, token);
       toast(editing === 'new' ? 'Stakeholder added.' : 'Stakeholder updated.');
       setEditing(null);
+      onChange?.();
       await load();
     } catch (err) {
       setFormError(apiErrorText(err, 'Could not save the stakeholder. Please try again.'));
@@ -84,6 +94,7 @@ export function StakeholdersPanel({ projectId, onCountChange }: { projectId: str
       await projectsApi.removeStakeholder(projectId, removing.id, token);
       toast(`${removing.name} removed.`);
       setRemoving(null);
+      onChange?.();
       await load();
     } catch (err) {
       setRemoveError(apiErrorText(err, 'Could not remove the stakeholder.'));
@@ -97,7 +108,10 @@ export function StakeholdersPanel({ projectId, onCountChange }: { projectId: str
       <header className="panel-head">
         <div>
           <h2 id="stakeholders-title">Stakeholders</h2>
-          <p>People who sponsor, use or are affected by this project.</p>
+          <p>
+            People who sponsor, use or are affected by this project. Stakeholders are for reference only — to give a
+            user access to this project, add them under Members.
+          </p>
         </div>
         {canManage && items && items.length > 0 && (
           <button type="button" className="btn btn-primary" onClick={() => openDialog('new')}>

@@ -71,7 +71,8 @@ public class AiChatClientSelectionTests
 
     // Gemini is now the default provider; the Anthropic-specific tests below pin "Anthropic" explicitly.
     private static (ServiceProvider Provider, CapturingLoggerProvider Logs) BuildProvider(
-        string? apiKey, string environmentName, string? aiProvider = "Anthropic", string? geminiKey = null)
+        string? apiKey, string environmentName, string? aiProvider = "Anthropic", string? geminiKey = null,
+        string? groqKey = null, IDictionary<string, string?>? extra = null)
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -81,7 +82,9 @@ public class AiChatClientSelectionTests
                 ["Ai:Anthropic:ApiKey"] = apiKey,
                 ["Ai:Anthropic:Model"] = "claude-sonnet-5",
                 ["Ai:Gemini:ApiKey"] = geminiKey,
+                ["Ai:Groq:ApiKey"] = groqKey,
             })
+            .AddInMemoryCollection(extra ?? new Dictionary<string, string?>())
             .Build();
 
         var logs = new CapturingLoggerProvider();
@@ -170,23 +173,6 @@ public class AiChatClientSelectionTests
         Assert.Equal(expected, options.HasUsableApiKey);
     }
 
-    // Ollama needs no API key, so Ai:Provider is the only thing that matters here - present or
-    // absent Anthropic key must not change the outcome once Ollama is explicitly selected.
-    [Theory]
-    [InlineData("Development", null)]
-    [InlineData("Production", null)]
-    [InlineData("Production", PlausibleRealKey)]
-    public async Task AddInfrastructure_uses_the_ollama_client_when_Ai_Provider_is_Ollama(string environmentName, string? anthropicApiKey)
-    {
-        var (provider, _) = BuildProvider(anthropicApiKey, environmentName, aiProvider: "Ollama");
-        await using var _ = provider;
-        using var scope = provider.CreateScope();
-
-        var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
-
-        Assert.IsType<OllamaAiChatClient>(Assert.IsType<ResilientAiChatClient>(client).Inner);
-    }
-
     [Fact]
     public async Task AddInfrastructure_still_uses_the_anthropic_selection_logic_when_Ai_Provider_is_explicitly_Anthropic()
     {
@@ -266,7 +252,7 @@ public class AiChatClientSelectionTests
         using var scope = provider.CreateScope();
 
         Assert.IsType<StubAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
-        Assert.Contains(logs.Messages, m => m.Contains("Gemini API key not configured; using development AI stub."));
+        Assert.Contains(logs.Messages, m => m.Contains("No AI provider API key configured") && m.Contains("DEVELOPMENT AI STUB"));
     }
 
     [Fact]
@@ -294,5 +280,142 @@ public class AiChatClientSelectionTests
     public void Gemini_HasUsableApiKey_rejects_blank_and_placeholder_keys(string? apiKey, bool expected)
     {
         Assert.Equal(expected, new GeminiOptions { ApiKey = apiKey ?? string.Empty }.HasUsableApiKey);
+    }
+
+    // ---- Groq fallback -----------------------------------------------------------------------
+
+    // A syntactically plausible Groq key ("gsk_" + 52 chars) that is not a real key.
+    private const string PlausibleGroqKey = "gsk_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    [Theory]
+    [InlineData("Development")]
+    [InlineData("Production")]
+    public async Task Gemini_is_primary_and_groq_the_fallback_when_both_keys_are_configured(string environmentName)
+    {
+        var (provider, _) = BuildProvider(apiKey: null, environmentName, aiProvider: "Gemini", geminiKey: PlausibleGeminiKey, groqKey: PlausibleGroqKey);
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var client = Assert.IsType<FallbackAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+
+        Assert.IsType<GeminiAiChatClient>(Assert.IsType<ResilientAiChatClient>(client.Primary).Inner);
+        // Groq alone carries the request budget (Ai:Groq:MaxRequestTokens); Gemini is never budgeted.
+        var budgeted = Assert.IsType<RequestBudgetAiChatClient>(client.Fallback);
+        Assert.IsType<GroqAiChatClient>(Assert.IsType<ResilientAiChatClient>(budgeted.Inner).Inner);
+        Assert.Equal(8000 - 2000, budgeted.InputBudget);
+        Assert.Equal("gemini-3.6-flash", client.ModelName); // before any call, the primary
+    }
+
+    [Fact]
+    public async Task Groq_key_is_read_from_the_conventional_GROQ_API_KEY_setting_when_Ai_Groq_ApiKey_is_unset()
+    {
+        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider: "Gemini", geminiKey: PlausibleGeminiKey,
+            extra: new Dictionary<string, string?> { ["GROQ_API_KEY"] = PlausibleGroqKey });
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        Assert.IsType<FallbackAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+    }
+
+    [Fact]
+    public async Task Groq_alone_is_used_when_only_a_groq_key_is_configured_never_the_stub()
+    {
+        var (provider, logs) = BuildProvider(apiKey: null, Environments.Development, aiProvider: "Gemini", groqKey: PlausibleGroqKey);
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
+
+        Assert.IsType<GroqAiChatClient>(Assert.IsType<ResilientAiChatClient>(Assert.IsType<RequestBudgetAiChatClient>(client).Inner).Inner);
+        Assert.Equal("groq:openai/gpt-oss-120b", client.ModelName);
+        Assert.Contains(logs.Messages, m => m.Contains("using Groq only"));
+    }
+
+    [Fact]
+    public async Task Fallback_can_be_disabled_with_FallbackProvider_None()
+    {
+        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider: "Gemini", geminiKey: PlausibleGeminiKey,
+            groqKey: PlausibleGroqKey, extra: new Dictionary<string, string?> { ["Ai:FallbackProvider"] = "None" });
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        Assert.IsType<GeminiAiChatClient>(Assert.IsType<ResilientAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>()).Inner);
+    }
+
+    [Theory]
+    [InlineData("Ollama")]
+    [InlineData("ollama")]
+    public async Task Ollama_is_no_longer_a_recognized_provider(string aiProvider)
+    {
+        var (provider, _) = BuildProvider(apiKey: null, Environments.Development, aiProvider);
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+        Assert.Contains("Ai:Provider", ex.Message);
+        Assert.EndsWith("Use 'Gemini' (default), 'Groq' or 'Anthropic'.", ex.Message);
+    }
+
+    [Fact]
+    public void No_ollama_client_type_remains_in_the_infrastructure_assembly()
+    {
+        var types = typeof(GeminiAiChatClient).Assembly.GetTypes();
+
+        Assert.DoesNotContain(types, t => t.Name.Contains("Ollama", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Shipped_appsettings_make_gemini_primary_and_groq_the_fallback_without_any_key_or_ollama_section()
+    {
+        var root = RepositoryRoot();
+        var appsettingsPath = Path.Combine(root, "src", "AiReap.Api", "appsettings.json");
+        var configuration = new ConfigurationBuilder().AddJsonFile(appsettingsPath, optional: false).Build();
+        var groq = configuration.GetSection(GroqOptions.SectionName).Get<GroqOptions>()!;
+
+        Assert.Equal("Gemini", configuration["Ai:Provider"]);
+        Assert.Equal("Groq", configuration["Ai:FallbackProvider"]);
+        Assert.Equal("openai/gpt-oss-120b", groq.Model);
+        Assert.True(string.IsNullOrEmpty(groq.ApiKey));
+        Assert.False(configuration.GetSection("Ai:Ollama").Exists());
+        Assert.DoesNotContain("11434", File.ReadAllText(appsettingsPath));
+    }
+
+    // Real-looking Gemini ("AIza...") or Groq ("gsk_...") keys must never be committed to source or config.
+    [Fact]
+    public void No_api_keys_in_source_or_configuration_files()
+    {
+        var root = RepositoryRoot();
+        var keyPattern = new System.Text.RegularExpressions.Regex("AIza[0-9A-Za-z_\\-]{35}|gsk_[0-9A-Za-z]{40,}");
+        var offenders = new[] { "src", "tests" }
+            .SelectMany(dir => Directory.EnumerateFiles(Path.Combine(root, dir), "*.*", SearchOption.AllDirectories))
+            .Where(f => f.EndsWith(".cs") || f.EndsWith(".json"))
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}")
+                        && !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}"))
+            .Where(f =>
+            {
+                var text = File.ReadAllText(f);
+                return keyPattern.Matches(text).Any(m => !IsObviousFake(m.Value))
+                       || (RealGroqKey is { Length: > 0 } real && text.Contains(real, StringComparison.Ordinal));
+            })
+            .ToList();
+
+        Assert.Empty(offenders); // file names only - never the matched value
+    }
+
+    // Test fakes are low-entropy ("AIzaSyAAAA...", "gsk_AAAA...") or say TEST; real keys are random.
+    private static bool IsObviousFake(string key) =>
+        key.Contains("TEST", StringComparison.Ordinal) || key[4..].Distinct().Count() < 8;
+
+    private static string? RealGroqKey => Environment.GetEnvironmentVariable("GROQ_API_KEY")?.Trim();
+
+    private static string RepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "src", "AiReap.Api", "appsettings.json")))
+        {
+            directory = directory.Parent;
+        }
+        Assert.NotNull(directory);
+        return directory!.FullName;
     }
 }

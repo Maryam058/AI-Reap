@@ -27,6 +27,8 @@ public class ArchitectureAgent : IAgent
     public string Inputs => "Functional requirements and clarifications from the Analysis stage.";
     public string Outputs => "DesignArtifact, DataEntity and ApiSpecification artifacts.";
     public IReadOnlyList<string> ApproverRoles => AgentSupport.AdminAnd(Roles.Developer);
+    public IReadOnlyList<ProjectStatus> LifecycleStages => [ProjectStatus.Design];
+    public string LifecycleContribution => "Drafts the Design work: architecture, data entities and API contracts, for Developer review and approval.";
 
     public async Task<AgentOutput> RunAsync(AgentContext context, CancellationToken cancellationToken)
     {

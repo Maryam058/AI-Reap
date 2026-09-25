@@ -23,6 +23,8 @@ public class QaAgent : IAgent
     public string Inputs => "Functional requirements.";
     public string Outputs => "TestCase artifacts linked (TestedBy) to their requirements.";
     public IReadOnlyList<string> ApproverRoles => AgentSupport.AdminAnd(Roles.QA);
+    public IReadOnlyList<ProjectStatus> LifecycleStages => [ProjectStatus.Testing];
+    public string LifecycleContribution => "Drafts test cases for Testing. Verification evidence comes from QA recording outcomes, not from the drafts.";
 
     public async Task<AgentOutput> RunAsync(AgentContext context, CancellationToken cancellationToken)
     {
@@ -52,6 +54,6 @@ public class QaAgent : IAgent
             new Dictionary<string, int> { ["FunctionalRequirement"] = frs.Count, ["TestCase"] = total },
             produced,
             Array.Empty<string>(),
-            "Review test cases for coverage and correctness. Approving all of a requirement's test cases (after its tasks) is what promotes it to Verified.");
+            "Review test cases for coverage and correctness. Approving a test case accepts it; its requirement becomes Verified only when QA records every linked test case as passed (after its tasks are complete).");
     }
 }

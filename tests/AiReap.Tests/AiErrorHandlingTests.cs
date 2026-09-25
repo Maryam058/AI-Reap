@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using AiReap.Application.Ai;
 using Xunit;
@@ -102,6 +103,98 @@ public class AiErrorHandlingTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
         Assert.Equal(TimeSpan.FromSeconds(12), response.Headers.RetryAfter!.Delta);
+    }
+
+    // The frontend (web/src/lib/errors.ts apiErrorText) shows `title` + `detail` for ai_rate_limited,
+    // so these strings are exactly what the user reads.
+    [Fact]
+    public async Task Rate_limit_with_retry_after_tells_the_user_how_long_to_wait()
+    {
+        _host.Ai.ThrowOnceWhenPromptContains(AnalysisMarker,
+            new AiProviderException(AiFailureKind.RateLimited, "Gemini", "Gemini rate limit reached. (HTTP 429 RESOURCE_EXHAUSTED: Quota exceeded.)",
+                HttpStatusCode.TooManyRequests, "Quota exceeded.", retryAfter: TimeSpan.FromSeconds(16.2)));
+
+        var (status, body) = await AnalyzeAsync();
+
+        Assert.Equal(429, status);
+        Assert.Equal("ai_rate_limited", body!["code"]!.GetValue<string>());
+        Assert.Equal("Gemini rate limit reached.", body["title"]!.GetValue<string>());
+        Assert.Equal("Please wait and try again in about 17 seconds.", body["detail"]!.GetValue<string>());
+        Assert.Equal(17, body["retryAfterSeconds"]!.GetValue<int>());
+        Assert.False(body["quotaExhausted"]!.GetValue<bool>());
+        Assert.True(body["retryable"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task Rate_limit_without_retry_after_asks_the_user_to_wait()
+    {
+        _host.Ai.ThrowOnceWhenPromptContains(AnalysisMarker,
+            new AiProviderException(AiFailureKind.RateLimited, "Gemini", "quota", HttpStatusCode.TooManyRequests));
+
+        var response = await _ba.Http.PostAsync($"/api/requirement-sources/{_sourceId}/analyze", null);
+        var body = JsonNode.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+        Assert.Null(response.Headers.RetryAfter);
+        Assert.Equal("Gemini rate limit reached.", body!["title"]!.GetValue<string>());
+        Assert.Equal("Please wait and try again.", body["detail"]!.GetValue<string>());
+        Assert.Null(body["retryAfterSeconds"]);
+    }
+
+    [Fact]
+    public async Task Exhausted_quota_is_reported_without_promising_a_short_wait()
+    {
+        _host.Ai.ThrowOnceWhenPromptContains(AnalysisMarker,
+            new AiProviderException(AiFailureKind.RateLimited, "Gemini", "daily quota", HttpStatusCode.TooManyRequests,
+                retryAfter: TimeSpan.FromSeconds(20), quotaExhausted: true));
+
+        var response = await _ba.Http.PostAsync($"/api/requirement-sources/{_sourceId}/analyze", null);
+        var body = JsonNode.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+        Assert.Equal(TimeSpan.FromSeconds(20), response.Headers.RetryAfter!.Delta);
+        Assert.Equal("Gemini rate limit reached.", body!["title"]!.GetValue<string>());
+        Assert.Contains("quota appears to be used up", body["detail"]!.GetValue<string>());
+        Assert.True(body["quotaExhausted"]!.GetValue<bool>());
+        Assert.Equal(0, await ArtifactCountAsync());
+    }
+
+    [Fact]
+    public async Task Copilot_rate_limit_returns_429_with_a_user_facing_message_and_no_provider_secrets()
+    {
+        const string key = "AIzaSyTESTTESTTESTTESTTESTTESTTESTTEST12";
+        _host.Ai.ThrowOnceWhenPromptContains("Project Copilot",
+            new AiProviderException(AiFailureKind.RateLimited, "Gemini",
+                "Gemini rate limit reached. (HTTP 429 RESOURCE_EXHAUSTED: Quota exceeded for metric generate_content_free_tier_requests)",
+                HttpStatusCode.TooManyRequests, "Quota exceeded for metric generate_content_free_tier_requests", retryAfter: TimeSpan.FromSeconds(42)));
+
+        var response = await _ba.Http.PostAsJsonAsync($"/api/projects/{_projectId}/copilot/ask", new { question = "What is still open?" });
+        var raw = await response.Content.ReadAsStringAsync();
+        var body = JsonNode.Parse(raw);
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+        Assert.Equal(TimeSpan.FromSeconds(42), response.Headers.RetryAfter!.Delta);
+        Assert.Equal("ai_rate_limited", body!["code"]!.GetValue<string>());
+        Assert.Equal("Gemini rate limit reached.", body["title"]!.GetValue<string>());
+        Assert.Equal("Please wait and try again in about 42 seconds.", body["detail"]!.GetValue<string>());
+        Assert.DoesNotContain(key, raw);
+        Assert.DoesNotContain("x-goog-api-key", raw);
+        Assert.DoesNotContain("generate_content_free_tier_requests", raw);
+    }
+
+    [Theory]
+    [InlineData(1, "1 second")]
+    [InlineData(90, "90 seconds")]
+    [InlineData(600, "10 minutes")]
+    [InlineData(20_000, "6 hours")]
+    public async Task Retry_after_is_rendered_in_readable_units(int seconds, string expected)
+    {
+        _host.Ai.ThrowOnceWhenPromptContains(AnalysisMarker,
+            new AiProviderException(AiFailureKind.RateLimited, "Gemini", "quota", HttpStatusCode.TooManyRequests, retryAfter: TimeSpan.FromSeconds(seconds)));
+
+        var (_, body) = await AnalyzeAsync();
+
+        Assert.Equal($"Please wait and try again in about {expected}.", body!["detail"]!.GetValue<string>());
     }
 
     [Fact]

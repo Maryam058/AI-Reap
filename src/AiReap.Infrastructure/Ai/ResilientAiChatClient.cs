@@ -10,7 +10,8 @@ public class AiResilienceOptions
     // Per-attempt limit; a request source of a few pages usually completes well inside this.
     public int TimeoutSeconds { get; set; } = 120;
 
-    // Total attempts including the first. Only transient failures (429, 5xx, network, timeout) retry.
+    // Total attempts including the first. Only transient failures (429, 5xx, network, timeout) retry;
+    // 429 is further capped by MaxRateLimitAttempts.
     public int MaxAttempts { get; set; } = 3;
 
     public int BaseDelayMilliseconds { get; set; } = 1000;
@@ -20,9 +21,26 @@ public class AiResilienceOptions
     // A provider asking us to wait longer than this (e.g. a daily free-tier quota) is not worth
     // holding the HTTP request open for - fail immediately with a rate-limit error instead.
     public int MaxRetryAfterSeconds { get; set; } = 30;
+
+    // Total attempts (including the first) when the provider answers 429. Lower than MaxAttempts:
+    // every retry of a rate-limited request spends more of the same quota, so one retry (after the
+    // provider's own Retry-After when given) is enough to ride out a short per-minute limit.
+    public int MaxRateLimitAttempts { get; set; } = 2;
+
+    // For a primary provider that has a fallback (FallbackAiChatClient): a 429 goes straight to the
+    // fallback instead of waiting to retry and spending more of the primary's quota.
+    public AiResilienceOptions WithoutRateLimitRetry() => new()
+    {
+        TimeoutSeconds = TimeoutSeconds,
+        MaxAttempts = MaxAttempts,
+        BaseDelayMilliseconds = BaseDelayMilliseconds,
+        MaxDelaySeconds = MaxDelaySeconds,
+        MaxRetryAfterSeconds = MaxRetryAfterSeconds,
+        MaxRateLimitAttempts = 1
+    };
 }
 
-// Wraps every real provider client (Gemini, Anthropic, Ollama) with the same timeout, retry and
+// Wraps every real provider client (Gemini, Groq, Anthropic) with the same timeout, retry and
 // error-classification policy, so providers stay thin and the policy is tested once. The stub is
 // never wrapped. Validation failures (AiOutputValidationException) pass straight through: retrying
 // the identical request won't fix them - GenerationSupport does a separate repair attempt instead.
@@ -84,6 +102,13 @@ public sealed class ResilientAiChatClient : IAiChatClient
                 throw failure;
             }
 
+            if (failure is { Kind: AiFailureKind.RateLimited, QuotaExhausted: true })
+            {
+                _logger.LogWarning(
+                    "AI provider {Provider} reports its quota is exhausted (daily or zero-limit); not retrying.", _providerName);
+                throw failure;
+            }
+
             if (failure.RetryAfter is { } retryAfter && retryAfter > TimeSpan.FromSeconds(_options.MaxRetryAfterSeconds))
             {
                 _logger.LogWarning(
@@ -92,7 +117,10 @@ public sealed class ResilientAiChatClient : IAiChatClient
                 throw failure;
             }
 
-            if (attempt >= maxAttempts)
+            var attemptLimit = failure.Kind == AiFailureKind.RateLimited
+                ? Math.Clamp(_options.MaxRateLimitAttempts, 1, maxAttempts)
+                : maxAttempts;
+            if (attempt >= attemptLimit)
             {
                 _logger.LogWarning("AI provider {Provider} still failing after {Attempts} attempt(s): {Kind}", _providerName, attempt, failure.Kind);
                 throw failure;
@@ -101,7 +129,7 @@ public sealed class ResilientAiChatClient : IAiChatClient
             var wait = failure.RetryAfter ?? BackoffDelay(attempt);
             _logger.LogWarning(
                 "AI provider {Provider} transient failure ({Kind}, status {Status}) on attempt {Attempt}/{MaxAttempts}; retrying in {DelayMs}ms.",
-                _providerName, failure.Kind, (int?)failure.ProviderStatusCode, attempt, maxAttempts, (int)wait.TotalMilliseconds);
+                _providerName, failure.Kind, (int?)failure.ProviderStatusCode, attempt, attemptLimit, (int)wait.TotalMilliseconds);
             await _delay(wait, cancellationToken);
         }
     }
@@ -114,7 +142,7 @@ public sealed class ResilientAiChatClient : IAiChatClient
         return TimeSpan.FromMilliseconds(Math.Max(0, capped));
     }
 
-    // Providers that predate AiProviderException (Anthropic, Ollama) throw HttpRequestException;
+    // Providers that predate AiProviderException (Anthropic) throw HttpRequestException;
     // classify them here so they get the same retry policy and API error mapping as Gemini. The
     // message is kept (it holds the provider's error text, never the key), trimmed for size.
     private AiProviderException Classify(HttpRequestException ex)

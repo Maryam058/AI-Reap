@@ -28,6 +28,11 @@ public class AgentsController : ControllerBase
     public async Task<ActionResult> GetForProject(Guid projectId, CancellationToken cancellationToken) =>
         Ok(await _orchestrator.GetForProjectAsync(projectId, cancellationToken));
 
+    // Read-only overview of AI activity; never touches the project's lifecycle stage.
+    [HttpGet("api/projects/{projectId:guid}/agent-runs/summary")]
+    public async Task<ActionResult<AgentRunSummaryResponse>> GetSummary(Guid projectId, CancellationToken cancellationToken) =>
+        Ok(await _orchestrator.GetSummaryAsync(projectId, cancellationToken));
+
     [HttpGet("api/agent-runs/{id:guid}")]
     public async Task<ActionResult> Get(Guid id, CancellationToken cancellationToken)
     {

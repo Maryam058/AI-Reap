@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { ArtifactDetails } from './ArtifactDetails';
 import { ArtifactEditDialog } from './ArtifactEditDialog';
+import { WorkRecordPanel } from './WorkRecordPanel';
+import { DesignReviewPanel } from './DesignReviewPanel';
 import { IconCheck, IconEdit, IconSparkles, IconX } from './icons';
 import {
   ARTIFACT_PRIORITY_LABELS,
@@ -215,6 +217,13 @@ export function ArtifactCard({
           </button>
         )}
       </div>
+
+      {(artifact.artifactType === ARTIFACT_TYPE_VALUES.ImplementationTask || artifact.artifactType === ARTIFACT_TYPE_VALUES.TestCase) && (
+        <WorkRecordPanel artifact={artifact} onRecorded={onSaved} />
+      )}
+      {(artifact.artifactType === ARTIFACT_TYPE_VALUES.DesignArtifact ||
+        artifact.artifactType === ARTIFACT_TYPE_VALUES.ApiSpecification ||
+        artifact.artifactType === ARTIFACT_TYPE_VALUES.DataEntity) && <DesignReviewPanel artifact={artifact} onRecorded={onSaved} />}
 
       <ArtifactDetails
         artifactId={artifact.id}

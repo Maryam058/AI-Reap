@@ -3,7 +3,9 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { projectsApi } from '../api/projects';
 import type { Project } from '../api/types';
-import { deriveSdlc, SDLC_PHASES } from '../lib/sdlc';
+import { lifecycleProgress, LIFECYCLE_STAGES, stageLabel } from '../lib/lifecycle';
+import { useLifecycleStates } from '../hooks/useLifecycle';
+import { LifecycleDots } from '../components/LifecycleStepper';
 import { formatFullDateTime, formatRelativeTime, statusLabel, statusVariant } from '../lib/format';
 import { PageHeader } from '../components/ui/PageHeader';
 import { EmptyState } from '../components/ui/EmptyState';
@@ -17,11 +19,14 @@ import { IconFolder, IconGrid, IconPlus, IconSearch } from '../components/icons'
 type SortKey = 'updated' | 'created' | 'name' | 'progress';
 type View = 'cards' | 'table';
 
+// Lifecycle states are fetched per project (pending requests, evidence gaps); bounded for large lists.
+const LIFECYCLE_SAMPLE = 30;
+
 const SORTS: Record<SortKey, { label: string; compare: (a: Project, b: Project) => number }> = {
   updated: { label: 'Recently updated', compare: (a, b) => +new Date(b.updatedAt) - +new Date(a.updatedAt) },
   created: { label: 'Newest first', compare: (a, b) => +new Date(b.createdAt) - +new Date(a.createdAt) },
   name: { label: 'Name (A–Z)', compare: (a, b) => a.name.localeCompare(b.name) },
-  progress: { label: 'SDLC progress', compare: (a, b) => deriveSdlc(b.status).percent - deriveSdlc(a.status).percent },
+  progress: { label: 'Lifecycle stage', compare: (a, b) => b.status - a.status },
 };
 
 function loadView(): View {
@@ -40,9 +45,14 @@ export function ProjectsPage() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [failed, setFailed] = useState(false);
   const [view, setView] = useState<View>(loadView);
+  const lifecycleIds = useMemo(
+    () => [...(projects ?? [])].sort((a, b) => +new Date(b.updatedAt) - +new Date(a.updatedAt)).slice(0, LIFECYCLE_SAMPLE).map((p) => p.id),
+    [projects],
+  );
+  const lifecycle = useLifecycleStates(lifecycleIds);
 
   const query = params.get('q') ?? '';
-  const phase = params.get('phase') ?? 'all';
+  const stage = params.get('stage') ?? 'all';
   const sort = (params.get('sort') as SortKey) in SORTS ? (params.get('sort') as SortKey) : 'updated';
 
   const load = useCallback(async () => {
@@ -84,15 +94,15 @@ export function ProjectsPage() {
     return projects
       .filter((p) => {
         if (q && !`${p.name} ${p.description ?? ''} ${p.domain ?? ''}`.toLowerCase().includes(q)) return false;
-        if (phase === 'all') return true;
-        const current = deriveSdlc(p.status).current;
-        return phase === 'completed' ? current === null : current?.key === phase;
+        if (stage === 'all') return true;
+        if (stage === 'pending') return !!lifecycle.get(p.id)?.pendingTransition;
+        return p.status === Number(stage);
       })
-      .sort(SORTS[sort].compare);
-  }, [projects, query, phase, sort]);
+      .sort((a, b) => SORTS[sort].compare(a, b));
+  }, [projects, query, stage, sort, lifecycle]);
 
   const onUpdated = (updated: Project) => setProjects((list) => list?.map((p) => (p.id === updated.id ? updated : p)) ?? null);
-  const filtering = query.trim() !== '' || phase !== 'all';
+  const filtering = query.trim() !== '' || stage !== 'all';
   const newButton = canCreate && (
     <Link to="/projects/new" className="btn btn-primary">
       <IconPlus width={16} height={16} /> New Project
@@ -126,15 +136,15 @@ export function ProjectsPage() {
               <input type="search" value={query} onChange={(e) => setParam('q', e.target.value, '')} placeholder="Search by name or description…" aria-label="Search projects" />
             </div>
             <label className="toolbar-select">
-              <span>Phase</span>
-              <select value={phase} onChange={(e) => setParam('phase', e.target.value, 'all')}>
-                <option value="all">All phases</option>
-                {SDLC_PHASES.map((p) => (
-                  <option key={p.key} value={p.key}>
-                    {p.navLabel}
+              <span>Lifecycle stage</span>
+              <select value={stage} onChange={(e) => setParam('stage', e.target.value, 'all')}>
+                <option value="all">All stages</option>
+                {LIFECYCLE_STAGES.map((s) => (
+                  <option key={s.status} value={s.status}>
+                    {s.label}
                   </option>
                 ))}
-                <option value="completed">Completed</option>
+                <option value="pending">Awaiting Reviewer approval</option>
               </select>
             </label>
             <label className="toolbar-select">
@@ -164,7 +174,7 @@ export function ProjectsPage() {
             <EmptyState
               icon={<IconSearch width={20} height={20} />}
               title="No projects match"
-              description="Try a different search term or clear the phase filter."
+              description="Try a different search term or clear the stage filter."
               action={
                 filtering && (
                   <button type="button" className="btn btn-secondary" onClick={() => setParams({}, { replace: true })}>
@@ -176,7 +186,7 @@ export function ProjectsPage() {
           ) : view === 'cards' ? (
             <div className="project-grid">
               {visible.map((p) => (
-                <ProjectCard key={p.id} project={p} onUpdated={onUpdated} />
+                <ProjectCard key={p.id} project={p} lifecycle={lifecycle.get(p.id)} onUpdated={onUpdated} />
               ))}
             </div>
           ) : (
@@ -186,7 +196,7 @@ export function ProjectsPage() {
                   <tr>
                     <th scope="col">Project</th>
                     <th scope="col">Status</th>
-                    <th scope="col">SDLC progress</th>
+                    <th scope="col">Lifecycle progress</th>
                     <th scope="col">Updated</th>
                     <th scope="col">Created</th>
                     <th scope="col" className="col-actions">
@@ -196,7 +206,8 @@ export function ProjectsPage() {
                 </thead>
                 <tbody>
                   {visible.map((p) => {
-                    const sdlc = deriveSdlc(p.status);
+                    const progress = lifecycleProgress(p.status);
+                    const pending = lifecycle.get(p.id)?.pendingTransition;
                     return (
                       <tr key={p.id}>
                         <td className="cell-project">
@@ -207,9 +218,11 @@ export function ProjectsPage() {
                           <span className={`status-pill tone-${statusVariant(p.status)}`}>{statusLabel(p.status)}</span>
                         </td>
                         <td className="cell-progress">
-                          <ProgressBar percent={sdlc.percent} />
+                          <ProgressBar percent={progress.percent} />
+                          <LifecycleDots status={p.status} pending={!!pending} />
                           <span>
-                            {sdlc.percent}% · {sdlc.current?.label ?? 'Complete'}
+                            Stage {progress.stageNumber} of {LIFECYCLE_STAGES.length}
+                            {pending ? ` · awaiting review to ${stageLabel(pending.toStatus)}` : progress.finished ? ' · completed' : ''}
                           </span>
                         </td>
                         <td>{formatRelativeTime(p.updatedAt)}</td>

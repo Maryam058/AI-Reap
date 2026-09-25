@@ -10,6 +10,9 @@ public class ArtifactReview
     public Artifact? Artifact { get; set; }
 
     public string ReviewerUserId { get; set; } = string.Empty;
+    // The role the reviewer acted under, e.g. Developer for the §17 design review. Null on rows
+    // written before it existed.
+    public string? ReviewerRole { get; set; }
     public ReviewDecision Decision { get; set; }
 
     // The artifact version this decision was made on (null on rows written before it existed).

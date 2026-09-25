@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AiReap.Application.Common;
 using AiReap.Application.Persistence;
+using AiReap.Domain.Common;
 using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
@@ -29,7 +30,8 @@ public class AgentOrchestrator : IAgentOrchestrator
 
     public IReadOnlyList<AgentDefinitionResponse> GetDefinitions() =>
         _agents.Select((a, i) => new AgentDefinitionResponse(
-            a.Kind, i, a.DisplayName, a.Responsibility, a.Inputs, a.Outputs, a.ApproverRoles)).ToList();
+            a.Kind, i, a.DisplayName, a.Responsibility, a.Inputs, a.Outputs, a.ApproverRoles,
+            a.LifecycleStages, a.LifecycleContribution)).ToList();
 
     public async Task<AgentRunResponse> StartAsync(Guid requirementSourceId, CancellationToken cancellationToken = default)
     {
@@ -42,11 +44,16 @@ public class AgentOrchestrator : IAgentOrchestrator
             throw new InvalidOperationException(AlreadyActiveMessage);
         }
 
+        // Audit only: where the project was in its lifecycle when the run began. Agents may draft
+        // ahead of it; the run never changes Project.Status.
+        var projectStatus = await _db.Projects.Where(p => p.Id == source.ProjectId).Select(p => p.Status).FirstAsync(cancellationToken);
+
         var run = new AgentRun
         {
             Id = Guid.NewGuid(),
             ProjectId = source.ProjectId,
             RequirementSourceId = source.Id,
+            ProjectStatusAtStart = projectStatus,
             Status = AgentRunStatus.Running,
             StartedByUserId = _currentUser.UserId,
             StartedAt = DateTime.UtcNow,
@@ -105,6 +112,69 @@ public class AgentOrchestrator : IAgentOrchestrator
         return runs.Select(ToResponse).ToList();
     }
 
+    public async Task<AgentRunSummaryResponse> GetSummaryAsync(Guid projectId, CancellationToken cancellationToken = default)
+    {
+        var currentStatus = await _db.Projects.AsNoTracking().Where(p => p.Id == projectId).Select(p => p.Status).FirstAsync(cancellationToken);
+        var runs = await _db.AgentRuns
+            .AsNoTracking()
+            .Include(r => r.Stages)
+            .Where(r => r.ProjectId == projectId)
+            .OrderByDescending(r => r.StartedAt)
+            .ToListAsync(cancellationToken);
+
+        int Count(AgentRunStatus status) => runs.Count(r => r.Status == status);
+
+        AgentRunStepSummary Step(AgentRun run, AgentStageRun step)
+        {
+            var agent = _agents.Single(a => a.Kind == step.Agent);
+            var ahead = run.ProjectStatusAtStart is { } atStart
+                && agent.LifecycleStages.Min(ProjectLifecyclePolicy.IndexOf) > ProjectLifecyclePolicy.IndexOf(atStart);
+            return new AgentRunStepSummary(step.Agent, agent.DisplayName, agent.LifecycleStages, step.Status, agent.ApproverRoles,
+                step.DecidedByUserId, step.DecidedAt, ahead);
+        }
+
+        var recent = runs.Take(10).Select(r =>
+        {
+            var ordered = r.Stages.OrderBy(s => s.Order).ToList();
+            var current = ordered.FirstOrDefault(s => s.Status is AgentStageStatus.AwaitingApproval or AgentStageStatus.Running or AgentStageStatus.Failed);
+            return new AgentRunSummaryItem(
+                r.Id, r.RequirementSourceId, r.Status, r.StartedAt, r.CompletedAt, r.ProjectStatusAtStart,
+                ordered.Count(s => s.Status == AgentStageStatus.Approved),
+                ordered.Count(s => s.Status == AgentStageStatus.Rejected),
+                ordered.Count,
+                current is null ? null : Step(r, current),
+                current?.Status is AgentStageStatus.AwaitingApproval or AgentStageStatus.Failed,
+                ordered.Select(s => Step(r, s)).ToList());
+        }).ToList();
+
+        // Steps of every run, grouped under the lifecycle stage(s) their agent serves.
+        var allSteps = runs.SelectMany(r => r.Stages).ToList();
+        var byStage = ProjectLifecyclePolicy.Stages
+            .Select(stage =>
+            {
+                var agents = _agents.Where(a => a.LifecycleStages.Contains(stage.Status)).ToList();
+                var kinds = agents.Select(a => a.Kind).ToHashSet();
+                var steps = allSteps.Where(s => kinds.Contains(s.Agent)).ToList();
+                return new AgentStageActivity(
+                    stage.Status, stage.Label, agents.Select(a => a.DisplayName).ToList(),
+                    steps.Count(s => s.Status == AgentStageStatus.AwaitingApproval),
+                    steps.Count(s => s.Status == AgentStageStatus.Approved),
+                    steps.Count(s => s.Status == AgentStageStatus.Rejected),
+                    steps.Count(s => s.Status == AgentStageStatus.Failed));
+            })
+            .ToList();
+
+        return new AgentRunSummaryResponse(
+            projectId, currentStatus, runs.Count,
+            Active: Count(AgentRunStatus.Running) + Count(AgentRunStatus.AwaitingApproval),
+            AwaitingDecision: Count(AgentRunStatus.AwaitingApproval),
+            Failed: Count(AgentRunStatus.Failed),
+            Completed: Count(AgentRunStatus.Completed),
+            Rejected: Count(AgentRunStatus.Rejected),
+            byStage,
+            recent);
+    }
+
     public async Task<AgentRunResponse> DecideAsync(Guid runId, bool approve, string? comment, CancellationToken cancellationToken = default)
     {
         var run = await LoadRunAsync(runId, cancellationToken)
@@ -117,7 +187,7 @@ public class AgentOrchestrator : IAgentOrchestrator
         // A failed stage has no output to approve; the only decisions are retry or abandon (reject).
         if (approve && stage.Status == AgentStageStatus.Failed)
         {
-            throw new InvalidOperationException("A failed stage cannot be approved. Retry it, or reject to abandon the run.");
+            throw new InvalidOperationException("A failed step cannot be approved. Retry it, or reject to abandon the run.");
         }
 
         EnsureCanDecide(stage);
@@ -167,9 +237,9 @@ public class AgentOrchestrator : IAgentOrchestrator
         return ToResponse(run);
     }
 
-    // Runs one agent and parks the run at the human checkpoint (or Failed). This is the only
-    // place a stage executes, and it always ends in a non-Running state — the chain cannot
-    // advance past a stage without DecideAsync.
+    // Runs one agent step and parks the run at the human checkpoint (or Failed). This is the only
+    // place a step executes, and it always ends in a non-Running state — the chain cannot
+    // advance past a step without DecideAsync. It never touches Project.Status.
     private async Task ExecuteStageAsync(AgentRun run, AgentStageRun stage, CancellationToken cancellationToken)
     {
         var agent = _agents.Single(a => a.Kind == stage.Agent);
@@ -214,7 +284,7 @@ public class AgentOrchestrator : IAgentOrchestrator
         }
         catch (DbUpdateConcurrencyException)
         {
-            throw new InvalidOperationException("This stage was just acted on by someone else. Reload the run to see its current state.");
+            throw new InvalidOperationException("This step was just acted on by someone else. Reload the run to see its current state.");
         }
     }
 
@@ -224,7 +294,7 @@ public class AgentOrchestrator : IAgentOrchestrator
         if (!agent.ApproverRoles.Any(_currentUser.IsInRole))
         {
             throw new UnauthorizedAccessException(
-                $"The {agent.DisplayName} stage can only be decided by: {string.Join(", ", agent.ApproverRoles)}.");
+                $"The {agent.DisplayName} step can only be decided by: {string.Join(", ", agent.ApproverRoles)}.");
         }
     }
 
@@ -233,17 +303,18 @@ public class AgentOrchestrator : IAgentOrchestrator
 
     private AgentRunResponse ToResponse(AgentRun run) => new(
         run.Id, run.ProjectId, run.RequirementSourceId, run.Status, run.StartedByUserId, run.StartedAt, run.CompletedAt,
-        run.Stages.OrderBy(s => s.Order).Select(ToResponse).ToList());
+        run.Stages.OrderBy(s => s.Order).Select(ToResponse).ToList(), run.ProjectStatusAtStart);
 
-    private AgentStageResponse ToResponse(AgentStageRun stage)
+    private AgentStepResponse ToResponse(AgentStageRun stage)
     {
         var agent = _agents.Single(a => a.Kind == stage.Agent);
         var output = stage.Status is AgentStageStatus.Pending or AgentStageStatus.Running or AgentStageStatus.Failed
             ? null
             : JsonSerializer.Deserialize<AgentOutput>(stage.OutputJson, JsonOptions);
 
-        return new AgentStageResponse(
+        return new AgentStepResponse(
             stage.Id, stage.Agent, stage.Order, agent.DisplayName, stage.Status, output, stage.Error,
-            agent.ApproverRoles, stage.StartedAt, stage.FinishedAt, stage.DecidedByUserId, stage.DecidedAt, stage.DecisionComment);
+            agent.ApproverRoles, stage.StartedAt, stage.FinishedAt, stage.DecidedByUserId, stage.DecidedAt, stage.DecisionComment,
+            agent.LifecycleStages);
     }
 }

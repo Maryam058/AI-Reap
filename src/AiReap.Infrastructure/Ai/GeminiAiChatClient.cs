@@ -178,10 +178,13 @@ public partial class GeminiAiChatClient : IAiChatClient
             kind = AiFailureKind.Timeout;
         }
 
+        var quotaExhausted = kind == AiFailureKind.RateLimited && GeminiRateLimit.IsLongWindowQuota(error?.Details, error?.Message);
+
         var summary = kind switch
         {
             AiFailureKind.Authentication => "Gemini rejected the configured API key.",
-            AiFailureKind.RateLimited => "Gemini rate limit or free-tier quota exceeded.",
+            AiFailureKind.RateLimited when quotaExhausted => "Gemini quota exhausted (daily or zero-limit quota; will not recover within this request).",
+            AiFailureKind.RateLimited => "Gemini rate limit reached.",
             AiFailureKind.Timeout => "Gemini did not finish in time.",
             AiFailureKind.Unavailable => "The Gemini API is temporarily unavailable.",
             _ when response.StatusCode == HttpStatusCode.NotFound =>
@@ -191,25 +194,9 @@ public partial class GeminiAiChatClient : IAiChatClient
 
         return new AiProviderException(kind, ProviderName,
             $"{summary} (HTTP {(int)response.StatusCode}{(status.Length > 0 ? " " + status : "")}: {providerMessage})",
-            response.StatusCode, providerMessage, ParseRetryDelay(response, error));
-    }
-
-    private static TimeSpan? ParseRetryDelay(HttpResponseMessage response, GeminiError? error)
-    {
-        if (response.Headers.RetryAfter?.Delta is { } delta) return delta;
-
-        // google.rpc.RetryInfo: {"@type": ".../google.rpc.RetryInfo", "retryDelay": "17s"}
-        foreach (var detail in error?.Details ?? [])
-        {
-            if (detail.TryGetProperty("retryDelay", out var delay) && delay.ValueKind == JsonValueKind.String
-                && delay.GetString() is { } value && value.EndsWith('s')
-                && double.TryParse(value[..^1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var seconds))
-            {
-                return TimeSpan.FromSeconds(seconds);
-            }
-        }
-
-        return null;
+            response.StatusCode, providerMessage,
+            GeminiRateLimit.RetryDelay(response.Headers, error?.Details, DateTimeOffset.UtcNow),
+            quotaExhausted: quotaExhausted);
     }
 
     // Provider messages are surfaced to logs and API clients - make sure no key can ride along.

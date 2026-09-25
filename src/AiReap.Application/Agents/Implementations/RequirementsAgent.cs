@@ -24,6 +24,8 @@ public class RequirementsAgent : IAgent
     public string Inputs => "Requirement source (raw text, retained verbatim).";
     public string Outputs => "Clarification questions (ClarificationQuestion artifacts).";
     public IReadOnlyList<string> ApproverRoles => AgentSupport.AdminAnd(Roles.BusinessAnalyst);
+    public IReadOnlyList<ProjectStatus> LifecycleStages => [ProjectStatus.RequirementsGathering];
+    public string LifecycleContribution => "Works in Requirements Gathering: analyses the raw source and raises clarification questions, preparing the evidence Analysis needs (analysis run, questions answered).";
 
     public async Task<AgentOutput> RunAsync(AgentContext context, CancellationToken cancellationToken)
     {

@@ -26,6 +26,10 @@ public class AiReapDbContext : IdentityDbContext<ApplicationUser>, IAiReapDbCont
     public DbSet<DocumentChunk> DocumentChunks => Set<DocumentChunk>();
     public DbSet<AgentRun> AgentRuns => Set<AgentRun>();
     public DbSet<AgentStageRun> AgentStageRuns => Set<AgentStageRun>();
+    public DbSet<ProjectStageTransition> ProjectStageTransitions => Set<ProjectStageTransition>();
+    public DbSet<ProjectStageReview> ProjectStageReviews => Set<ProjectStageReview>();
+    public DbSet<ProjectNotification> ProjectNotifications => Set<ProjectNotification>();
+    public DbSet<ArtifactWorkRecord> ArtifactWorkRecords => Set<ArtifactWorkRecord>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -141,6 +145,59 @@ public class AiReapDbContext : IdentityDbContext<ApplicationUser>, IAiReapDbCont
             b.Property(s => s.Error).HasMaxLength(2000);
             b.Property(s => s.DecisionComment).HasMaxLength(2000);
             b.HasIndex(s => new { s.AgentRunId, s.Order }).IsUnique();
+        });
+
+        builder.Entity<ArtifactReview>(b => b.Property(r => r.ReviewerRole).HasMaxLength(64));
+
+        // §5 lifecycle audit/request rows. Restrict to Projects, like every other project-owned
+        // history table: they are audit history, never deleted as a side effect.
+        builder.Entity<ProjectStageTransition>(b =>
+        {
+            b.HasOne<Project>().WithMany().HasForeignKey(t => t.ProjectId).OnDelete(DeleteBehavior.Restrict);
+            b.Property(t => t.RowVersion).IsRowVersion();
+            b.Property(t => t.RequestedByUserId).IsRequired().HasMaxLength(450);
+            b.Property(t => t.DecidedByUserId).HasMaxLength(450);
+            b.Property(t => t.RequestedByRole).HasMaxLength(64);
+            b.Property(t => t.DecidedByRole).HasMaxLength(64);
+            b.Property(t => t.RequestNote).HasMaxLength(2000);
+            b.Property(t => t.DecisionReason).HasMaxLength(2000);
+            b.Property(t => t.OverrideReason).HasMaxLength(2000);
+            b.Property(t => t.EvidenceSnapshotJson).HasColumnType("nvarchar(max)");
+            b.HasIndex(t => new { t.ProjectId, t.Sequence }).IsUnique();
+            // At most one pending (gated) request per project. Pending = 0 (StageTransitionState).
+            b.HasIndex(t => t.ProjectId).IsUnique().HasFilter("[State] = 0").HasDatabaseName("IX_ProjectStageTransitions_ProjectId_Pending");
+            b.HasMany(t => t.Reviews)
+                .WithOne(r => r.Transition)
+                .HasForeignKey(r => r.TransitionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<ProjectStageReview>(b =>
+        {
+            b.Property(r => r.ReviewerUserId).IsRequired().HasMaxLength(450);
+            b.Property(r => r.ReviewerRole).HasMaxLength(64);
+            b.Property(r => r.Comment).HasMaxLength(2000);
+        });
+
+        builder.Entity<ProjectNotification>(b =>
+        {
+            b.HasOne<Project>().WithMany().HasForeignKey(n => n.ProjectId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne<ProjectStageTransition>().WithMany().HasForeignKey(n => n.TransitionId).OnDelete(DeleteBehavior.Restrict);
+            b.Property(n => n.RecipientUserId).IsRequired().HasMaxLength(450);
+            b.Property(n => n.Message).IsRequired().HasMaxLength(500);
+            // One-time delivery: a transition notifies each recipient at most once per kind.
+            b.HasIndex(n => new { n.TransitionId, n.RecipientUserId, n.Kind }).IsUnique();
+            b.HasIndex(n => new { n.RecipientUserId, n.AcknowledgedAt });
+        });
+
+        builder.Entity<ArtifactWorkRecord>(b =>
+        {
+            // Cascade like ArtifactReview/ArtifactVersion: work records are part of the artifact's history.
+            b.HasOne<Artifact>().WithMany().HasForeignKey(w => w.ArtifactId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(w => w.RecordedByUserId).IsRequired().HasMaxLength(450);
+            b.Property(w => w.RecordedByRole).HasMaxLength(64);
+            b.Property(w => w.Note).HasMaxLength(2000);
+            b.HasIndex(w => new { w.ArtifactId, w.RecordedAt });
         });
 
         builder.Entity<Document>(b =>

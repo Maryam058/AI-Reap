@@ -31,3 +31,10 @@ Phases 1–3 already expose every capability an agent needs as a service (`IRequ
 - Stages run synchronously in the request, like the other generators. Simple, and consistent with the rest of the API, but a slow real-model Analysis stage holds the request open. A background worker would need scoped-service and current-user plumbing that nothing else in the app needs yet.
 - A crash mid-stage leaves the stage `Running` with no automatic recovery.
 - Reject is terminal for a run; users start a new run, which reuses existing artifacts.
+
+## Addendum (2026-09-25) — agents inside the project lifecycle
+
+- **Steps, not stages.** A run is a pipeline of six agent *steps*. The project *lifecycle stage* is `Project.Status` (Draft → … → Completed), changed only by `ProjectLifecycleService`. Persisted names (`AgentStageRun`, `AgentStageStatus`) and the JSON field `stages` on a run are kept for compatibility; responses and messages otherwise say "step".
+- **Mapping.** Each agent declares the lifecycle stage(s) its output serves (`IAgent.LifecycleStages`): Requirements → Requirements Gathering, Analysis → Analysis, Architecture → Design, Development Planning → Approved, QA → Testing, Review → Design and Testing (readiness for the two gated moves).
+- **No lifecycle effect.** A run records `ProjectStatusAtStart` and may draft ahead of the current stage, but never changes `Project.Status`, and its output counts as lifecycle evidence only after people approve / review / record work on it. A step approval means "continue the chain", nothing more.
+- **Review Agent.** Reports the lifecycle exit checks (`LifecycleEvidenceService`) for the current stage and the Design → Approved and Testing → Completed gates, instead of computing its own gap counts. It is project-wide (lifecycle evidence is per project), where it used to look at one requirement source.

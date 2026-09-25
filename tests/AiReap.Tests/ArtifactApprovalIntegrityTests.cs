@@ -241,21 +241,21 @@ public class ArtifactApprovalIntegrityTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Approving_linked_tasks_and_tests_still_promotes_through_the_state_machine()
+    public async Task Approving_linked_tasks_and_tests_does_not_promote_and_a_verified_edit_still_needs_re_review()
     {
         var frId = await ApprovedFunctionalRequirementAsync();
         var project = (await _ba.GetAsync($"/api/artifacts/{frId}")).Body!;
         var sourceId = project["requirementSourceId"]!.GetValue<string>();
 
+        // Approval accepts the plan only; Implemented/Verified follow recorded work (ArtifactWorkRecordTests).
         var (_, tasks) = await _ba.PostAsync($"/api/requirement-sources/{sourceId}/generate-tasks");
         foreach (var task in tasks!.AsArray()) await SetStatusAsync(_reviewer, Id(task), Approved);
-        Assert.Equal(Implemented, Int((await _ba.GetAsync($"/api/artifacts/{frId}")).Body, "status"));
-
         var (_, cases) = await _ba.PostAsync($"/api/artifacts/{frId}/generate-test-cases");
         foreach (var testCase in cases!.AsArray()) await SetStatusAsync(_reviewer, Id(testCase), Approved);
-        Assert.Equal(Verified, Int((await _ba.GetAsync($"/api/artifacts/{frId}")).Body, "status"));
+        Assert.Equal(Approved, Int((await _ba.GetAsync($"/api/artifacts/{frId}")).Body, "status"));
 
         // Editing a verified requirement drops it back to review, like any approved content.
+        await _host.ExecuteAsync($"UPDATE Artifacts SET Status = {Verified} WHERE Id = '{frId}'");
         var (_, edited) = await _ba.SendAsync(HttpMethod.Patch, $"/api/artifacts/{frId}", new { title = "Changed after verification" });
         Assert.Equal(UnderReview, Int(edited, "status"));
     }

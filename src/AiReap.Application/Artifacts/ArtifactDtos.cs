@@ -40,7 +40,9 @@ public record ArtifactReviewResponse(
     ReviewDecision Decision,
     string? Comment,
     DateTime ReviewedAt,
-    int? VersionNumber);
+    int? VersionNumber,
+    // The role the reviewer acted under (e.g. Developer for a §17 design review); null on older rows.
+    string? ReviewerRole = null);
 
 public record ArtifactRelationshipResponse(
     Guid RelatedArtifactId,
@@ -62,3 +64,5 @@ public record UpdateArtifactRequest(
 public record UpdateArtifactStatusRequest(ArtifactStatus Status, string? Comment);
 
 public record ClarificationAnswerRequest(string Answer, bool NotApplicable);
+
+public record CommentReviewRequest(string? Comment);

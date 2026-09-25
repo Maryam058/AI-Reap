@@ -17,16 +17,20 @@ public class ArtifactsController : ControllerBase
     // §4 — "QA: view requirements and generate/manage test cases". QA may author test cases only;
     // Update enforces that restriction per artifact.
     private const string WriterOrQaRoles = $"{Roles.Administrator},{Roles.BusinessAnalyst},{Roles.QA}";
+    // Which of these may record on a given artifact (Developer: tasks, QA: tests) is checked per artifact.
+    private const string WorkRecorderRoles = $"{Roles.Administrator},{Roles.Developer},{Roles.QA}";
 
     private readonly IArtifactService _artifacts;
     private readonly IUserStoryService _userStoryService;
     private readonly ITestGenerationService _testGenerationService;
+    private readonly IArtifactWorkService _work;
 
-    public ArtifactsController(IArtifactService artifacts, IUserStoryService userStoryService, ITestGenerationService testGenerationService)
+    public ArtifactsController(IArtifactService artifacts, IUserStoryService userStoryService, ITestGenerationService testGenerationService, IArtifactWorkService work)
     {
         _artifacts = artifacts;
         _userStoryService = userStoryService;
         _testGenerationService = testGenerationService;
+        _work = work;
     }
 
     [HttpGet("api/projects/{projectId:guid}/artifacts")]
@@ -97,6 +101,46 @@ public class ArtifactsController : ControllerBase
     public async Task<ActionResult<IReadOnlyList<ArtifactReviewResponse>>> GetReviews(Guid id, CancellationToken cancellationToken)
     {
         return Ok(await _artifacts.GetReviewsAsync(id, cancellationToken));
+    }
+
+    // §17/§4 — comment-only review of the artifact's current version (any project member). It neither
+    // approves nor rejects; recorded under the reviewer's role, it is how a Developer reviews a design.
+    [HttpPost("api/artifacts/{id:guid}/reviews")]
+    [Capability("Review", "Comment-only review of an artifact (e.g. a Developer's design review)", 75)]
+    public async Task<ActionResult<ArtifactReviewResponse>> AddCommentReview(Guid id, CommentReviewRequest request, CancellationToken cancellationToken)
+    {
+        var review = await _artifacts.AddCommentReviewAsync(id, request.Comment, cancellationToken);
+        return review is null ? NotFound() : StatusCode(StatusCodes.Status201Created, review);
+    }
+
+    // Implementation / verification evidence: a Developer completes an approved task, QA records an
+    // approved test case's outcome. Recorded beside the artifact; its content and approval are untouched.
+    [HttpPost("api/artifacts/{id:guid}/work-records")]
+    [Authorize(Roles = WorkRecorderRoles)]
+    [Capability("Author", "Record task completion (Developer) and test outcomes (QA)", 55)]
+    public async Task<ActionResult<ArtifactWorkRecordResponse>> RecordWork(Guid id, RecordWorkRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return StatusCode(StatusCodes.Status201Created, await _work.RecordAsync(id, request, cancellationToken));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+    }
+
+    [HttpGet("api/artifacts/{id:guid}/work-records")]
+    public async Task<ActionResult<IReadOnlyList<ArtifactWorkRecordResponse>>> GetWork(Guid id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _work.GetAsync(id, cancellationToken));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
     }
 
     [HttpGet("api/artifacts/{id:guid}/relationships")]

@@ -1,5 +1,6 @@
 using AiReap.Application.Ai;
 using AiReap.Application.Common;
+using AiReap.Application.Lifecycle;
 using AiReap.Domain.Common;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
@@ -86,6 +87,22 @@ public sealed class ApplicationExceptionHandler(ILogger<ApplicationExceptionHand
                 StatusCodes.Status400BadRequest, "validation_failed",
                 "The request is not valid.", validation.Message, false, new Dictionary<string, object?>()),
 
+            // §5 lifecycle: a stage's exit checks are not met; the failing checks say what is missing.
+            LifecycleEvidenceException evidence => (
+                StatusCodes.Status409Conflict, "lifecycle_evidence_failed",
+                "The stage's exit checks are not met.", evidence.Message, false,
+                new Dictionary<string, object?> { ["failingChecks"] = evidence.FailingChecks }),
+
+            // Wrong state for the request: skipped stage, already decided, pending request, lost race.
+            ConflictException conflict => (
+                StatusCodes.Status409Conflict, "conflict",
+                "The request conflicts with the current state.", conflict.Message, false, new Dictionary<string, object?>()),
+
+            // A role / separation-of-duties rule enforced inside an application service.
+            UnauthorizedAccessException forbidden => (
+                StatusCodes.Status403Forbidden, "forbidden",
+                "You are not allowed to do this.", forbidden.Message, false, new Dictionary<string, object?>()),
+
             _ => null
         };
 
@@ -99,11 +116,7 @@ public sealed class ApplicationExceptionHandler(ILogger<ApplicationExceptionHand
             AiFailureKind.Authentication => (StatusCodes.Status502BadGateway, "ai_auth_failed",
                 "The AI provider rejected the configured credentials.",
                 "The AI provider API key is invalid, revoked, or lacks access. An administrator must update it.", false, extra),
-            AiFailureKind.RateLimited => (StatusCodes.Status429TooManyRequests, "ai_rate_limited",
-                "The AI provider's rate limit or quota was reached.",
-                ai.RetryAfter is { } wait
-                    ? $"Too many AI requests right now. Try again in about {Math.Ceiling(wait.TotalSeconds)} seconds."
-                    : "Too many AI requests right now (or the daily free-tier quota is used up). Try again later.", true, extra),
+            AiFailureKind.RateLimited => MapRateLimit(ai, extra),
             AiFailureKind.Timeout => (StatusCodes.Status504GatewayTimeout, "ai_timeout",
                 "The AI provider did not respond in time.",
                 "The AI request timed out. Try again; very long requirement text may need to be split.", true, extra),
@@ -115,4 +128,30 @@ public sealed class ApplicationExceptionHandler(ILogger<ApplicationExceptionHand
                 "The AI provider rejected the request.", ai.ProviderMessage ?? ai.Message, false, extra)
         };
     }
+
+    // "Gemini rate limit reached. Please wait and try again." - with the provider's retry hint when
+    // it gave one. A used-up daily/zero-limit quota says so instead of promising a short wait.
+    private static (int, string, string, string, bool, Dictionary<string, object?>) MapRateLimit(
+        AiProviderException ai, Dictionary<string, object?> extra)
+    {
+        var retryAfterSeconds = ai.RetryAfter is { } wait ? (int?)Math.Max(1, (int)Math.Ceiling(wait.TotalSeconds)) : null;
+        extra["retryAfterSeconds"] = retryAfterSeconds;
+        extra["quotaExhausted"] = ai.QuotaExhausted;
+
+        var detail = ai.QuotaExhausted
+            ? "The AI usage quota appears to be used up for now (for example a daily free-tier limit). Please wait and try again later."
+            : retryAfterSeconds is { } seconds
+                ? $"Please wait and try again in about {FormatWait(seconds)}."
+                : "Please wait and try again.";
+
+        return (StatusCodes.Status429TooManyRequests, "ai_rate_limited", $"{ai.Provider} rate limit reached.", detail, true, extra);
+    }
+
+    private static string FormatWait(int seconds) => seconds switch
+    {
+        1 => "1 second",
+        < 120 => $"{seconds} seconds",
+        < 7200 => $"{(int)Math.Ceiling(seconds / 60.0)} minutes",
+        _ => $"{(int)Math.Ceiling(seconds / 3600.0)} hours"
+    };
 }

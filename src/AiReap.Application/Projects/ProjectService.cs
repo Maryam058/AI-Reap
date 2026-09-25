@@ -1,4 +1,5 @@
 using AiReap.Application.Common;
+using AiReap.Application.Lifecycle;
 using AiReap.Application.Persistence;
 using AiReap.Application.Traceability;
 using AiReap.Domain.Common;
@@ -51,6 +52,9 @@ public class ProjectService : IProjectService
             AddedByUserId = _currentUser.UserId,
             AddedAt = now
         });
+
+        // §5 — lifecycle history starts at creation, like the Baseline rows backfilled for older projects.
+        _db.ProjectStageTransitions.Add(ProjectLifecycleService.NewBaseline(project.Id, project.Status, _currentUser.UserId, now));
 
         await _db.SaveChangesAsync(cancellationToken);
         await BusinessObjectives.SyncAsync(_db, project.Id, project.Objectives, _currentUser.UserId, cancellationToken);
@@ -105,33 +109,6 @@ public class ProjectService : IProjectService
         await BusinessObjectives.SyncAsync(_db, project.Id, project.Objectives, _currentUser.UserId, cancellationToken);
 
         return ToResponse(project);
-    }
-
-    // §5/REAP-021: the lifecycle is the fixed linear sequence the enum declares
-    // (Draft -> ... -> Completed). Only staying put or advancing exactly one stage is legal -
-    // no skipping ahead, no moving backward. There's no "reopen a completed project" or
-    // "reject back to draft" concept in the spec, so none is invented here.
-    public async Task<(ProjectResponse? Project, string? Error)> UpdateStatusAsync(Guid id, UpdateProjectStatusRequest request, CancellationToken cancellationToken = default)
-    {
-        var project = await _db.Projects.FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
-        if (project is null)
-        {
-            return (null, null);
-        }
-
-        var current = (int)project.Status;
-        var target = (int)request.Status;
-
-        if (target != current && target != current + 1)
-        {
-            return (null, $"Invalid status transition: {project.Status} can only move to itself or to the next stage in the lifecycle.");
-        }
-
-        project.Status = request.Status;
-        project.UpdatedAt = DateTime.UtcNow;
-        await _db.SaveChangesAsync(cancellationToken);
-
-        return (ToResponse(project), null);
     }
 
     public async Task<IReadOnlyList<StakeholderResponse>> GetStakeholdersAsync(Guid projectId, CancellationToken cancellationToken = default)
