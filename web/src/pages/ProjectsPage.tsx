@@ -102,6 +102,7 @@ export function ProjectsPage() {
   }, [projects, query, stage, sort, lifecycle]);
 
   const onUpdated = (updated: Project) => setProjects((list) => list?.map((p) => (p.id === updated.id ? updated : p)) ?? null);
+  const onDeleted = (id: string) => setProjects((list) => list?.filter((p) => p.id !== id) ?? null);
   const filtering = query.trim() !== '' || stage !== 'all';
   const newButton = canCreate && (
     <Link to="/projects/new" className="btn btn-primary">
@@ -186,7 +187,7 @@ export function ProjectsPage() {
           ) : view === 'cards' ? (
             <div className="project-grid">
               {visible.map((p) => (
-                <ProjectCard key={p.id} project={p} lifecycle={lifecycle.get(p.id)} onUpdated={onUpdated} />
+                <ProjectCard key={p.id} project={p} lifecycle={lifecycle.get(p.id)} onUpdated={onUpdated} onDeleted={onDeleted} />
               ))}
             </div>
           ) : (
@@ -228,7 +229,7 @@ export function ProjectsPage() {
                         <td>{formatRelativeTime(p.updatedAt)}</td>
                         <td>{formatFullDateTime(p.createdAt)}</td>
                         <td className="col-actions">
-                          <ProjectActionsMenu project={p} onUpdated={onUpdated} />
+                          <ProjectActionsMenu project={p} onUpdated={onUpdated} onDeleted={onDeleted} />
                         </td>
                       </tr>
                     );

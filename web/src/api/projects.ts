@@ -19,6 +19,8 @@ export const projectsApi = {
   update: (projectId: string, request: UpdateProjectRequest, token: string | null) =>
     apiClient.put<Project>(`/api/projects/${projectId}`, request, token),
 
+  remove: (projectId: string, token: string | null) => apiClient.delete(`/api/projects/${projectId}`, token),
+
   get: (projectId: string, token: string | null) => apiClient.get<Project>(`/api/projects/${projectId}`, token),
 
   detectConflicts: (projectId: string, token: string | null) =>

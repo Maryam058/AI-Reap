@@ -64,6 +64,17 @@ public class ProjectsController : ControllerBase
         return project is null ? NotFound() : Ok(project);
     }
 
+    // Permanent delete of the project and all its data (artifacts, sources, documents, runs,
+    // lifecycle history, members). Administrator only - irreversible, unlike every other project action.
+    [HttpDelete("{projectId:guid}")]
+    [Authorize(Roles = Roles.Administrator)]
+    [Capability("Administer", "Delete projects and all their data", 105)]
+    public async Task<IActionResult> Delete(Guid projectId, CancellationToken cancellationToken)
+    {
+        var deleted = await _projectService.DeleteAsync(projectId, cancellationToken);
+        return deleted ? NoContent() : NotFound();
+    }
+
     // Legacy endpoint, kept for existing clients. It no longer writes Project.Status itself: moving to
     // the next stage goes through ProjectLifecycleService, with the same stage ownership, exit checks,
     // gating, history, notifications and concurrency rules as POST .../lifecycle/transitions.

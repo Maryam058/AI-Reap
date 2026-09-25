@@ -111,6 +111,38 @@ public class ProjectService : IProjectService
         return ToResponse(project);
     }
 
+    // Most project-owned tables are Restrict (audit history is never deleted as a side effect), so a
+    // project delete removes those rows explicitly. One SaveChanges = one transaction, and EF orders
+    // the deletes children-first. Rows that are Cascade in the database (artifact versions/reviews/
+    // work records, agent stage runs, document chunks, stage reviews, stakeholders) go with their parents.
+    public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var project = await _db.Projects.FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
+        if (project is null)
+        {
+            return false;
+        }
+
+        var artifactIds = _db.Artifacts.Where(a => a.ProjectId == id).Select(a => a.Id);
+
+        _db.ProjectNotifications.RemoveRange(await _db.ProjectNotifications.Where(n => n.ProjectId == id).ToListAsync(cancellationToken));
+        _db.ProjectStageTransitions.RemoveRange(await _db.ProjectStageTransitions.Where(t => t.ProjectId == id).ToListAsync(cancellationToken));
+        _db.ArtifactImpactNotices.RemoveRange(await _db.ArtifactImpactNotices.Where(n => n.ProjectId == id).ToListAsync(cancellationToken));
+        _db.ArtifactRelationships.RemoveRange(await _db.ArtifactRelationships
+            .Where(r => artifactIds.Contains(r.SourceArtifactId) || artifactIds.Contains(r.TargetArtifactId))
+            .ToListAsync(cancellationToken));
+        _db.AIExecutions.RemoveRange(await _db.AIExecutions.Where(e => e.ProjectId == id).ToListAsync(cancellationToken));
+        _db.AgentRuns.RemoveRange(await _db.AgentRuns.Where(r => r.ProjectId == id).ToListAsync(cancellationToken));
+        _db.Artifacts.RemoveRange(await _db.Artifacts.Where(a => a.ProjectId == id).ToListAsync(cancellationToken));
+        _db.RequirementSources.RemoveRange(await _db.RequirementSources.Where(s => s.ProjectId == id).ToListAsync(cancellationToken));
+        _db.Documents.RemoveRange(await _db.Documents.Where(d => d.ProjectId == id).ToListAsync(cancellationToken));
+        _db.ProjectMembers.RemoveRange(await _db.ProjectMembers.Where(m => m.ProjectId == id).ToListAsync(cancellationToken));
+        _db.Projects.Remove(project);
+
+        await _db.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
     public async Task<IReadOnlyList<StakeholderResponse>> GetStakeholdersAsync(Guid projectId, CancellationToken cancellationToken = default)
     {
         return await _db.ProjectStakeholders

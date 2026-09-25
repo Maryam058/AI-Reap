@@ -8,7 +8,17 @@ import { ProjectActionsMenu } from './ProjectActionsMenu';
 import { IconAlert, IconArrowRight, IconLock } from './icons';
 
 /** A project in the list: its lifecycle stage (Project.status), progress across the 8 stages, and any pending request. */
-export function ProjectCard({ project, lifecycle, onUpdated }: { project: Project; lifecycle?: ProjectLifecycleState; onUpdated: (p: Project) => void }) {
+export function ProjectCard({
+  project,
+  lifecycle,
+  onUpdated,
+  onDeleted,
+}: {
+  project: Project;
+  lifecycle?: ProjectLifecycleState;
+  onUpdated: (p: Project) => void;
+  onDeleted?: (projectId: string) => void;
+}) {
   const progress = lifecycleProgress(project.status);
   const pending = lifecycle?.pendingTransition ?? null;
   const gaps = lifecycle?.evidenceGaps.length ?? 0;
@@ -22,7 +32,7 @@ export function ProjectCard({ project, lifecycle, onUpdated }: { project: Projec
             <IconLock width={11} height={11} /> Awaiting review
           </span>
         )}
-        <ProjectActionsMenu project={project} onUpdated={onUpdated} />
+        <ProjectActionsMenu project={project} onUpdated={onUpdated} onDeleted={onDeleted} />
       </div>
 
       <h3 className="project-card-name">

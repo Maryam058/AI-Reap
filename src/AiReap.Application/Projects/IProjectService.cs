@@ -7,6 +7,9 @@ public interface IProjectService
     Task<ProjectResponse?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
     Task<ProjectResponse?> UpdateAsync(Guid id, UpdateProjectRequest request, CancellationToken cancellationToken = default);
 
+    // Permanently removes the project and everything it owns. Returns false if it doesn't exist.
+    Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
+
     // Project.Status is changed only by IProjectLifecycleService (Application/Lifecycle).
 
     Task<IReadOnlyList<StakeholderResponse>> GetStakeholdersAsync(Guid projectId, CancellationToken cancellationToken = default);

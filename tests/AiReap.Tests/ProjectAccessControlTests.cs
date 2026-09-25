@@ -115,4 +115,29 @@ public class ProjectAccessControlTests : IAsyncLifetime
         Assert.Equal(dev.Email, devEntry!["email"]!.GetValue<string>());
         Assert.Equal("Developer", devEntry!["displayName"]!.GetValue<string>());
     }
+
+    [Fact]
+    public async Task Only_an_administrator_can_delete_a_project_and_it_removes_everything_the_project_owns()
+    {
+        var (ps, project) = await _creator.PostAsync("/api/projects", new { name = "Doomed", objectives = "Cut approval time" });
+        Assert.Equal(201, ps);
+        var projectId = Id(project);
+        var (ss, source) = await _creator.PostAsync($"/api/projects/{projectId}/requirement-sources",
+            new { sourceType = 1, rawText = "Employees submit leave requests; managers approve." });
+        Assert.InRange(ss, 200, 201);
+        Assert.Equal(200, (await _creator.PostAsync($"/api/requirement-sources/{Id(source)}/generate-requirements")).Status);
+        Assert.True(await _host.ScalarAsync($"SELECT COUNT(*) FROM Artifacts WHERE ProjectId = '{projectId}'") > 0);
+
+        // Even the project's own BA creator can't delete it.
+        Assert.Equal(403, (await _creator.SendAsync(HttpMethod.Delete, $"/api/projects/{projectId}")).Status);
+
+        Assert.Equal(204, (await _admin.SendAsync(HttpMethod.Delete, $"/api/projects/{projectId}")).Status);
+        Assert.Equal(404, (await _admin.GetAsync($"/api/projects/{projectId}")).Status);
+        Assert.Equal(404, (await _admin.SendAsync(HttpMethod.Delete, $"/api/projects/{projectId}")).Status);
+
+        foreach (var table in new[] { "Artifacts", "RequirementSources", "ProjectMembers", "ProjectStageTransitions", "AIExecutions", "Documents", "AgentRuns" })
+        {
+            Assert.Equal(0, await _host.ScalarAsync($"SELECT COUNT(*) FROM {table} WHERE ProjectId = '{projectId}'"));
+        }
+    }
 }
