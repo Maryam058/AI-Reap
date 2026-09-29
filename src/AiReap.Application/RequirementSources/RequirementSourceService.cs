@@ -45,7 +45,11 @@ public class RequirementSourceService : IRequirementSourceService
             .OrderByDescending(s => s.CreatedAt)
             .ToListAsync(cancellationToken);
 
-        return sources.Select(ToResponse).ToList();
+        // S2 - the workspace groups artifacts by source, so a caller who may not read raw sources
+        // still gets each source's id, type and date, but never its text or file name.
+        return _currentUser.CanReadRawSources()
+            ? sources.Select(ToResponse).ToList()
+            : sources.Select(s => new RequirementSourceResponse(s.Id, s.ProjectId, s.SourceType, string.Empty, null, s.CreatedAt)).ToList();
     }
 
     public async Task<RequirementSourceResponse?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
@@ -57,6 +61,11 @@ public class RequirementSourceService : IRequirementSourceService
         }
 
         await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
+        if (!_currentUser.CanReadRawSources())
+        {
+            throw new UnauthorizedAccessException("Raw requirement sources are not available to your role; use the approved requirements.");
+        }
+
         return ToResponse(source);
     }
 

@@ -27,7 +27,11 @@ export const artifactsApi = {
   answerClarification: (artifactId: string, request: ClarificationAnswerRequest, token: string | null) =>
     apiClient.post<ArtifactSummary>(`/api/artifacts/${artifactId}/clarification-answer`, request, token),
 
-  generateAcceptanceCriteria: (userStoryArtifactId: string, token: string | null) =>
+  /** REAP-045 — confirm an NFR's target as it stands in `version`. BA/Reviewer, never the NFR's author. */
+  confirmNfrTarget: (artifactId: string, version: number, token: string | null) =>
+    apiClient.post<ArtifactSummary>(`/api/artifacts/${artifactId}/nfr-confirmation`, { version }, token),
+
+  generateAcceptanceCriteria:(userStoryArtifactId: string, token: string | null) =>
     apiClient.post<ArtifactSummary[]>(`/api/artifacts/${userStoryArtifactId}/generate-acceptance-criteria`, {}, token),
 
   generateTestCases: (functionalRequirementArtifactId: string, token: string | null) =>
@@ -35,6 +39,13 @@ export const artifactsApi = {
 
   getRelationships: (artifactId: string, token: string | null) =>
     apiClient.get<ArtifactRelationship[]>(`/api/artifacts/${artifactId}/relationships`, token),
+
+  /** REAP-046 — user story `storyId` depends on user story `dependsOnArtifactId`. BA/Admin only. */
+  addDependency: (storyId: string, dependsOnArtifactId: string, token: string | null) =>
+    apiClient.post<ArtifactRelationship>(`/api/artifacts/${storyId}/dependencies`, { dependsOnArtifactId }, token),
+
+  removeDependency: (storyId: string, dependsOnArtifactId: string, token: string | null) =>
+    apiClient.delete<void>(`/api/artifacts/${storyId}/dependencies/${dependsOnArtifactId}`, token),
 
   getVersions: (artifactId: string, token: string | null) =>
     apiClient.get<ArtifactVersion[]>(`/api/artifacts/${artifactId}/versions`, token),

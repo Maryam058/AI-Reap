@@ -48,7 +48,7 @@ public class LifecycleController : ControllerBase
     // Direct stages move immediately (201, state Completed); Design and Testing create a pending
     // request for a Reviewer (201, state Pending) and leave Project.Status unchanged.
     [HttpPost("api/projects/{projectId:guid}/lifecycle/transitions")]
-    [Capability("Lifecycle", "Advance or submit the current stage (the stage's owner role; Administrator for any stage)", 110)]
+    [Capability("Lifecycle", "Advance or submit the current stage (the stage's owner role; an Administrator only as an override, with a reason)", 110)]
     public Task<ActionResult> Advance(Guid projectId, AdvanceStageRequest request, CancellationToken cancellationToken) =>
         Handle(async () =>
         {

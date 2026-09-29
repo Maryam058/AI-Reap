@@ -111,10 +111,10 @@ public class LifecycleApiTests : IAsyncLifetime
         return projectId;
     }
 
-    private async Task<JsonNode> SubmitDesignAsync(string projectId, Actor? by = null)
+    private async Task<JsonNode> SubmitDesignAsync(string projectId, Actor? by = null, string? overrideReason = null)
     {
         var (status, body) = await (by ?? _dev).Api.PostAsync($"/api/projects/{projectId}/lifecycle/transitions",
-            new { targetStatus = Approved, note = "Design reviewed." });
+            new { targetStatus = Approved, note = "Design reviewed.", overrideReason });
         Assert.Equal(201, status);
         Assert.Equal(Pending, body!["state"]!.GetValue<int>());
         return body;
@@ -294,14 +294,18 @@ public class LifecycleApiTests : IAsyncLifetime
     public async Task The_requester_cannot_decide_their_own_request_even_as_administrator()
     {
         var projectId = await ProjectInDesignAsync();
-        var pending = await SubmitDesignAsync(projectId, _admin);
+        // R2 - an Administrator stands in for the Developer and the Reviewer only as an override.
+        var pending = await SubmitDesignAsync(projectId, _admin, overrideReason: "Developer unavailable this sprint.");
+        Assert.True(pending["isOverride"]!.GetValue<bool>());
 
-        var (s, problem) = await _admin.Api.PostAsync($"/api/stage-transitions/{Id(pending)}/decision", new { approve = true });
+        var (s, problem) = await _admin.Api.PostAsync($"/api/stage-transitions/{Id(pending)}/decision",
+            new { approve = true, overrideReason = "Approving my own request." });
         Assert.Equal(403, s);
         Assert.Equal("forbidden", Code(problem));
         Assert.Equal(Design, await StatusAsync(projectId));
 
-        Assert.Equal(200, (await _admin2.Api.PostAsync($"/api/stage-transitions/{Id(pending)}/decision", new { approve = true })).Status);
+        Assert.Equal(200, (await _admin2.Api.PostAsync($"/api/stage-transitions/{Id(pending)}/decision",
+            new { approve = true, overrideReason = "No Reviewer assigned; release deadline." })).Status);
         Assert.Equal(Approved, await StatusAsync(projectId));
     }
 
@@ -518,7 +522,7 @@ public class LifecycleApiTests : IAsyncLifetime
         await _ba.Api.PostAsync($"/api/requirement-sources/{Id(source)}/generate-requirements");
         Assert.Equal(200, (await _ba.Api.PostAsync($"/api/requirement-sources/{Id(source)}/generate-data-entities")).Status);
         var entity = (await ArtifactIdsAsync(projectId, "8"))[0];
-
+        // §17 - a Developer reviews a generated design before it is approved (DeveloperArtifactVisibilityTests).
         var (s, review) = await _dev.Api.PostAsync($"/api/artifacts/{entity}/reviews", new { comment = "Index LeaveRequest.EmployeeId." });
         Assert.Equal(201, s);
         Assert.Equal(2, review!["decision"]!.GetValue<int>()); // CommentOnly
@@ -526,7 +530,7 @@ public class LifecycleApiTests : IAsyncLifetime
         Assert.Equal(1, review["versionNumber"]!.GetValue<int>());
 
         // A comment review changes nothing about the artifact's status.
-        Assert.Equal(0, (await _ba.Api.GetAsync($"/api/artifacts/{entity}")).Body!["status"]!.GetValue<int>());
+        Assert.Equal(0, (await _ba.Api.GetAsync($"/api/artifacts/{entity}")).Body!["status"]!.GetValue<int>()); // still AiGenerated
         var (_, reviews) = await _ba.Api.GetAsync($"/api/artifacts/{entity}/reviews");
         Assert.Equal(Roles.Developer, Assert.Single(reviews!.AsArray())!["reviewerRole"]!.GetValue<string>());
 

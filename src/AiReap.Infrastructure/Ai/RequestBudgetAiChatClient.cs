@@ -15,7 +15,11 @@ namespace AiReap.Infrastructure.Ai;
 // one clear RequestRejected error: that kind is never retried (ResilientAiChatClient), never falls
 // back, and never triggers GenerationSupport's repair attempt, so an oversized request is sent at
 // most once.
-public sealed class RequestBudgetAiChatClient : IAiChatClient
+//
+// CompleteUncondensedAsync (IUncondensedAiChatClient) never condenses: a prompt that does not fit
+// the budget losslessly is refused with AiRequestOverBudgetException before anything is sent, so
+// the caller can split it (GenerationSupport.CallAiAndParseChunkedAsync) instead of losing passages.
+public sealed class RequestBudgetAiChatClient : IUncondensedAiChatClient
 {
     private readonly string _providerName;
     private readonly string _budgetSetting;
@@ -71,6 +75,36 @@ public sealed class RequestBudgetAiChatClient : IAiChatClient
                 _providerName, fit.OriginalTokens, fit.FinalTokens, InputBudget, fit.KeptPassages, fit.TotalPassages, fit.OmittedPassages);
         }
 
+        return await SendAsync(systemPrompt, fit, cancellationToken);
+    }
+
+    public async Task<string> CompleteUncondensedAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken = default)
+    {
+        if (_maxRequestTokens <= 0)
+        {
+            return await Inner.CompleteAsync(systemPrompt, userPrompt, cancellationToken);
+        }
+
+        // Lossless clean-up (whitespace, duplicated passages, repeated page headers) is allowed;
+        // dropping any passage is not.
+        var fit = PromptBudgetReducer.Fit(systemPrompt, userPrompt, InputBudget);
+        if (!fit.Fits || fit.OmittedPassages > 0)
+        {
+            _logger.LogInformation(
+                "AI request for {Provider} not sent uncondensed: ~{Tokens} estimated input tokens exceed the {Budget}-token input budget; " +
+                "the caller will split the input.",
+                _providerName, fit.OriginalTokens, InputBudget);
+            throw new AiRequestOverBudgetException(_providerName, InputBudget, fit.OriginalTokens);
+        }
+
+        _logger.LogInformation(
+            "AI request budget for {Provider}: ~{Tokens} estimated input tokens sent uncondensed (input budget {Budget}).",
+            _providerName, fit.FinalTokens, InputBudget);
+        return await SendAsync(systemPrompt, fit, cancellationToken);
+    }
+
+    private async Task<string> SendAsync(string systemPrompt, PromptReduction fit, CancellationToken cancellationToken)
+    {
         try
         {
             return await Inner.CompleteAsync(systemPrompt, fit.UserPrompt, cancellationToken);

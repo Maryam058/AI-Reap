@@ -56,6 +56,8 @@ export function LifecyclePanel({ project, version, onProjectChanged }: { project
   const passed = state.exitChecks.filter((c) => c.passed).length;
   const { actions } = state;
   const mayMove = actions.canAdvance || actions.canSubmitForApproval;
+  // Failing checks, or an Administrator acting in the owner's place: either way only an override moves it.
+  const moveIsOverride = (!state.readyToAdvance && actions.canOverride) || actions.advanceIsOverride;
   const done = async (message: string, tone: 'success' | 'info' = 'success') => {
     toast(message, tone);
     setDialog(null);
@@ -147,11 +149,11 @@ export function LifecyclePanel({ project, version, onProjectChanged }: { project
                   <>
                     <button
                       type="button"
-                      className={`btn ${state.readyToAdvance ? 'btn-primary' : 'btn-secondary'}`}
+                      className={`btn ${state.readyToAdvance && !moveIsOverride ? 'btn-primary' : 'btn-secondary'}`}
                       disabled={!state.readyToAdvance && !actions.canOverride}
                       onClick={() => setDialog(actions.canSubmitForApproval ? 'submit' : 'advance')}
                     >
-                      {!state.readyToAdvance && actions.canOverride
+                      {moveIsOverride
                         ? actions.canSubmitForApproval
                           ? 'Submit with override…'
                           : 'Override and move…'
@@ -405,7 +407,10 @@ function TransitionDialog({
 }) {
   const next = state.nextStatus ?? LAST_STAGE;
   const pending = state.pendingTransition ?? null;
-  const override = (mode === 'advance' || mode === 'submit' || mode === 'approve') && !state.readyToAdvance && state.actions.canOverride;
+  const failingOverride = (mode === 'advance' || mode === 'submit' || mode === 'approve') && !state.readyToAdvance && state.actions.canOverride;
+  // An Administrator standing in for the stage owner (or the Reviewer) may act only as an override.
+  const standIn = mode === 'approve' ? state.actions.decideIsOverride : mode === 'advance' || mode === 'submit' ? state.actions.advanceIsOverride : false;
+  const override = failingOverride || standIn;
   const [note, setNote] = useState('');
   const [reason, setReason] = useState('');
   const [target, setTarget] = useState(Math.max(state.status - 1, 0));
@@ -418,7 +423,7 @@ function TransitionDialog({
 
   const copy: Record<DialogMode, { title: string; confirm: string; intro: string }> = {
     advance: {
-      title: override ? 'Override failing checks?' : `Move to ${stageLabel(next)}?`,
+      title: failingOverride ? 'Override failing checks?' : override ? `Move to ${stageLabel(next)} as an override?` : `Move to ${stageLabel(next)}?`,
       confirm: override ? 'Override and move' : `Move to ${stageLabel(next)}`,
       intro: `The project moves from ${state.stageLabel} to ${stageLabel(next)} and the new stage's owners are notified.`,
     },
@@ -509,8 +514,10 @@ function TransitionDialog({
         <div className="alert alert-warning">
           <IconAlert width={16} height={16} />
           <span>
-            <strong>Administrator override.</strong> {state.exitChecks.filter((c) => !c.passed).length} exit check(s) are failing. The move is recorded as an override,
-            with your reason and the failing checks.
+            <strong>Administrator override.</strong>{' '}
+            {failingOverride
+              ? `${state.exitChecks.filter((c) => !c.passed).length} exit check(s) are failing. The move is recorded as an override, with your reason and the failing checks.`
+              : `You are acting in place of the ${roleLabel(mode === 'approve' ? 'Reviewer' : state.ownerRole)}. The move is recorded as an override, with your reason.`}
           </span>
         </div>
       )}

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { phasePath } from '../lib/workAreas';
 import { useAuth } from '../auth/AuthContext';
 import { apiErrorText } from '../lib/errors';
+import { readsRawSources } from '../lib/access';
 import { requirementSourcesApi } from '../api/requirementSources';
 import { artifactsApi } from '../api/artifacts';
 import {
@@ -34,6 +35,8 @@ export function RequirementWorkspace({
   const canReview = canWrite || hasRole('Reviewer');
   // §4 — QA generates and manages test cases (the API allows QA to edit TestCase artifacts only).
   const canManageTests = canWrite || hasRole('QA');
+  // S2 — a Developer's source list carries ids only (no text or file name); the raw input is not shown.
+  const showRawInput = readsRawSources(hasRole);
 
   const [sources, setSources] = useState<RequirementSource[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -204,17 +207,20 @@ export function RequirementWorkspace({
       await loadDerived(selectedId);
     });
 
-  const onApprove = (id: string) =>
-    runAction(`approve-${id}`, async () => {
-      await artifactsApi.updateStatus(id, { status: 3 }, token); // 3 = Approved
+  // §24 — a review decision, with the reviewer's comment (the reason, for a rejection) recorded on it.
+  // Resolves to whether the decision was recorded, so the card keeps the comment when it was not.
+  const decideArtifact = async (id: string, status: number, comment?: string) => {
+    let recorded = false;
+    await runAction(`${status === 3 ? 'approve' : 'reject'}-${id}`, async () => {
+      await artifactsApi.updateStatus(id, { status, comment }, token);
+      recorded = true;
       if (selectedId) await loadDerived(selectedId);
     });
+    return recorded;
+  };
 
-  const onReject = (id: string) =>
-    runAction(`reject-${id}`, async () => {
-      await artifactsApi.updateStatus(id, { status: 4 }, token); // 4 = Rejected
-      if (selectedId) await loadDerived(selectedId);
-    });
+  const onApprove = (id: string, comment?: string) => decideArtifact(id, 3, comment); // 3 = Approved
+  const onReject = (id: string, comment?: string) => decideArtifact(id, 4, comment); // 4 = Rejected
 
   // §24 workflow moves other than approve/reject (submit for review, return to draft, reopen).
   const onChangeStatus = (id: string, status: number) =>
@@ -363,13 +369,17 @@ export function RequirementWorkspace({
               aria-selected={s.id === selectedId}
               className={`req-source ${s.id === selectedId ? 'active' : ''}`}
               onClick={() => setSelectedId(s.id)}
-              title={s.rawText}
+              title={showRawInput ? s.rawText : undefined}
             >
               {s.originalFileName ? <IconUpload width={13} height={13} /> : <IconDocument width={13} height={13} />}
-              <span>
-                {(s.originalFileName ?? s.rawText).slice(0, 40)}
-                {(s.originalFileName ?? s.rawText).length > 40 ? '…' : ''}
-              </span>
+              {showRawInput ? (
+                <span>
+                  {(s.originalFileName ?? s.rawText).slice(0, 40)}
+                  {(s.originalFileName ?? s.rawText).length > 40 ? '…' : ''}
+                </span>
+              ) : (
+                <span>Source {sources.length - sources.indexOf(s)}</span>
+              )}
             </button>
           ))}
         </div>
@@ -377,7 +387,7 @@ export function RequirementWorkspace({
 
       {selectedSource && (
         <div className="req-detail">
-          {isGathering && (
+          {isGathering && showRawInput && (
             <div className="req-original">
               <div className="req-original-head">
                 <IconLock width={13} height={13} />
@@ -674,8 +684,8 @@ function ArtifactSection({
   canReview: boolean;
   canEdit: boolean;
   token: string | null;
-  onApprove: (id: string) => Promise<void>;
-  onReject: (id: string) => Promise<void>;
+  onApprove: (id: string, comment?: string) => Promise<boolean>;
+  onReject: (id: string, comment?: string) => Promise<boolean>;
   onChangeStatus: (id: string, status: number) => Promise<void>;
   onSaved: () => void;
   onGenerateAcceptanceCriteria?: (id: string) => Promise<void>;

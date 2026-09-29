@@ -161,6 +161,45 @@ public class ArtifactWorkRecordTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Administrator_work_records_are_kept_but_neither_implement_nor_verify_the_requirement()
+    {
+        await ApproveAllAsync();
+
+        // Administrator completes every task: recorded and visible, but no Developer evidence.
+        using (var admin = _host.As(_admin))
+        {
+            foreach (var task in _taskIds) await admin.Work.RecordAsync(Guid.Parse(task), new(WorkOutcome.TaskCompleted, null));
+        }
+
+        Assert.Equal(Approved, await FrStatusAsync());
+        using (var dev = _host.As(_dev))
+        {
+            var record = Assert.Single(await dev.Work.GetAsync(Guid.Parse(_taskIds[0])));
+            Assert.Equal(Roles.Administrator, record.RecordedByRole);
+            Assert.Equal(_admin.Id, record.RecordedByUserId);
+
+            foreach (var task in _taskIds) await dev.Work.RecordAsync(Guid.Parse(task), new(WorkOutcome.TaskCompleted, null));
+        }
+
+        Assert.Equal(Implemented, await FrStatusAsync());
+
+        // Administrator passes every test: no QA evidence, so the requirement is not verified.
+        using (var admin = _host.As(_admin))
+        {
+            foreach (var test in _testIds) await admin.Work.RecordAsync(Guid.Parse(test), new(WorkOutcome.TestPassed, null));
+        }
+
+        Assert.Equal(Implemented, await FrStatusAsync());
+        using (var qa = _host.As(_qa))
+        {
+            foreach (var test in _testIds) await qa.Work.RecordAsync(Guid.Parse(test), new(WorkOutcome.TestPassed, null));
+        }
+
+        Assert.Equal(Verified, await FrStatusAsync());
+        Assert.Equal(2 * (_taskIds.Count + _testIds.Count), await _host.ScalarAsync("SELECT COUNT(*) FROM ArtifactWorkRecords"));
+    }
+
+    [Fact]
     public async Task Work_needs_an_approved_artifact_and_an_outcome_that_fits_its_type()
     {
         using var dev = _host.As(_dev);

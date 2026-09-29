@@ -131,7 +131,7 @@ function TypeFields({
             label="Target value"
             value={d.targetValue ?? ''}
             onChange={(v) => set('targetValue', v)}
-            hint="A target value here always stays marked as a proposed assumption (§10, server-enforced) until confirmed elsewhere - editing this text does not change that flag."
+            hint="Changing the target makes it a proposed assumption again, even if it was confirmed; another Business Analyst or Reviewer must confirm it (server-enforced)."
           />
         </>
       );

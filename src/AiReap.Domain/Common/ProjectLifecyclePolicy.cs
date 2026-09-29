@@ -14,8 +14,9 @@ public sealed record LifecycleStage(ProjectStatus Status, string Label, string O
 //   ═>  gated: the owner submits, a Reviewer approves or rejects; requester and decider must be
 //       different users (enforced by the lifecycle service, which knows the user ids).
 //
-// Administrator may act on every stage, is the only role that may roll a project back to an
-// earlier stage, and the only one that may override failing evidence (reasons mandatory for both).
+// Administrator is a system role, not an SDLC owner: it may act on any stage only as an override with
+// a reason (ProjectLifecycleService), is the only role that may roll a project back to an earlier
+// stage, and the only one that may override failing evidence (reasons mandatory for all of these).
 // Nothing else — in particular no AI agent — changes Project.Status.
 public static class ProjectLifecyclePolicy
 {
@@ -61,7 +62,8 @@ public static class ProjectLifecyclePolicy
     }
 
     // The role the caller acts under when advancing (or submitting) out of `from`, or null if they
-    // may not. The stage owner's role is preferred over Administrator so the audit row names it.
+    // may not. The stage owner's role is preferred over Administrator so the audit row names it;
+    // Administrator here means "only as an override" (ProjectLifecycleService enforces the reason).
     public static string? AdvanceRole(ProjectStatus from, Func<string, bool> isInRole)
     {
         if (IsFinal(from))

@@ -84,7 +84,7 @@ export function MembersPanel({ projectId }: { projectId: string }) {
       <header className="panel-head">
         <div>
           <h2 id="members-title">Members</h2>
-          <p>Who has access to this project. Everyone else with a role is refused, even Administrators' bypass aside.</p>
+          <p>Who has access to this project. Only members (and Administrators) can open it; add a Business Analyst or teammate here to give them access. Stakeholders are recorded separately and don't get access.</p>
         </div>
         {canManage && items && items.length > 0 && (
           <button type="button" className="btn btn-primary" onClick={() => { setFormError(null); setEmail(''); setAdding(true); }}>

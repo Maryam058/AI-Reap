@@ -106,7 +106,7 @@ export const NAV_GROUPS: NavGroup[] = [
     modules: [
       { key: 'analysis', label: 'Analysis', icon: IconSearch, status: 'active', segment: 'analysis', stages: [2], description: 'Analyze raw input into structured functional and non-functional requirements.' },
       { key: 'design', label: 'Design', icon: IconLayers, status: 'in-progress', segment: 'design', stages: [3], description: 'Turn validated requirements into architecture, data and interfaces.' },
-      { key: 'development', label: 'Development', icon: IconCode, status: 'in-progress', segment: 'development', stages: [4, 5], description: 'Break the design into implementation tasks.' },
+      { key: 'development', label: 'Development', icon: IconCode, status: 'in-progress', segment: 'development', stages: [4, 5], description: 'Break the design into implementation tasks and track their completion.' },
       { key: 'testing', label: 'Testing', icon: IconShieldCheck, status: 'in-progress', segment: 'testing', stages: [6], description: 'Derive test cases from requirements and track coverage.' },
       { key: 'deployment', label: 'Deployment', icon: IconRocket, status: 'planned', description: 'Release planning and environments.' },
       { key: 'maintenance', label: 'Maintenance', icon: IconRefresh, status: 'planned', description: 'Change requests and post-release support.' },
@@ -128,7 +128,7 @@ export const NAV_GROUPS: NavGroup[] = [
     collapsible: true,
     modules: [
       { key: 'users', label: 'Users', icon: IconUsers, status: 'active', description: 'Create accounts and activate or deactivate them.', to: '/admin/users', role: 'Administrator' },
-      { key: 'settings', label: 'Settings', icon: IconSettings, status: 'planned', description: 'Configure platform-wide preferences, integrations and AI providers.', to: '/settings' },
+      { key: 'settings', label: 'Settings', icon: IconSettings, status: 'active', description: 'AI configuration and system settings.', to: '/settings', role: 'Administrator' },
     ],
   },
 ];

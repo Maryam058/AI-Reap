@@ -29,7 +29,11 @@ public sealed class AiProviderCooldown
 // primary quota. ModelName reports the provider that served the most recent call, which is what
 // the pipeline services record in the AI audit trail after CompleteAsync returns (IAiChatClient is
 // scoped, and calls within a request are sequential).
-public sealed class FallbackAiChatClient : IAiChatClient
+//
+// CompleteUncondensedAsync routes exactly the same way; each provider is asked for an uncondensed
+// call, so a Groq request budget surfaces as AiRequestOverBudgetException (not an
+// AiProviderException: it passes through without a fallback) and Gemini is called as usual.
+public sealed class FallbackAiChatClient : IUncondensedAiChatClient
 {
     private readonly string _primaryName;
     private readonly string _fallbackName;
@@ -59,7 +63,13 @@ public sealed class FallbackAiChatClient : IAiChatClient
 
     public string ModelName => _served.ModelName;
 
-    public async Task<string> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken = default)
+    public Task<string> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken = default) =>
+        RouteAsync((client, ct) => client.CompleteAsync(systemPrompt, userPrompt, ct), cancellationToken);
+
+    public Task<string> CompleteUncondensedAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken = default) =>
+        RouteAsync((client, ct) => client.CompleteUncondensedAsync(systemPrompt, userPrompt, ct), cancellationToken);
+
+    private async Task<string> RouteAsync(Func<IAiChatClient, CancellationToken, Task<string>> send, CancellationToken cancellationToken)
     {
         _served = Primary;
 
@@ -69,13 +79,13 @@ public sealed class FallbackAiChatClient : IAiChatClient
                 "AI provider {Primary} skipped: rate-limited/quota-exhausted until {Until:u}. Using fallback {Fallback}.",
                 _primaryName, until, _fallbackName);
             return await CallFallbackAsync($"{_primaryName} was skipped (rate limit/quota cool-down until {until:u})",
-                null, systemPrompt, userPrompt, cancellationToken);
+                null, send, cancellationToken);
         }
 
         try
         {
             _logger.LogInformation("AI provider {Primary} attempted (model {Model}).", _primaryName, Primary.ModelName);
-            return await Primary.CompleteAsync(systemPrompt, userPrompt, cancellationToken);
+            return await send(Primary, cancellationToken);
         }
         catch (AiProviderException ex) when (ShouldFallBack(ex))
         {
@@ -83,7 +93,7 @@ public sealed class FallbackAiChatClient : IAiChatClient
                 "AI provider {Primary} failed ({Kind}, status {Status}, quotaExhausted {QuotaExhausted}); falling back to {Fallback}.",
                 _primaryName, ex.Kind, (int?)ex.ProviderStatusCode, ex.QuotaExhausted, _fallbackName);
             StartCooldown(ex);
-            return await CallFallbackAsync($"{_primaryName} failed: {ex.Message}", ex, systemPrompt, userPrompt, cancellationToken);
+            return await CallFallbackAsync($"{_primaryName} failed: {ex.Message}", ex, send, cancellationToken);
         }
     }
 
@@ -109,12 +119,12 @@ public sealed class FallbackAiChatClient : IAiChatClient
 
     private async Task<string> CallFallbackAsync(
         string primaryOutcome, AiProviderException? primaryFailure,
-        string systemPrompt, string userPrompt, CancellationToken cancellationToken)
+        Func<IAiChatClient, CancellationToken, Task<string>> send, CancellationToken cancellationToken)
     {
         _served = Fallback;
         try
         {
-            var response = await Fallback.CompleteAsync(systemPrompt, userPrompt, cancellationToken);
+            var response = await send(Fallback, cancellationToken);
             _logger.LogInformation("AI fallback provider {Fallback} succeeded (model {Model}).", _fallbackName, Fallback.ModelName);
             return response;
         }

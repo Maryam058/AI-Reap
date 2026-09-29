@@ -12,15 +12,20 @@ namespace AiReap.Application.Lifecycle;
 // §5 — the only code that changes Project.Status. Every change is written together with a
 // ProjectStageTransition row in the same SaveChanges, so status and history can't disagree.
 //
-//   Direct stage:  owner (or Administrator) advances -> Completed row, status moves.
+//   Direct stage:  owner advances -> Completed row, status moves.
 //   Gated stage:   owner submits -> Pending row, status unchanged;
-//                  a different user with the Reviewer (or Administrator) role approves -> status moves,
+//                  a different user with the Reviewer role approves -> status moves,
 //                  or rejects with a reason -> status unchanged; the requester may withdraw.
 //   Rollback:      Administrator, reason required, earlier stage only.
 //
 // Evidence (ILifecycleEvidenceService) is checked on every advance, submission and approval. When
 // it fails, the transition is refused with the failing checks, unless an Administrator overrides
 // with a reason; the override and the failing checks are both stored on the row.
+//
+// R2 - an Administrator who does not hold the owner's (or, approving a gate, the Reviewer's) role
+// may still move the stage, but only as an override with a reason (StandInOverride): Administrator
+// privileges never stand in for the owner silently. Rejecting a gate already needs a reason and
+// moves nothing, so an Administrator may reject without an override.
 //
 // Concurrency: rows are numbered per project (unique ProjectId+Sequence), so two transitions racing
 // from the same state can't both be written; a filtered unique index allows one Pending row per
@@ -78,17 +83,18 @@ public class ProjectLifecycleService : IProjectLifecycleService
         var next = ProjectLifecyclePolicy.Next(project.Status);
         var gated = ProjectLifecyclePolicy.IsGated(project.Status);
         var advanceRole = ProjectLifecyclePolicy.AdvanceRole(project.Status, _currentUser.IsInRole);
+        var decideRole = pending is null ? null : ProjectLifecyclePolicy.GateDecisionRole(pending.FromStatus!.Value, _currentUser.IsInRole);
         var isAdmin = _currentUser.IsInRole(Roles.Administrator);
 
         var actions = new LifecycleActions(
             CanAdvance: advanceRole is not null && !gated && pending is null,
             CanSubmitForApproval: advanceRole is not null && gated && pending is null,
-            CanDecide: pending is not null
-                && ProjectLifecyclePolicy.GateDecisionRole(pending.FromStatus!.Value, _currentUser.IsInRole) is not null
-                && pending.RequestedByUserId != _currentUser.UserId,
+            CanDecide: decideRole is not null && pending!.RequestedByUserId != _currentUser.UserId,
             CanWithdraw: pending is not null && (pending.RequestedByUserId == _currentUser.UserId || isAdmin),
             CanRollback: ProjectLifecyclePolicy.RollbackRole(_currentUser.IsInRole) is not null && index > 0 && pending is null,
-            CanOverride: ProjectLifecyclePolicy.OverrideRole(_currentUser.IsInRole) is not null);
+            CanOverride: ProjectLifecyclePolicy.OverrideRole(_currentUser.IsInRole) is not null,
+            AdvanceIsOverride: advanceRole == Roles.Administrator,
+            DecideIsOverride: decideRole == Roles.Administrator);
 
         return new ProjectLifecycleState(
             project.Id,
@@ -158,14 +164,15 @@ public class ProjectLifecycleService : IProjectLifecycleService
 
         var role = ProjectLifecyclePolicy.AdvanceRole(from, _currentUser.IsInRole)
             ?? throw new UnauthorizedAccessException(
-                $"Only the {stage.OwnerRole} role (or an Administrator) can move the project out of {stage.Label}.");
+                $"Only the {stage.OwnerRole} role (or an Administrator, as an override) can move the project out of {stage.Label}.");
 
         await EnsureNoPendingAsync(projectId, cancellationToken);
 
         var gated = ProjectLifecyclePolicy.IsGated(from);
         var note = Clean(request.Note);
         var checks = await EvaluateExitAsync(project, role, note, cancellationToken);
-        var overrideReason = ResolveOverride(checks, request.OverrideReason, alreadyOverridden: false, stage.Label);
+        var overrideReason = ResolveOverride(checks, request.OverrideReason, alreadyOverridden: false, stage.Label)
+            ?? StandInOverride(role, stage.OwnerRole, request.OverrideReason, $"move the project out of {stage.Label}");
 
         var now = DateTime.UtcNow;
         var transition = new ProjectStageTransition
@@ -219,7 +226,7 @@ public class ProjectLifecycleService : IProjectLifecycleService
         var stage = ProjectLifecyclePolicy.Stage(from);
         var role = ProjectLifecyclePolicy.GateDecisionRole(from, _currentUser.IsInRole)
             ?? throw new UnauthorizedAccessException(
-                $"Only a {ProjectLifecyclePolicy.GateApproverRole} (or an Administrator) can decide moving the project out of {stage.Label}.");
+                $"Only a {ProjectLifecyclePolicy.GateApproverRole} (or an Administrator, as an override) can decide moving the project out of {stage.Label}.");
 
         if (transition.RequestedByUserId == _currentUser.UserId)
         {
@@ -251,7 +258,8 @@ public class ProjectLifecycleService : IProjectLifecycleService
 
         // Evidence can have changed since submission: judge it again, as it stands now.
         var checks = await EvaluateExitAsync(project, transition.RequestedByRole, transition.RequestNote, cancellationToken);
-        var overrideReason = ResolveOverride(checks, request.OverrideReason, transition.IsOverride, stage.Label);
+        var overrideReason = ResolveOverride(checks, request.OverrideReason, transition.IsOverride, stage.Label)
+            ?? StandInOverride(role, ProjectLifecyclePolicy.GateApproverRole, request.OverrideReason, $"approve moving the project out of {stage.Label}");
         if (overrideReason is not null)
         {
             transition.IsOverride = true;
@@ -386,6 +394,21 @@ public class ProjectLifecycleService : IProjectLifecycleService
         }
 
         return reason;
+    }
+
+    // R2 - Administrator is a system role, not a stand-in for the stage owner or the Reviewer. When the
+    // caller acts only as an Administrator (they do not hold the role the duty belongs to), the move is
+    // allowed solely as an explicit override: a reason is required and the row is flagged as one.
+    // Returns that reason, or null when the caller holds the duty's own role.
+    private string? StandInOverride(string actingRole, string dutyRole, string? requestedReason, string action)
+    {
+        if (actingRole != Roles.Administrator)
+        {
+            return null;
+        }
+
+        return Clean(requestedReason) ?? throw new UnauthorizedAccessException(
+            $"An Administrator is not the {dutyRole} here. To {action} in the {dutyRole}'s place, give an override reason; it is recorded as an override.");
     }
 
     private void Decide(ProjectStageTransition transition, StageTransitionState state, string? role, DateTime at, string? reason)

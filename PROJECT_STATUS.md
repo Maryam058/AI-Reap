@@ -2,6 +2,8 @@
 
 Updated 2026-09-24 after the implementation pass that followed the morning audit (branch `main`, base `9e448e9`, **uncommitted working tree**). Source of truth: the spec PDF (*AI Requirements Engineering & SDLC Automation Platform*) compared against the code. Nothing here is taken from earlier roadmap claims.
 
+> **Note (2026-09-28):** this snapshot predates the follow-up work of 2026-09-24 → 2026-09-28 (project lifecycle workflow, work-record evidence, Developer visibility/raw-source protections, NFR target confirmation, story dependencies, dashboard coverage/review metrics, Administrator Settings). The verification figures and estimates below are historical and were not re-run; only the §4/§5/§10/§12/§19/§28 coverage rows, intentional deviations and remaining work were corrected so they no longer list completed work as missing. See `docs/requirements/TRACEABILITY-MATRIX.md` for current per-requirement detail.
+
 **"Complete" means:** DB + service + endpoint + backend authorization + UI (+ for AI: prompt, structured output, validation, persistence) all present and exercised by a test. Anything short of that is **Partial**.
 
 ## Verification (fresh, not from stale binaries)
@@ -44,22 +46,22 @@ From the dev server log (`src/AiReap.Api/backend.dev.log`, now untracked): the c
 |---|---|---|---|
 | 2 | Stack (React/TS, ASP.NET Core, EF, Swagger, DI, layers) | C | |
 | 2 | DB stores risks / assumptions / constraints / objectives | P | Objectives are now first-class (`BusinessObjective`). Risks, assumptions, constraints are still project text fields. |
-| 4 | Roles enforced on backend | P | QA fixed. **D:** Developer can read unapproved artifacts — required because Developers approve the Architecture/Development-Planning agent stages and review DB design (§17); the spec's "view approved" would break that. Developer cannot set artifact status (review roles only). Admin "AI configuration" is read-only (`/api/ai/status`); settings page still "planned". |
-| 5 | Project fields + lifecycle | C | |
+| 4 | Roles enforced on backend | P | QA fixed. Developer sees requirement-side artifacts only when Approved-or-later; **D:** technical design/API/data-entity/implementation-task artifacts stay visible to Developers before final Design approval for §17 technical review. Developers cannot read raw requirement sources/documents or raw-source Copilot excerpts. Developer cannot set artifact status (review roles only). Administrator Settings page is Administrator-only and read-only (AI configuration via `/api/ai/status`). |
+| 5 | Project fields + lifecycle | C | Lifecycle workflow now implemented: stage ownership, Reviewer-gated Design→Approved and Testing→Completed, evidence checks, Administrator override/rollback with reason, lifecycle history (see REAP-021). |
 | 6 | Intake: manual, paste, TXT/PDF/DOCX; original retained | P | **D:** rich text not built (plain text accepted as the documented deviation). Uploaded file bytes are not retained, only extracted text. |
 | 7 | Requirement analyzer | P | Actors/capabilities/data/notes returned and stored in the audit row only, not as artifacts; re-analysis duplicates questions. |
 | 8 | Clarification engine | P | Missing-information questions only (no contradiction/undefined-term categories). |
 | 9 | Functional requirements | C | Priority/actor/title now validated. |
-| 10 | NFRs (8 categories, assumptions) | P | Category now validated against the 8; no "confirm assumption" action; coverage of all 8 not enforced. |
+| 10 | NFRs (8 categories, assumptions) | P | Category now validated against the 8; NFR target confirmation by BA/Reviewer (not Administrator, not the author) against the current version, creating a new human version, separate from approval; coverage of all 8 not enforced. |
 | 11 | Business rules | C | |
-| 12 | User stories | P | No dependencies field. |
+| 12 | User stories | P | Manual Story → Story `DependsOn` links (`POST`/`DELETE /api/artifacts/{id}/dependencies`, BA/Administrator, duplicates/cycles rejected). No AI-suggested dependencies. |
 | 13 | Acceptance criteria | C | Kind validated. |
 | 14 | Quality analysis | P | Findings not persisted. |
 | 15 | Conflict detection + human resolution | P | Reason not persisted; no resolve/dismiss workflow. |
 | 16 | Solution design | C | |
 | 17 | Database design (developer review) | P | Developer reviews via the agent stage, not via artifact approval. |
 | 18 | API design | C | |
-| 19 | Implementation tasks | C | Task board (assignee/status) not built. |
+| 19 | Implementation tasks | C | Tasks carry the SRS-required status, priority, linked requirements and suggested role; Developers record completion/reopen via work records. |
 | 20 | Test cases | P | QA can now generate/edit. Per-FR only; no NFR-based tests. |
 | 21 | Traceability matrix | C | BO → FR → Story → AC → Design → Task → Test. Limitations: NFRs not rows; design linked via source; no CSV export. |
 | 22 | Impact analysis, no silent change | C | Automatic persistent notices + on-demand walk. AI narrative of impact not built. |
@@ -68,7 +70,7 @@ From the dev server log (`src/AiReap.Api/backend.dev.log`, now untracked): the c
 | 25 | Project Copilot | C | Grounded in content/impact/history; lexical relevance ranking; no conversation history. Live-model quality **not yet verified**. |
 | 26 | RAG pipeline + source refs | C | Real Gemini embeddings when a key is set (hash stub otherwise); SQL `varbinary` vectors + in-memory cosine (fine at project scale); used by Copilot and requirement generation. Live **not yet verified**. |
 | 27 | AI audit trail | P | Human edits / final version not linked to executions; 200-row cap. |
-| 28 | Dashboard | P | Added open-impact-notice metric; "requirements needing review" list and server-side coverage still missing. |
+| 28 | Dashboard | P | Added open-impact-notice metric. Project-wide server-side test coverage = `TestedFunctionalRequirementCount` / `FunctionalRequirementCount` (FRs with ≥1 `TestedBy` test case over all FRs); `RequirementsNeedingReviewCount` = FRs + NFRs in `AiGenerated`/`Draft`/`UnderReview`; generic `PendingReviewCount` unchanged. |
 | 29 | Data model justified | C | ADR-002 still says `ToJson()` (doc drift). |
 | 30 | Replaceable provider | C | Gemini behind `IAiChatClient`/`IEmbeddingClient`; no separate "orchestrator" layer (services call the seam). |
 | 31 | Structured JSON validated before persistence | C | Provider JSON mode + shape + semantic validation + one repair. |
@@ -92,15 +94,15 @@ The project is **not complete**: see remaining work.
 2. **Login throttling/lockout** — not required by the spec, but missing from the security baseline. Identity lockout is currently used to mean "deactivated", so failed-login lockout needs its own flag/message; also rate-limit `/api/auth/*`. JWT is still stored in `localStorage`; self-registration stays open (role-less accounts).
 3. Idempotent regeneration (re-running a generator duplicates artifacts) and concurrency-safe artifact codes / optimistic concurrency (`RowVersion`).
 4. Persist analysis results (§7), quality findings (§14), conflict reason + resolution workflow (§15).
-5. Clarification categories (§8), NFR assumption confirmation (§10), story dependencies (§12), NFR-based tests (§20).
-6. Audit trail human-edit / final-version linkage (§27); dashboard needs-review list and server-side coverage (§28).
+5. Clarification categories (§8), NFR-based tests (§20).
+6. Audit trail human-edit / final-version linkage (§27).
 7. Retain original uploaded files (§6); risks/assumptions/constraints as artifacts (§2).
 8. Frontend tests (none exist; not added — no framework in the project); AI calls still run synchronously inside the HTTP request.
 
 ## Intentional deviations
 
 * Plain-text intake instead of rich text (§6) — accepted per decision of 2026-09-24.
-* Developer can view unapproved artifacts (§4) — needed for developer review of design/plan stages.
+* Developer sees technical design/API/data-entity artifacts before final Design approval (§4 vs §17) — needed for technical review; raw requirement sources and unapproved requirement-side content remain restricted.
 * Clarification folded into analysis (no standalone ambiguity pass) — from ROADMAP, unchanged.
 * Vector store is SQL Server `varbinary` + in-process cosine similarity — no extra infrastructure.
 

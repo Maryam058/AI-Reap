@@ -56,8 +56,13 @@ public class RequirementAnalysisService : IRequirementAnalysisService
             ?? throw new KeyNotFoundException($"RequirementSource {requirementSourceId} not found.");
         await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
 
-        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<AnalysisAiResponse>(
+        // A source too large for the request budget of the provider serving the call (Groq) is
+        // analysed in parts and merged here, never condensed; Gemini gets the whole source as before.
+        var parts = await GenerationSupport.CallAiAndParseChunkedAsync<AnalysisAiResponse, AnalysisPartAiResponse>(
             _chatClient, _logger, "RequirementAnalysis", source.Id.ToString(), SystemPrompt, source.RawText, cancellationToken);
+        var (parsed, rawResponse, model) = parts.Count == 1
+            ? (parts[0].Parsed, parts[0].RawResponse, parts[0].Model)
+            : Merge(parts);
 
         var codes = await ArtifactCodeGenerator.ReserveCodesAsync(
             _db, source.ProjectId, ArtifactType.ClarificationQuestion, parsed.MissingInformation.Count, cancellationToken);
@@ -113,7 +118,7 @@ public class RequirementAnalysisService : IRequirementAnalysisService
 
         GenerationSupport.AddExecutions(
             _db, source.ProjectId, "RequirementAnalysis", PromptTemplateVersion, _currentUser.UserId,
-            _chatClient.ModelName, source.Id.ToString(), rawResponse, now,
+            model, source.Id.ToString(), rawResponse, now,
             questionArtifacts.Select(a => a.Id).ToList());
 
         await _db.SaveChangesAsync(cancellationToken);
@@ -126,8 +131,42 @@ public class RequirementAnalysisService : IRequirementAnalysisService
             questionArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList());
     }
 
-    private class AnalysisAiResponse : IValidatableAiResponse
+    // Parts are merged in source order with duplicates removed (AiResultMerge). The audit keeps
+    // every part's raw response and the model(s) that served them.
+    private static (AnalysisPartAiResponse Parsed, string RawResponse, string Model) Merge(
+        IReadOnlyList<GenerationSupport.AiPart<AnalysisPartAiResponse>> parts)
     {
+        var merged = new AnalysisPartAiResponse
+        {
+            Actors = AiResultMerge.DistinctTexts(parts.SelectMany(p => p.Parsed.Actors)),
+            Capabilities = AiResultMerge.DistinctTexts(parts.SelectMany(p => p.Parsed.Capabilities)),
+            DataElements = AiResultMerge.DistinctTexts(parts.SelectMany(p => p.Parsed.DataElements)),
+            Notes = AiResultMerge.DistinctTexts(parts.SelectMany(p => p.Parsed.Notes)),
+            MissingInformation = AiResultMerge.DistinctQuestions(
+                parts.SelectMany(p => p.Parsed.MissingInformation), m => m.Topic, m => m.Question,
+                m => m.Reason, (m, reason) => m.Reason = reason)
+        };
+
+        if (merged.Actors.Count == 0 && merged.Capabilities.Count == 0 && merged.MissingInformation.Count == 0)
+        {
+            const string empty = "The analysis is empty: no actors, capabilities or missing information were identified in any part of the requirement source.";
+            throw new AiOutputValidationException(empty, [empty], repairable: false);
+        }
+
+        var rawResponse = JsonSerializer.Serialize(new
+        {
+            parts = parts.Select(p => new { part = p.Number, of = p.Count, model = p.Model, response = p.RawResponse })
+        });
+        var model = string.Join(" + ", parts.Select(p => p.Model).Distinct());
+        return (merged, rawResponse, model);
+    }
+
+    // One part of a split source: it may legitimately be all background prose, so emptiness is
+    // judged on the merged result instead (Merge).
+    private class AnalysisPartAiResponse : IValidatableAiResponse
+    {
+        protected virtual bool RequireFindings => false;
+
         public List<string> Actors { get; set; } = new();
         public List<string> Capabilities { get; set; } = new();
         public List<string> DataElements { get; set; } = new();
@@ -145,11 +184,17 @@ public class RequirementAnalysisService : IRequirementAnalysisService
                 v.MaxLength(item.Topic, 300, $"{path}.topic");
                 v.Required(item.Question, $"{path}.question");
             });
-            if (Actors.Count == 0 && Capabilities.Count == 0 && MissingInformation.Count == 0)
+            if (RequireFindings && Actors.Count == 0 && Capabilities.Count == 0 && MissingInformation.Count == 0)
             {
                 v.Fail("The analysis is empty: no actors, capabilities or missing information were identified.");
             }
         }
+    }
+
+    // A response for the whole source must find something.
+    private class AnalysisAiResponse : AnalysisPartAiResponse
+    {
+        protected override bool RequireFindings => true;
     }
 
     private class MissingInformationItem

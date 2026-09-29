@@ -160,8 +160,9 @@ public class RegressionTests : IAsyncLifetime
         Assert.Equal(200, (await _ba.PostAsync($"/api/requirement-sources/{sourceId}/analyze-quality")).Status);
         Assert.Equal(200, (await _ba.PostAsync($"/api/projects/{projectId}/detect-conflicts")).Status);
 
-        // traceability: one FR rolls up everything derived from it
-        var (trs, matrix) = await _dev.GetAsync($"/api/projects/{projectId}/traceability-matrix");
+        // traceability: one FR rolls up everything derived from it (read as the BA: nothing is approved
+        // yet, and a Developer only sees approved requirements - DeveloperArtifactVisibilityTests)
+        var (trs, matrix) = await _ba.GetAsync($"/api/projects/{projectId}/traceability-matrix");
         Assert.Equal(200, trs);
         var row = matrix!.AsArray().Single()!;
         Assert.NotEmpty(row["userStories"]!.AsArray());
@@ -191,7 +192,7 @@ public class RegressionTests : IAsyncLifetime
         Assert.Equal(200, ds);
         Assert.Equal(1, dash!["functionalRequirementCount"]!.GetValue<int>());
         Assert.True(dash["approvedCount"]!.GetValue<int>() >= 1);
-        var (au, audit) = await _dev.GetAsync($"/api/projects/{projectId}/ai-executions");
+        var (au, audit) = await _ba.GetAsync($"/api/projects/{projectId}/ai-executions"); // full trail; a Developer's is filtered
         Assert.Equal(200, au);
         Assert.True(audit!.AsArray().Count >= 8);
         Assert.DoesNotContain("reasoning", audit.ToJsonString(), StringComparison.OrdinalIgnoreCase);

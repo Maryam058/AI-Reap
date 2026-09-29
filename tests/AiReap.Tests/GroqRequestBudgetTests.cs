@@ -253,6 +253,54 @@ public class GroqRequestBudgetTests
         Assert.EndsWith("---\nYour previous response was rejected by automatic validation for these reasons:\n- actors is empty\nReturn a corrected response.", fit.UserPrompt);
     }
 
+    // Regression: each "[... omitted ...]" marker was planned at 16 tokens but costs ~25 (+1 for its
+    // separator). In a structured document where almost every passage carries a requirement signal,
+    // selection keeps and drops passages alternately, the per-marker shortfall added up, and the
+    // rendered prompt overshot the budget - so a condensable request was refused ("needs about
+    // 23,580"). The plan must now always produce a prompt that fits.
+    [Fact]
+    public async Task Structured_source_of_about_23580_tokens_is_condensed_instead_of_refused()
+    {
+        var source = ChunkedAnalysisTests.StructuredSource(23_580, SystemPrompt);
+        Assert.Equal(23_580, PromptBudgetReducer.EstimateRequestTokens(SystemPrompt, source));
+
+        var fit = PromptBudgetReducer.Fit(SystemPrompt, source, InputBudget);
+
+        Assert.True(fit.Fits);
+        Assert.True(fit.OmittedPassages > 0);
+        var gaps = CountOf(fit.UserPrompt, "omitted to fit the AI provider's request budget");
+        Assert.True(gaps > 1, $"expected several omission gaps, found {gaps}");
+        Assert.Equal(PromptBudgetReducer.EstimateRequestTokens(SystemPrompt, fit.UserPrompt), fit.FinalTokens);
+        Assert.True(fit.FinalTokens <= InputBudget);
+
+        // End to end: one condensed Groq request within the budget, not a refusal.
+        var (client, _, groqHttp) = BuildStack(_ => GeminiQuota(), _ => GroqOk(AnalysisJson));
+        Assert.Equal(AnalysisJson, await client.CompleteAsync(SystemPrompt, source));
+        AssertWithinGroqBudget(Assert.Single(groqHttp.Bodies));
+    }
+
+    // Across budgets and source shapes (alternating selections included), the planned selection
+    // never renders over budget: a source with room for its fixed parts is always condensed.
+    [Theory]
+    [InlineData(12_000)]
+    [InlineData(23_580)]
+    [InlineData(40_000)]
+    public void Condensed_prompt_never_exceeds_the_budget_because_of_omission_markers(int requestTokens)
+    {
+        var sources = new[] { ChunkedAnalysisTests.StructuredSource(requestTokens, SystemPrompt), SourceForEstimatedRequest(requestTokens) };
+        foreach (var source in sources)
+        {
+            for (var budget = 1_000; budget <= InputBudget; budget += 250)
+            {
+                var fit = PromptBudgetReducer.Fit(SystemPrompt, source, budget);
+
+                Assert.True(fit.Fits, $"~{requestTokens}-token source refused at budget {budget} (rendered ~{fit.FinalTokens}).");
+                Assert.True(fit.FinalTokens <= budget);
+                Assert.Equal(PromptBudgetReducer.EstimateRequestTokens(SystemPrompt, fit.UserPrompt), fit.FinalTokens);
+            }
+        }
+    }
+
     // 6. Retrieved excerpts rank below the source text, and among themselves by retrieval rank.
     [Fact]
     public void Source_text_is_kept_before_rag_excerpts_and_the_best_ranked_excerpts_are_kept_first()
@@ -392,8 +440,9 @@ public class GroqRequestBudgetTests
         Assert.Equal(MaxRequestTokens - requestTokens, JsonNode.Parse(body)!["max_completion_tokens"]!.GetValue<int>());
     }
 
-    // 9. Through the real API: analysis served by Groq after a Gemini quota failure is condensed,
-    // parsed, persisted, and audited with the Groq model.
+    // 9. Through the real API: analysis served by Groq after a Gemini quota failure is split into
+    // parts that each fit the budget (never condensed - ChunkedAnalysisTests), parsed, merged,
+    // persisted, and audited with the Groq model.
     [Fact]
     public async Task Analysis_of_a_large_source_served_by_groq_is_audited_with_the_groq_model()
     {
@@ -413,8 +462,10 @@ public class GroqRequestBudgetTests
 
         Assert.Equal(200, analyzeStatus);
         Assert.Equal("Manager", analysis!["actors"]![0]!.GetValue<string>());
-        var (_, user) = GroqMessages(Assert.Single(groqHttp.Bodies));
-        Assert.All(KeyRequirements, r => Assert.Contains(r, user));
+        Assert.True(groqHttp.Bodies.Count > 1);
+        Assert.All(groqHttp.Bodies, AssertWithinGroqBudget);
+        var users = groqHttp.Bodies.Select(b => GroqMessages(b).User).ToList();
+        Assert.All(KeyRequirements, r => Assert.Single(users, u => u.Contains(r)));
 
         var (auditStatus, audit) = await ba.GetAsync($"/api/projects/{projectId}/ai-executions");
         Assert.Equal(200, auditStatus);

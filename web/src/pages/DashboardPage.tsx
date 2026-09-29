@@ -4,12 +4,10 @@ import { useAuth } from '../auth/AuthContext';
 import { artifactsApi } from '../api/artifacts';
 import { dashboardApi } from '../api/dashboard';
 import { projectsApi } from '../api/projects';
-import { traceabilityApi } from '../api/traceability';
 import { lifecycleApi } from '../api/lifecycle';
-import { ARTIFACT_TYPE_VALUES, type ArtifactSummary, type Project, type ProjectLifecycleState, type TraceabilityRow } from '../api/types';
+import { ARTIFACT_TYPE_VALUES, type ArtifactSummary, type Project, type ProjectLifecycleState } from '../api/types';
 import { lifecycleProgress, LIFECYCLE_STAGES, roleLabel, STAGE_STATE_LABEL, stageLabel, stageState } from '../lib/lifecycle';
 import { BUCKET_COLOR, BUCKET_LABEL, BUCKET_ORDER, countBuckets, isRequirement, weeklyCumulative } from '../lib/requirements';
-import { testCoveragePercent } from '../lib/coverage';
 import { firstName, formatFullDate, formatRelativeTime, greeting, statusLabel, statusVariant } from '../lib/format';
 import { PageHeader } from '../components/ui/PageHeader';
 import { EmptyState } from '../components/ui/EmptyState';
@@ -25,7 +23,9 @@ interface ProjectData {
   project: Project;
   artifacts: ArtifactSummary[] | null;
   stakeholderCount: number | null;
-  matrix: TraceabilityRow[] | null;
+  /** §28 project-wide test coverage (backend dashboard counts; not visibility-filtered). */
+  functionalRequirementCount: number | null;
+  testedFunctionalRequirementCount: number | null;
   conflictCount: number | null;
   openImpactNoticeCount: number | null;
   /** Pending stage requests and evidence gaps (GET .../lifecycle). */
@@ -55,10 +55,9 @@ export function DashboardPage() {
         const sample = [...list].sort((a, b) => +new Date(b.updatedAt) - +new Date(a.updatedAt)).slice(0, SAMPLE_SIZE);
         return Promise.all(
           sample.map(async (project): Promise<ProjectData> => {
-            const [a, s, m, d, l] = await Promise.allSettled([
+            const [a, s, d, l] = await Promise.allSettled([
               artifactsApi.listForProject(project.id, token),
               projectsApi.getStakeholders(project.id, token),
-              traceabilityApi.getMatrix(project.id, token),
               dashboardApi.get(project.id, token),
               lifecycleApi.get(project.id, token),
             ]);
@@ -66,7 +65,8 @@ export function DashboardPage() {
               project,
               artifacts: a.status === 'fulfilled' ? a.value : null,
               stakeholderCount: s.status === 'fulfilled' ? s.value.length : null,
-              matrix: m.status === 'fulfilled' ? m.value : null,
+              functionalRequirementCount: d.status === 'fulfilled' ? d.value.functionalRequirementCount : null,
+              testedFunctionalRequirementCount: d.status === 'fulfilled' ? (d.value.testedFunctionalRequirementCount ?? 0) : null,
               conflictCount: d.status === 'fulfilled' ? d.value.conflictCount : null,
               openImpactNoticeCount: d.status === 'fulfilled' ? (d.value.openImpactNoticeCount ?? 0) : null,
               lifecycle: l.status === 'fulfilled' ? l.value : null,
@@ -132,14 +132,18 @@ export function DashboardPage() {
     const conflicts = rows.reduce((n, r) => n + (r.conflictCount ?? 0), 0);
     // §22 — downstream artifacts still flagged by an approved upstream change nobody has reviewed yet.
     const impactNotices = rows.reduce((n, r) => n + (r.openImpactNoticeCount ?? 0), 0);
-    const allMatrixRows = rows.flatMap((r) => r.matrix ?? []);
+    // Test coverage = FRs with >=1 TestedBy test case / all FRs, summed over the sampled projects.
+    const coveredFrs = rows.reduce((n, r) => n + (r.testedFunctionalRequirementCount ?? 0), 0);
+    const totalFrs = rows.reduce((n, r) => n + (r.testedFunctionalRequirementCount !== null ? (r.functionalRequirementCount ?? 0) : 0), 0);
     const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 100) : 0);
     return {
       impactNotices,
       byType,
       reqByProject,
       approvalRate: pct(reqBuckets.approved + reqBuckets.completed, requirements.length),
-      testCoverage: testCoveragePercent(allMatrixRows),
+      testCoverage: pct(coveredFrs, totalFrs),
+      coveredFrs,
+      totalFrs,
       lifecycleCompletion: pct(completed, projects.length),
       stakeholders,
       conflicts,
@@ -274,7 +278,7 @@ export function DashboardPage() {
             <div>
               <h3>Test coverage</h3>
               <p>
-                {stats.testCases.length} tests for {stats.requirements.length} requirements
+                {stats.coveredFrs} of {stats.totalFrs} functional requirements have a test case
               </p>
             </div>
           </div>

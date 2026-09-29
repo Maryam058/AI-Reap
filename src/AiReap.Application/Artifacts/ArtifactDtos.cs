@@ -19,7 +19,9 @@ public record ArtifactResponse(
     DateTime UpdatedAt,
     int? ApprovedVersion = null,
     // §22 — upstream changes this artifact has not been reviewed against yet.
-    int OpenImpactNoticeCount = 0);
+    int OpenImpactNoticeCount = 0,
+    // The artifact's author (who created or generated it); e.g. may not confirm their own NFR target.
+    string? CreatedByUserId = null);
 
 // Title/Priority/Status are null for versions recorded before full snapshots existed.
 public record ArtifactVersionResponse(
@@ -65,4 +67,11 @@ public record UpdateArtifactStatusRequest(ArtifactStatus Status, string? Comment
 
 public record ClarificationAnswerRequest(string Answer, bool NotApplicable);
 
+// The version the confirmer reviewed; confirming anything but the current version is refused.
+// Who confirms, when, and the resulting status are decided by the server.
+public record ConfirmNfrTargetRequest(int? Version);
+
 public record CommentReviewRequest(string? Comment);
+
+// REAP-046 — the User Story that the story in the route depends on.
+public record AddDependencyRequest(Guid DependsOnArtifactId);

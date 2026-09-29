@@ -91,6 +91,8 @@ export function AgentPipelinePanel({
   const projectStage = summary?.currentProjectStatus;
   const sourceLabel = (id: string) => {
     const s = sources.find((x) => x.id === id);
+    // A Developer's source list carries no text (S2); name the source by its position instead.
+    if (s && !s.rawText) return `Requirement source ${sources.length - sources.indexOf(s)}`;
     return s ? `${s.rawText.slice(0, 60).replace(/\s+/g, ' ')}${s.rawText.length > 60 ? '…' : ''}` : id;
   };
 

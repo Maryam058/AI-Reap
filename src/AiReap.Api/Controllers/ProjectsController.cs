@@ -1,3 +1,4 @@
+using AiReap.Api.Auth;
 using AiReap.Api.Authorization;
 using AiReap.Application.Ai.Pipeline;
 using AiReap.Application.Lifecycle;
@@ -139,6 +140,30 @@ public class ProjectsController : ControllerBase
     {
         var removed = await _projectService.RemoveStakeholderAsync(projectId, stakeholderId, cancellationToken);
         return removed ? NoContent() : NotFound();
+    }
+
+    // Read-only user lookup for the stakeholder Role -> User picker. BusinessAnalyst can't use the
+    // Administrator-only /api/users list, so this returns just active users with their role - the
+    // same UserResponse shape, nothing from user administration beyond that.
+    [HttpGet("{projectId:guid}/stakeholders/available-users")]
+    [Authorize(Roles = $"{Roles.Administrator},{Roles.BusinessAnalyst}")]
+    public async Task<ActionResult<IReadOnlyList<UserResponse>>> GetStakeholderCandidates(Guid projectId)
+    {
+        var responses = new List<UserResponse>();
+        foreach (var role in Roles.All)
+        {
+            foreach (var user in await _userManager.GetUsersInRoleAsync(role))
+            {
+                if (await _userManager.IsLockedOutAsync(user))
+                {
+                    continue;
+                }
+
+                responses.Add(new UserResponse(user.Id, user.Email ?? string.Empty, user.DisplayName, role, true));
+            }
+        }
+
+        return Ok(responses.OrderBy(u => u.DisplayName).ToList());
     }
 
     // §38 DoD — project membership (access control). BA/Admin only, mirrors stakeholder-management

@@ -31,8 +31,13 @@ public class ImpactAnalysisService : IImpactAnalysisService
         }
 
         await _projectAccess.EnsureMemberAsync(artifact.ProjectId, cancellationToken);
+        if (!_currentUser.CanSee(artifact))
+        {
+            return null;
+        }
 
-        var found = await WalkDownstreamAsync(artifact, cancellationToken);
+        // The walk itself spans every artifact (notices must reach all of them); only what is reported is filtered.
+        var found = (await WalkDownstreamAsync(artifact, cancellationToken)).Where(x => _currentUser.CanSee(x.Artifact)).ToList();
 
         ImpactedArtifact ToImpacted(Impact x) => new(
             x.Artifact.Id, x.Artifact.Code, x.Artifact.Title, x.Artifact.ArtifactType.ToString(), x.Artifact.Status.ToString(),
@@ -101,13 +106,18 @@ public class ImpactAnalysisService : IImpactAnalysisService
 
     public async Task<IReadOnlyList<ImpactNoticeResponse>> GetNoticesForArtifactAsync(Guid artifactId, CancellationToken cancellationToken = default)
     {
-        var projectId = await _db.Artifacts.Where(a => a.Id == artifactId).Select(a => (Guid?)a.ProjectId).FirstOrDefaultAsync(cancellationToken);
-        if (projectId is null)
+        var artifact = await _db.Artifacts.FirstOrDefaultAsync(a => a.Id == artifactId, cancellationToken);
+        if (artifact is null)
         {
             return [];
         }
 
-        await _projectAccess.EnsureMemberAsync(projectId.Value, cancellationToken);
+        await _projectAccess.EnsureMemberAsync(artifact.ProjectId, cancellationToken);
+        if (!_currentUser.CanSee(artifact))
+        {
+            return [];
+        }
+
         return await ToResponsesAsync(_db.ArtifactImpactNotices.Where(n => n.AffectedArtifactId == artifactId), cancellationToken);
     }
 
@@ -120,6 +130,10 @@ public class ImpactAnalysisService : IImpactAnalysisService
         }
 
         await _projectAccess.EnsureMemberAsync(notice.ProjectId, cancellationToken);
+        if (!await _db.Artifacts.VisibleTo(_currentUser).AnyAsync(a => a.Id == notice.AffectedArtifactId, cancellationToken))
+        {
+            return null;
+        }
 
         if (notice.AcknowledgedAt is null)
         {
@@ -132,12 +146,16 @@ public class ImpactAnalysisService : IImpactAnalysisService
         return (await ToResponsesAsync(_db.ArtifactImpactNotices.Where(n => n.Id == noticeId), cancellationToken)).Single();
     }
 
+    // Notices are listed by their affected artifact's visibility. The source is still named even when
+    // a Developer can't open it: a notice exists because approved content was edited (which puts the
+    // source back UnderReview), and the Developer owning the approved downstream task needs to know
+    // which artifact changed - only its code and title, never its content.
     private async Task<IReadOnlyList<ImpactNoticeResponse>> ToResponsesAsync(IQueryable<ArtifactImpactNotice> notices, CancellationToken cancellationToken)
     {
         return await notices
             .OrderByDescending(n => n.CreatedAt)
             .Join(_db.Artifacts, n => n.SourceArtifactId, a => a.Id, (n, source) => new { n, source })
-            .Join(_db.Artifacts, x => x.n.AffectedArtifactId, a => a.Id, (x, affected) => new ImpactNoticeResponse(
+            .Join(_db.Artifacts.VisibleTo(_currentUser), x => x.n.AffectedArtifactId, a => a.Id, (x, affected) => new ImpactNoticeResponse(
                 x.n.Id, x.n.SourceArtifactId, x.source.Code, x.source.Title, x.n.SourceVersion,
                 x.n.AffectedArtifactId, affected.Code, affected.Title, affected.ArtifactType, affected.Status,
                 x.n.Path, x.n.CreatedByUserId, x.n.CreatedAt, x.n.AcknowledgedByUserId, x.n.AcknowledgedAt, x.n.AcknowledgementNote))

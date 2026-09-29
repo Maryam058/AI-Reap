@@ -4,6 +4,9 @@ import { ArtifactEditDialog } from './ArtifactEditDialog';
 import { WorkRecordPanel } from './WorkRecordPanel';
 import { DesignReviewPanel } from './DesignReviewPanel';
 import { IconCheck, IconEdit, IconSparkles, IconX } from './icons';
+import { artifactsApi } from '../api/artifacts';
+import { useAuth } from '../auth/AuthContext';
+import { apiErrorText } from '../lib/errors';
 import {
   ARTIFACT_PRIORITY_LABELS,
   ARTIFACT_STATUS,
@@ -29,8 +32,10 @@ interface Props {
   // /api/artifacts/{id}), distinct from canReview (which also includes the Reviewer role).
   canEdit: boolean;
   token: string | null;
-  onApprove: (id: string) => Promise<void>;
-  onReject: (id: string) => Promise<void>;
+  // §24 — review decisions; the comment is recorded with the decision (required, as the reason, to
+  // reject). Resolve to whether the decision was recorded.
+  onApprove: (id: string, comment?: string) => Promise<boolean>;
+  onReject: (id: string, comment?: string) => Promise<boolean>;
   // §24 — the other human workflow moves (submit for review, return to draft, reopen review).
   onChangeStatus?: (id: string, status: number) => Promise<void>;
   onSaved: () => void;
@@ -81,6 +86,11 @@ export function ArtifactCard({
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [reviewComment, setReviewComment] = useState('');
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reviewsRecorded, setReviewsRecorded] = useState(0);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const { userId, hasRole } = useAuth();
 
   // Mirrors the backend state machine (ArtifactStatusTransitions): a reviewer decides on AI-generated
   // or under-review content; a draft must be submitted first; approved-or-later work can be reopened.
@@ -96,10 +106,75 @@ export function ArtifactCard({
   const isAiOrigin = artifact.origin === 0;
   const isEditable = canEdit && artifact.artifactType !== ARTIFACT_TYPE_VALUES.ClarificationQuestion;
 
+  // REAP-045 — a BA or Reviewer other than the author confirms an NFR's proposed target. Confirmation
+  // is not approval: the status is untouched. Mirrors ArtifactService.ConfirmNfrTargetAsync, which
+  // enforces it (including the author of the current version, which only the server knows).
+  const nfr =
+    artifact.artifactType === ARTIFACT_TYPE_VALUES.NonFunctionalRequirement
+      ? (artifact.data as unknown as NonFunctionalRequirementData)
+      : null;
+  const canConfirmTarget =
+    nfr !== null &&
+    !!nfr.targetValue?.trim() &&
+    nfr.assumptionStatus !== 'confirmed' &&
+    status !== ARTIFACT_STATUS.Rejected &&
+    (hasRole('BusinessAnalyst') || hasRole('Reviewer')) &&
+    artifact.createdByUserId !== userId;
+
   const act = async (fn: (id: string) => Promise<void>) => {
     setBusy(true);
     try {
       await fn(artifact.id);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // §4/§24 — Reviewer (and BA/Administrator) review: comment only, or approve/reject with a comment.
+  // Uses the existing endpoints: POST .../reviews for a comment, PATCH .../status for a decision.
+  const trimmedComment = reviewComment.trim();
+
+  const decide = async (approve: boolean) => {
+    if (!approve && !trimmedComment) {
+      setReviewError('Enter a reason to reject this artifact.');
+      return;
+    }
+    setReviewError(null);
+    setBusy(true);
+    try {
+      const recorded = await (approve ? onApprove : onReject)(artifact.id, trimmedComment || undefined);
+      if (recorded) {
+        setReviewComment('');
+        setReviewsRecorded((n) => n + 1);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addComment = async () => {
+    setReviewError(null);
+    setBusy(true);
+    try {
+      await artifactsApi.addCommentReview(artifact.id, trimmedComment, token);
+      setReviewComment('');
+      setReviewsRecorded((n) => n + 1);
+      onSaved();
+    } catch (err) {
+      setReviewError(apiErrorText(err, 'The comment could not be recorded.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmTarget = async () => {
+    setConfirmError(null);
+    setBusy(true);
+    try {
+      await artifactsApi.confirmNfrTarget(artifact.id, artifact.currentVersion, token);
+      onSaved();
+    } catch (err) {
+      setConfirmError(apiErrorText(err, 'The target could not be confirmed.'));
     } finally {
       setBusy(false);
     }
@@ -174,18 +249,6 @@ export function ArtifactCard({
             Edit
           </button>
         )}
-        {canReview && canDecide && (
-          <>
-            <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => act(onApprove)}>
-              <IconCheck width={14} height={14} />
-              Approve
-            </button>
-            <button type="button" className="btn btn-secondary btn-sm btn-reject" disabled={busy} onClick={() => act(onReject)}>
-              <IconX width={14} height={14} />
-              Reject
-            </button>
-          </>
-        )}
         {canReview && onChangeStatus && canSubmit && (
           <button type="button" className="btn btn-secondary btn-sm" disabled={busy}
             onClick={() => act((id) => onChangeStatus(id, ARTIFACT_STATUS.UnderReview))}>
@@ -204,6 +267,13 @@ export function ArtifactCard({
             Reopen review
           </button>
         )}
+        {canConfirmTarget && (
+          <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={confirmTarget}
+            title="Confirm this target value as a validated requirement. This does not approve the NFR.">
+            <IconCheck width={14} height={14} />
+            Confirm target
+          </button>
+        )}
         {artifact.artifactType === ARTIFACT_TYPE_VALUES.UserStory && onGenerateAcceptanceCriteria && (
           <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act(onGenerateAcceptanceCriteria)}>
             <IconSparkles width={14} height={14} />
@@ -217,7 +287,45 @@ export function ArtifactCard({
           </button>
         )}
       </div>
+      {confirmError && <p className="field-error-text">{confirmError}</p>}
 
+      {canReview && (
+        <div className="work-record" aria-label="Artifact review">
+          <div className="work-record-head">
+            <strong>Review</strong>
+            <span className="muted">v{artifact.currentVersion}</span>
+          </div>
+          <div className="work-record-actions">
+            <input
+              type="text"
+              placeholder={canDecide ? 'Review comment (optional to approve or comment; required to reject)' : 'Review comment'}
+              value={reviewComment}
+              onChange={(e) => {
+                setReviewComment(e.target.value);
+                setReviewError(null);
+              }}
+              disabled={busy}
+              aria-label={`Review comment for ${artifact.code}`}
+            />
+            <button type="button" className="btn btn-ghost btn-sm" disabled={busy || !trimmedComment} onClick={addComment}>
+              Comment
+            </button>
+            {canDecide && (
+              <>
+                <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => decide(true)}>
+                  <IconCheck width={14} height={14} />
+                  Approve
+                </button>
+                <button type="button" className="btn btn-secondary btn-sm btn-reject" disabled={busy} onClick={() => decide(false)}>
+                  <IconX width={14} height={14} />
+                  Reject
+                </button>
+              </>
+            )}
+          </div>
+          {reviewError && <p className="field-error-text">{reviewError}</p>}
+        </div>
+      )}
       {(artifact.artifactType === ARTIFACT_TYPE_VALUES.ImplementationTask || artifact.artifactType === ARTIFACT_TYPE_VALUES.TestCase) && (
         <WorkRecordPanel artifact={artifact} onRecorded={onSaved} />
       )}
@@ -228,8 +336,10 @@ export function ArtifactCard({
       <ArtifactDetails
         artifactId={artifact.id}
         artifactType={artifact.artifactType}
+        projectId={artifact.projectId}
         openImpactNoticeCount={openNotices}
         onNoticeAcknowledged={onSaved}
+        refreshKey={`${artifact.status}-${artifact.currentVersion}-${reviewsRecorded}`}
       />
 
       {editing && <ArtifactEditDialog artifact={artifact} token={token} onClose={() => setEditing(false)} onSaved={onSaved} />}
@@ -259,8 +369,11 @@ function NonFunctionalRequirementDetails({ data }: { data: NonFunctionalRequirem
       <Detail label="Target" value={data.targetValue} />
       {data.assumptionStatus && (
         <p>
-          <span className={`assumption-pill assumption-${data.assumptionStatus}`}>
-            {data.assumptionStatus === 'proposed_assumption' ? 'Proposed assumption — needs confirmation' : 'Confirmed'}
+          <span
+            className={`assumption-pill assumption-${data.assumptionStatus}`}
+            title={data.confirmedAt ? `Target confirmed ${new Date(data.confirmedAt).toLocaleString()}` : undefined}
+          >
+            {data.assumptionStatus === 'proposed_assumption' ? 'Proposed assumption — needs confirmation' : 'Target confirmed'}
           </span>
         </p>
       )}

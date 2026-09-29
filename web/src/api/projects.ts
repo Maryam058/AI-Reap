@@ -8,6 +8,7 @@ import type {
   ProjectMember,
   Stakeholder,
   UpdateProjectRequest,
+  UserAccount,
 } from './types';
 
 export const projectsApi = {
@@ -28,6 +29,10 @@ export const projectsApi = {
 
   getStakeholders: (projectId: string, token: string | null) =>
     apiClient.get<Stakeholder[]>(`/api/projects/${projectId}/stakeholders`, token),
+
+  // Active users for the stakeholder Role -> User picker (BA/Admin); same shape as UserAccount.
+  getStakeholderCandidates: (projectId: string, token: string | null) =>
+    apiClient.get<UserAccount[]>(`/api/projects/${projectId}/stakeholders/available-users`, token),
 
   addStakeholder: (projectId: string, request: CreateStakeholderRequest, token: string | null) =>
     apiClient.post<Stakeholder>(`/api/projects/${projectId}/stakeholders`, request, token),

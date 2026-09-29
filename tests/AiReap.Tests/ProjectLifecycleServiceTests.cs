@@ -247,7 +247,7 @@ public class ProjectLifecycleServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Draft_needs_an_active_business_analyst_member_and_an_administrator_may_advance_it()
+    public async Task Draft_needs_an_active_business_analyst_member_and_an_administrator_may_advance_it_only_as_an_override()
     {
         // Created by an Administrator: its only member is the admin, so no BA is on it yet.
         var (_, body) = await _admin.Api.PostAsync("/api/projects", new
@@ -266,9 +266,17 @@ public class ProjectLifecycleServiceTests : IAsyncLifetime
         await _host.AddMemberAsync(_admin.Api, projectId.ToString(), _ba.Api);
         Assert.True((await StageAsync(projectId, ProjectStatus.Draft)).Passed);
 
+        // R2 - passing evidence is not enough: the Administrator is not the Business Analyst.
         using var s = _host.As(_admin);
-        var transition = await s.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.RequirementsGathering));
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            s.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.RequirementsGathering)));
+        Assert.Equal(ProjectStatus.Draft, await StatusAsync(projectId));
+
+        var transition = await s.Lifecycle.AdvanceAsync(projectId,
+            new AdvanceStageRequest(ProjectStatus.RequirementsGathering, OverrideReason: "BA on leave; kickoff agreed."));
         Assert.Equal(Roles.Administrator, transition.RequestedByRole);
+        Assert.True(transition.IsOverride);
+        Assert.Equal("BA on leave; kickoff agreed.", transition.OverrideReason);
         Assert.Equal(ProjectStatus.RequirementsGathering, await StatusAsync(projectId));
     }
 
@@ -611,7 +619,249 @@ public class ProjectLifecycleServiceTests : IAsyncLifetime
         Assert.False(completed.Actions.CanAdvance || completed.Actions.CanSubmitForApproval);
     }
 
+    // ---- Administrator work records are not Developer/QA evidence --------------------------
+
+    private static string Detail(StageEvidence stage, string label) => stage.Checks.Single(c => c.Label == label).Detail;
+
+    [Fact]
+    public async Task Administrator_task_completions_are_not_implementation_evidence_developer_completions_are()
+    {
+        var projectId = await ProjectAsync();
+        await FullChainAsync(projectId);
+        var tasks = await ArtifactsAsync(projectId, ArtifactType.ImplementationTask);
+
+        using (var admin = _host.As(_admin))
+        {
+            foreach (var task in tasks) await admin.Work.RecordAsync(task, new(WorkOutcome.TaskCompleted, null));
+        }
+
+        var implementation = await StageAsync(projectId, ProjectStatus.Implementation);
+        Assert.False(Check(implementation, "Implementation tasks completed"));
+        Assert.False(Check(implementation, "Functional requirements implemented"));
+        Assert.StartsWith("0 of ", Detail(implementation, "Functional requirements implemented"));
+
+        using (var dev = _host.As(_dev))
+        {
+            foreach (var task in tasks) await dev.Work.RecordAsync(task, new(WorkOutcome.TaskCompleted, null));
+        }
+
+        implementation = await StageAsync(projectId, ProjectStatus.Implementation);
+        Assert.True(Check(implementation, "Implementation tasks completed"));
+        Assert.True(Check(implementation, "Functional requirements implemented"));
+        Assert.True(implementation.Passed);
+    }
+
+    [Fact]
+    public async Task Administrator_test_passes_are_not_testing_evidence_qa_passes_are()
+    {
+        var projectId = await ProjectAsync();
+        await FullChainAsync(projectId);
+        using (var dev = _host.As(_dev))
+        {
+            foreach (var task in await ArtifactsAsync(projectId, ArtifactType.ImplementationTask))
+                await dev.Work.RecordAsync(task, new(WorkOutcome.TaskCompleted, null));
+        }
+
+        var tests = await ArtifactsAsync(projectId, ArtifactType.TestCase);
+        using (var admin = _host.As(_admin))
+        {
+            foreach (var test in tests) await admin.Work.RecordAsync(test, new(WorkOutcome.TestPassed, null));
+        }
+
+        var testing = await StageAsync(projectId, ProjectStatus.Testing);
+        Assert.False(Check(testing, "Test cases passed"));
+        Assert.False(Check(testing, "Functional requirements verified"));
+        Assert.StartsWith("0 of ", Detail(testing, "Functional requirements verified"));
+
+        using (var qa = _host.As(_qa))
+        {
+            foreach (var test in tests) await qa.Work.RecordAsync(test, new(WorkOutcome.TestPassed, null));
+        }
+
+        testing = await StageAsync(projectId, ProjectStatus.Testing);
+        Assert.True(Check(testing, "Test cases passed"));
+        Assert.True(Check(testing, "Functional requirements verified"));
+        Assert.True(testing.Passed);
+    }
+
+    [Fact]
+    public async Task Administrator_work_records_leave_the_explicit_override_as_the_only_bypass()
+    {
+        var projectId = await ProjectAsync();
+        await FullChainAsync(projectId);
+        await SetStatusAsync(projectId, ProjectStatus.Implementation);
+        using var admin = _host.As(_admin);
+        using var dev = _host.As(_dev);
+        foreach (var task in await ArtifactsAsync(projectId, ArtifactType.ImplementationTask))
+            await admin.Work.RecordAsync(task, new(WorkOutcome.TaskCompleted, null));
+        var transitionsBefore = await TransitionCountAsync(projectId);
+
+        // The Administrator's own completions do not open the stage, for the Developer or the Administrator.
+        Assert.False((await dev.Lifecycle.GetStateAsync(projectId)).ReadyToAdvance);
+        await Assert.ThrowsAsync<LifecycleEvidenceException>(() =>
+            dev.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.Testing)));
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            dev.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.Testing, OverrideReason: "trust me")));
+        var ex = await Assert.ThrowsAsync<LifecycleEvidenceException>(() =>
+            admin.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.Testing)));
+        Assert.Contains(ex.FailingChecks, c => c.Label == "Implementation tasks completed");
+        await Assert.ThrowsAsync<LifecycleEvidenceException>(() =>
+            admin.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.Testing, OverrideReason: "   ")));
+        Assert.Equal(ProjectStatus.Implementation, await StatusAsync(projectId));
+        Assert.Equal(transitionsBefore, await TransitionCountAsync(projectId));
+
+        // The explicit override, with its reason, moves it on and is recorded as an override.
+        var transition = await admin.Lifecycle.AdvanceAsync(projectId,
+            new AdvanceStageRequest(ProjectStatus.Testing, OverrideReason: "Tasks verified in the release branch."));
+        Assert.True(transition.IsOverride);
+        Assert.Equal("Tasks verified in the release branch.", transition.OverrideReason);
+        Assert.Equal(Roles.Administrator, transition.RequestedByRole);
+        Assert.Contains(transition.Evidence, c => c.Label == "Implementation tasks completed" && !c.Passed);
+        Assert.Equal(ProjectStatus.Testing, await StatusAsync(projectId));
+        Assert.Equal(1, await _host.ScalarAsync(
+            $"SELECT COUNT(*) FROM ProjectStageTransitions WHERE ProjectId = '{projectId}' AND IsOverride = 1 AND ToStatus = {(int)ProjectStatus.Testing}"));
+    }
+
     // ---- evidence clarifications -----------------------------------------------------------
+
+    // ---- R2: Administrator is a system role, not a stand-in for the SDLC owners ---------------
+
+    [Fact]
+    public async Task Administrator_cannot_stand_in_for_the_developer_or_the_reviewer_at_the_design_gate()
+    {
+        var projectId = await ProjectAsync();
+        await FullChainAsync(projectId);
+        await SetStatusAsync(projectId, ProjectStatus.Design);
+        var transitionsBefore = await TransitionCountAsync(projectId);
+        using var admin = _host.As(_admin);
+        using var dev = _host.As(_dev);
+        using var reviewer = _host.As(_reviewer);
+
+        // Evidence passes, but the Administrator is not the Developer: submitting needs an override.
+        var adminState = await admin.Lifecycle.GetStateAsync(projectId);
+        Assert.True(adminState.ReadyToAdvance);
+        Assert.True(adminState.Actions.CanSubmitForApproval);
+        Assert.True(adminState.Actions.AdvanceIsOverride);
+        Assert.False((await dev.Lifecycle.GetStateAsync(projectId)).Actions.AdvanceIsOverride);
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            admin.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.Approved, "Looks done.")));
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            admin.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.Approved, OverrideReason: "  ")));
+        Assert.Equal(transitionsBefore, await TransitionCountAsync(projectId));
+
+        // The Developer submits; approving is the Reviewer's duty, not the Administrator's.
+        var pending = await dev.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.Approved));
+        Assert.False(pending.IsOverride);
+        adminState = await admin.Lifecycle.GetStateAsync(projectId);
+        Assert.True(adminState.Actions.CanDecide);
+        Assert.True(adminState.Actions.DecideIsOverride);
+        Assert.False((await reviewer.Lifecycle.GetStateAsync(projectId)).Actions.DecideIsOverride);
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            admin.Lifecycle.DecideAsync(pending.Id, new DecideStageTransitionRequest(true, "Fine by me.")));
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            admin.Lifecycle.DecideAsync(pending.Id, new DecideStageTransitionRequest(true, OverrideReason: "   ")));
+        Assert.Equal(ProjectStatus.Design, await StatusAsync(projectId));
+        Assert.Equal(StageTransitionState.Pending, (await admin.Lifecycle.GetStateAsync(projectId)).PendingTransition!.State);
+
+        // The explicit override still works, and is recorded as one.
+        var approved = await admin.Lifecycle.DecideAsync(pending.Id,
+            new DecideStageTransitionRequest(true, OverrideReason: "No Reviewer assigned before the release freeze."));
+        Assert.True(approved.IsOverride);
+        Assert.Equal("No Reviewer assigned before the release freeze.", approved.OverrideReason);
+        Assert.Equal(Roles.Administrator, approved.DecidedByRole);
+        Assert.Equal(Roles.Administrator, Assert.Single(approved.Reviews).ReviewerRole);
+        Assert.Equal(ProjectStatus.Approved, await StatusAsync(projectId));
+    }
+
+    [Fact]
+    public async Task Administrator_cannot_stand_in_for_qa_or_the_reviewer_at_the_testing_gate()
+    {
+        var projectId = await ProjectAsync();
+        await FullChainAsync(projectId);
+        using var admin = _host.As(_admin);
+        using var qa = _host.As(_qa);
+        using var reviewer = _host.As(_reviewer);
+        using (var dev = _host.As(_dev))
+        {
+            foreach (var task in await ArtifactsAsync(projectId, ArtifactType.ImplementationTask))
+                await dev.Work.RecordAsync(task, new(WorkOutcome.TaskCompleted, null));
+        }
+
+        foreach (var test in await ArtifactsAsync(projectId, ArtifactType.TestCase))
+            await qa.Work.RecordAsync(test, new(WorkOutcome.TestPassed, null));
+        await SetStatusAsync(projectId, ProjectStatus.Testing);
+
+        // QA's sign-off is QA's: an Administrator's submission, note or not, doesn't give it.
+        var ex = await Assert.ThrowsAsync<LifecycleEvidenceException>(() =>
+            admin.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.Completed, "All passed.")));
+        Assert.Equal(ProjectLifecycleService.SignOffLabel, Assert.Single(ex.FailingChecks).Label);
+
+        var pending = await qa.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.Completed, "Signed off on staging."));
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            admin.Lifecycle.DecideAsync(pending.Id, new DecideStageTransitionRequest(true)));
+        Assert.Equal(ProjectStatus.Testing, await StatusAsync(projectId));
+
+        // The Reviewer's normal approval is unchanged and needs no override.
+        var done = await reviewer.Lifecycle.DecideAsync(pending.Id, new DecideStageTransitionRequest(true));
+        Assert.False(done.IsOverride);
+        Assert.Equal(Roles.Reviewer, done.DecidedByRole);
+        Assert.Contains(done.Evidence, c => c.Label == ProjectLifecycleService.SignOffLabel && c.Passed);
+        Assert.Equal(ProjectStatus.Completed, await StatusAsync(projectId));
+    }
+
+    [Fact]
+    public async Task Administrator_moves_a_direct_stage_only_as_a_recorded_override_with_a_reason()
+    {
+        var projectId = await ProjectAsync();
+        await FullChainAsync(projectId);
+        await SetStatusAsync(projectId, ProjectStatus.Approved);
+        using var admin = _host.As(_admin);
+
+        // Approved is the Reviewer's stage; its checks pass, yet the Administrator needs a reason.
+        Assert.True((await admin.Lifecycle.GetStateAsync(projectId)).ReadyToAdvance);
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            admin.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.Implementation)));
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            admin.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.Implementation, OverrideReason: " ")));
+        Assert.Equal(ProjectStatus.Approved, await StatusAsync(projectId));
+
+        var transition = await admin.Lifecycle.AdvanceAsync(projectId,
+            new AdvanceStageRequest(ProjectStatus.Implementation, OverrideReason: "Reviewer on leave; sponsor approved by email."));
+        Assert.True(transition.IsOverride);
+        Assert.Equal("Reviewer on leave; sponsor approved by email.", transition.OverrideReason);
+        Assert.Equal(Roles.Administrator, transition.RequestedByRole);
+        Assert.All(transition.Evidence, c => Assert.True(c.Passed));
+        Assert.Equal(ProjectStatus.Implementation, await StatusAsync(projectId));
+        Assert.Equal(1, await _host.ScalarAsync($"SELECT COUNT(*) FROM ProjectStageTransitions WHERE ProjectId = '{projectId}' AND IsOverride = 1"));
+    }
+
+    [Fact]
+    public async Task Stage_owners_keep_their_normal_moves_without_any_override()
+    {
+        var projectId = await ProjectAsync();
+        await FullChainAsync(projectId);
+        await SetStatusAsync(projectId, ProjectStatus.Approved);
+
+        using var reviewer = _host.As(_reviewer);
+        var state = await reviewer.Lifecycle.GetStateAsync(projectId);
+        Assert.True(state.Actions.CanAdvance);
+        Assert.False(state.Actions.AdvanceIsOverride);
+        Assert.False(state.Actions.CanOverride);
+
+        var moved = await reviewer.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.Implementation));
+        Assert.False(moved.IsOverride);
+        Assert.Null(moved.OverrideReason);
+        Assert.Equal(Roles.Reviewer, moved.RequestedByRole);
+
+        // Other roles still may not move a stage they don't own, override reason or not.
+        await SetStatusAsync(projectId, ProjectStatus.Approved);
+        foreach (var actor in new[] { _ba, _dev, _qa })
+        {
+            using var s = _host.As(actor);
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                s.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.Implementation, OverrideReason: "please")));
+        }
+    }
 
     [Fact]
     public async Task Analysis_does_not_require_business_rules_or_nfrs_that_do_not_exist_but_existing_ones_must_be_approved()
@@ -710,7 +960,7 @@ public class ProjectLifecycleServiceTests : IAsyncLifetime
 
         var results = await Task.WhenAll(
             TryAsync(() => a.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.RequirementsGathering))),
-            TryAsync(() => b.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.RequirementsGathering))));
+            TryAsync(() => b.Lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(ProjectStatus.RequirementsGathering, OverrideReason: "Racing the BA."))));
 
         Assert.Single(results, r => r is null);
         Assert.IsAssignableFrom<ConflictException>(Assert.Single(results, r => r is not null));

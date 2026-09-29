@@ -72,6 +72,9 @@ export function ProjectOverviewPage() {
   const rowsWith = (pick: (r: NonNullable<typeof matrix>[number]) => number) => (matrix && matrix.length > 0 ? matrix.filter((r) => pick(r) > 0).length : null);
   const withTests = rowsWith((r) => r.testCases.length);
   const withDesign = rowsWith((r) => r.designArtifacts.length);
+  // §28 project-wide dashboard aggregates (not visibility-filtered, unlike the matrix rows above).
+  const needingReview = dashboard?.requirementsNeedingReviewCount ?? 0;
+  const testedFrs = dashboard?.testedFunctionalRequirementCount ?? 0;
 
   return (
     <>
@@ -263,6 +266,12 @@ export function ProjectOverviewPage() {
                 </ul>
               </>
             )}
+            {canEdit && (
+              <p className="field-hint">
+                Stakeholders don't get project access. To give a user access, add them under{' '}
+                <Link to={`${phasePath(project.id, 'gathering')}?tab=members`}>Members</Link>.
+              </p>
+            )}
           </section>
 
           <section className="panel" aria-labelledby="health-title">
@@ -278,7 +287,15 @@ export function ProjectOverviewPage() {
                 {dashboard && (
                   <>
                     <HealthRow label="Open clarifications" value={dashboard.openClarificationCount} tone={dashboard.openClarificationCount === 0 ? 'good' : 'warn'} />
-                    <HealthRow label="Awaiting review" value={dashboard.pendingReviewCount} tone={dashboard.pendingReviewCount === 0 ? 'good' : 'warn'} />
+                    <HealthRow label="Artifacts awaiting review" value={dashboard.pendingReviewCount} tone={dashboard.pendingReviewCount === 0 ? 'good' : 'warn'} />
+                    <HealthRow label="Requirements needing review" value={needingReview} tone={needingReview === 0 ? 'good' : 'warn'} />
+                    {dashboard.functionalRequirementCount > 0 && (
+                      <HealthRow
+                        label="Test coverage (FRs)"
+                        value={`${testedFrs}/${dashboard.functionalRequirementCount} (${Math.round((testedFrs / dashboard.functionalRequirementCount) * 100)}%)`}
+                        tone={testedFrs === dashboard.functionalRequirementCount ? 'good' : 'neutral'}
+                      />
+                    )}
                     <HealthRow label="Rejected" value={dashboard.rejectedCount} tone={dashboard.rejectedCount === 0 ? 'good' : 'bad'} />
                     <HealthRow label="Potential conflicts" value={dashboard.conflictCount} tone={dashboard.conflictCount === 0 ? 'good' : 'warn'} />
                   </>

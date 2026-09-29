@@ -46,10 +46,13 @@ public static partial class PromptBudgetReducer
     private const int MaxPassageChars = 1_200;
     private const int TargetPassageChars = 700;
 
-    // Tokens reserved for each "[... omitted ...]" marker when planning the selection.
-    private const int MarkerTokens = 16;
-
     private const string OmissionMarker = "[... {0} passage(s) omitted to fit the AI provider's request budget ...]";
+
+    // Tokens reserved for each "[... omitted ...]" marker when planning the selection: the marker as
+    // rendered with a five-digit count (~25 tokens), plus the "\n\n" before it. Derived from the text
+    // so the plan can never under-count it (a fixed 16 did, making long alternating selections
+    // overshoot the budget and be refused although a fitting selection existed).
+    private static readonly int MarkerTokens = EstimateTokens(string.Format(OmissionMarker, 99_999)) + 1;
 
     private const string CondensedNote =
         "[AI-REAP note: the input below exceeded the request budget of the AI provider serving this request and was " +
@@ -93,10 +96,14 @@ public static partial class PromptBudgetReducer
             return new PromptReduction(cleaned, true, true, originalTokens, systemTokens + EstimateTokens(cleaned), sourceCount, sourceCount);
         }
 
-        // 2. Relevance selection. Budget left after the fixed parts and the note.
+        // 2. Relevance selection. Budget left after the fixed parts and the note. Gaps can outnumber
+        // kept passages: one may follow the last rendered passage, and each fixed passage can split
+        // a run of omitted ones, so a marker is reserved for each of those up front.
+        var fixedCount = passages.Count(p => p.Kind == PassageKind.Fixed);
         var available = maxInputTokens - systemTokens
             - EstimateTokens(string.Format(CondensedNote, sourceCount, sourceCount))
-            - passages.Where(p => p.Kind == PassageKind.Fixed).Sum(p => EstimateTokens(p.Text) + 1);
+            - passages.Where(p => p.Kind == PassageKind.Fixed).Sum(p => EstimateTokens(p.Text) + 1)
+            - (fixedCount + 1) * MarkerTokens;
 
         Score(passages);
         foreach (var passage in passages.Where(p => p.Kind != PassageKind.Fixed).OrderBy(p => p.Tier).ThenByDescending(p => p.Density).ThenBy(p => p.Order))

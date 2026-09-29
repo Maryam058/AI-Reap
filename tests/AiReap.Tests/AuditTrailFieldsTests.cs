@@ -78,7 +78,7 @@ public class AuditTrailFieldsTests : IAsyncLifetime
         var nfrId = Id(generated["nonFunctionalRequirements"]![0]);
 
         Assert.Equal(200, (await _reviewer.SendAsync(HttpMethod.Patch, $"/api/artifacts/{frId}/status", new { status = 3 })).Status); // Approved
-        Assert.Equal(200, (await _reviewer.SendAsync(HttpMethod.Patch, $"/api/artifacts/{nfrId}/status", new { status = 4 })).Status); // Rejected
+        Assert.Equal(200, (await _reviewer.SendAsync(HttpMethod.Patch, $"/api/artifacts/{nfrId}/status", new { status = 4, comment = "Not measurable" })).Status); // Rejected
 
         var frRow = await AuditRowForArtifactAsync(projectId, frId);
         var nfrRow = await AuditRowForArtifactAsync(projectId, nfrId);

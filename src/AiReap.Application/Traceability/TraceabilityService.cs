@@ -21,10 +21,14 @@ public class TraceabilityService : ITraceabilityService
 
     public async Task<IReadOnlyList<TraceabilityRow>> GetMatrixAsync(Guid projectId, CancellationToken cancellationToken = default)
     {
-        var artifacts = await _db.Artifacts.Where(a => a.ProjectId == projectId).ToListAsync(cancellationToken);
-        var relationships = await _db.ArtifactRelationships
+        var artifacts = await _db.Artifacts.VisibleTo(_currentUser).Where(a => a.ProjectId == projectId).ToListAsync(cancellationToken);
+        // Only links between artifacts the caller can see: a link to a hidden one is dropped, not dangling.
+        var visibleIds = artifacts.Select(a => a.Id).ToHashSet();
+        var relationships = (await _db.ArtifactRelationships
             .Where(r => artifacts.Select(a => a.Id).Contains(r.SourceArtifactId) || artifacts.Select(a => a.Id).Contains(r.TargetArtifactId))
-            .ToListAsync(cancellationToken);
+            .ToListAsync(cancellationToken))
+            .Where(r => visibleIds.Contains(r.SourceArtifactId) && visibleIds.Contains(r.TargetArtifactId))
+            .ToList();
 
         var byId = artifacts.ToDictionary(a => a.Id);
         var outgoing = relationships.GroupBy(r => r.SourceArtifactId).ToDictionary(g => g.Key, g => g.ToList());
@@ -82,7 +86,8 @@ public class TraceabilityService : ITraceabilityService
 
     public async Task<IReadOnlyList<BusinessObjectiveResponse>> GetBusinessObjectivesAsync(Guid projectId, CancellationToken cancellationToken = default)
     {
-        var objectives = await _db.Artifacts
+        var visible = _db.Artifacts.VisibleTo(_currentUser);
+        var objectives = await visible
             .Where(a => a.ProjectId == projectId && a.ArtifactType == ArtifactType.BusinessObjective)
             .OrderBy(a => a.Code)
             .ToListAsync(cancellationToken);
@@ -90,7 +95,7 @@ public class TraceabilityService : ITraceabilityService
 
         var links = await _db.ArtifactRelationships
             .Where(r => r.RelationshipType == RelationshipType.DerivedFrom && ids.Contains(r.TargetArtifactId))
-            .Join(_db.Artifacts, r => r.SourceArtifactId, a => a.Id, (r, a) => new { r.TargetArtifactId, Requirement = a })
+            .Join(visible, r => r.SourceArtifactId, a => a.Id, (r, a) => new { r.TargetArtifactId, Requirement = a })
             .ToListAsync(cancellationToken);
 
         return objectives.Select(o => new BusinessObjectiveResponse(o.Id, o.Code, o.Title,

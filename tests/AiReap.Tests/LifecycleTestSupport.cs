@@ -41,8 +41,8 @@ public sealed class ServicesAs : IDisposable
         return (db, scope.ServiceProvider, new ProjectAccessService(db, _user));
     }
 
-    private static LifecycleEvidenceService EvidenceFor(IAiReapDbContext db, IServiceProvider sp) =>
-        new(db, sp.GetRequiredService<IUserRoleDirectory>());
+    private LifecycleEvidenceService EvidenceFor(IAiReapDbContext db, IServiceProvider sp) =>
+        new(db, sp.GetRequiredService<IUserRoleDirectory>(), _user);
 
     public ILifecycleEvidenceService Evidence
     {

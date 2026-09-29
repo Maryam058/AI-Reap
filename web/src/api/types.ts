@@ -239,6 +239,8 @@ export interface ArtifactSummary {
   approvedVersion?: number | null;
   // §22 — upstream changes this artifact hasn't been reviewed against yet.
   openImpactNoticeCount?: number;
+  // Who created or generated the artifact (e.g. an NFR's author may not confirm its target).
+  createdByUserId?: string | null;
 }
 
 export interface ArtifactVersion {
@@ -296,6 +298,9 @@ export interface NonFunctionalRequirementData {
   description?: string | null;
   targetValue?: string | null;
   assumptionStatus?: 'confirmed' | 'proposed_assumption' | null;
+  // Server-set when a BA/Reviewer confirms the target (POST /api/artifacts/{id}/nfr-confirmation).
+  confirmedByUserId?: string | null;
+  confirmedAt?: string | null;
 }
 
 export interface UserStoryData {
@@ -524,6 +529,10 @@ export interface ProjectDashboard {
   conflictCount: number;
   recentChanges: RecentChangeItem[];
   openImpactNoticeCount?: number;
+  /** §28 FRs with at least one TestedBy test case; coverage = this / functionalRequirementCount. Project-wide. */
+  testedFunctionalRequirementCount?: number;
+  /** §28 FRs + NFRs in AiGenerated, Draft or UnderReview. Unlike pendingReviewCount, requirements only. */
+  requirementsNeedingReviewCount?: number;
 }
 
 // ---- Project lifecycle (§5) ------------------------------------------------------------
@@ -591,6 +600,10 @@ export interface LifecycleActions {
   canWithdraw: boolean;
   canRollback: boolean;
   canOverride: boolean;
+  /** The caller would move the stage only as an Administrator standing in for its owner: an override, reason required. */
+  advanceIsOverride: boolean;
+  /** The caller would approve only as an Administrator standing in for the Reviewer: an override, reason required. */
+  decideIsOverride: boolean;
 }
 
 export interface ProjectLifecycleState {
@@ -794,4 +807,33 @@ export interface AgentRunSummary {
   rejected: number;
   byLifecycleStage: AgentStageActivity[];
   recentRuns: AgentRunSummaryItem[];
+}
+
+// GET /api/ai/status (AiProviderStatus). Never carries API keys.
+export interface AiProviderStatus {
+  provider: string;
+  configured: boolean;
+  modelAvailable: boolean;
+  model: string;
+  detail: string | null;
+  fallback: AiProviderStatus | null;
+}
+
+// GET /api/settings (Administrator only, read-only). Values come from server configuration;
+// provider credentials are never included.
+export interface SystemSettings {
+  ai: {
+    status: AiProviderStatus;
+    fallbackEnabled: boolean;
+    primaryCooldownUntil: string | null;
+    usingDevelopmentStub: boolean;
+    checkedAt: string;
+  };
+  runtime: {
+    environment: string;
+    primaryCooldownSeconds: number;
+    requestTimeoutSeconds: number;
+    maxAttempts: number;
+  };
+  credentialsNote: string;
 }

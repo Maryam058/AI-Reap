@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using AiReap.Application.Artifacts.Payloads;
 using AiReap.Application.Common;
 using AiReap.Application.Persistence;
@@ -28,7 +29,7 @@ public class ArtifactService : IArtifactService
     public async Task<IReadOnlyList<ArtifactResponse>> GetForProjectAsync(
         Guid projectId, ArtifactType? type, Guid? requirementSourceId, CancellationToken cancellationToken = default)
     {
-        var query = _db.Artifacts.Where(a => a.ProjectId == projectId);
+        var query = _db.Artifacts.VisibleTo(_currentUser).Where(a => a.ProjectId == projectId);
 
         if (type is not null)
         {
@@ -62,6 +63,11 @@ public class ArtifactService : IArtifactService
         }
 
         await _projectAccess.EnsureMemberAsync(artifact.ProjectId, cancellationToken);
+        if (!_currentUser.CanSee(artifact))
+        {
+            return null;
+        }
+
         var openNotices = await _db.ArtifactImpactNotices.CountAsync(n => n.AffectedArtifactId == id && n.AcknowledgedAt == null, cancellationToken);
         return ToResponse(artifact) with { OpenImpactNoticeCount = openNotices };
     }
@@ -81,10 +87,24 @@ public class ArtifactService : IArtifactService
             throw new RequestValidationException("Title cannot be empty.");
         }
 
-        var newData = request.Data?.GetRawText();
+        string? newData;
+        bool dataChanged;
+        if (request.Data is { } data && artifact.ArtifactType == ArtifactType.NonFunctionalRequirement)
+        {
+            // REAP-045 — an edit never decides the NFR's confirmation; the client's value is ignored.
+            var sanitized = NfrAssumption.SanitizeEdit(artifact.DataJson, data);
+            newData = sanitized.ToJsonString();
+            dataChanged = !JsonNode.DeepEquals(sanitized, JsonNode.Parse(artifact.DataJson));
+        }
+        else
+        {
+            newData = request.Data?.GetRawText();
+            dataChanged = newData is not null && newData != artifact.DataJson;
+        }
+
         var changed = (request.Title is not null && request.Title != artifact.Title)
             || (request.Priority is not null && request.Priority != artifact.Priority)
-            || (newData is not null && newData != artifact.DataJson);
+            || dataChanged;
 
         // Nothing actually differs - don't mint an empty version, and don't drop an approval over it.
         if (!changed)
@@ -102,9 +122,9 @@ public class ArtifactService : IArtifactService
             artifact.Priority = request.Priority;
         }
 
-        if (newData is not null)
+        if (dataChanged)
         {
-            artifact.DataJson = newData;
+            artifact.DataJson = newData!;
         }
 
         await ApplyHumanContentChangeAsync(artifact, request.Reason, cancellationToken);
@@ -150,6 +170,12 @@ public class ArtifactService : IArtifactService
         // Throws InvalidArtifactStatusTransitionException (-> 409) for anything off the state machine,
         // including Implemented/Verified, which only the system derives.
         ArtifactStatusTransitions.EnsureHumanTransition(artifact.Status, request.Status);
+
+        // §24 — a rejection must say why, so the author knows what to rework (mirrors the UI rule).
+        if (request.Status == ArtifactStatus.Rejected && string.IsNullOrWhiteSpace(request.Comment))
+        {
+            throw new RequestValidationException("A reason is required to reject an artifact.");
+        }
 
         artifact.Status = request.Status;
         artifact.UpdatedByUserId = _currentUser.UserId;
@@ -248,9 +274,83 @@ public class ArtifactService : IArtifactService
         return ToResponse(artifact);
     }
 
+    // REAP-045 — a Business Analyst or Reviewer confirms an NFR's proposed target. This is
+    // requirement validation, not approval: the artifact keeps its status and ApprovedVersion (the
+    // version a reviewer actually approved), no impact notices are raised, and the only payload
+    // change is AssumptionStatus = confirmed plus who confirmed it and when. It is recorded as a new
+    // human version, like every other change to an artifact's data (§23).
+    public async Task<ArtifactResponse?> ConfirmNfrTargetAsync(Guid id, ConfirmNfrTargetRequest request, CancellationToken cancellationToken = default)
+    {
+        var artifact = await _db.Artifacts.FirstOrDefaultAsync(a => a.Id == id, cancellationToken);
+        if (artifact is null)
+        {
+            return null;
+        }
+
+        await _projectAccess.EnsureMemberAsync(artifact.ProjectId, cancellationToken);
+        if (!_currentUser.CanSee(artifact))
+        {
+            return null;
+        }
+
+        // Administrator is deliberately not a confirmer: this is a requirements-validation duty.
+        if (!_currentUser.IsInRole(Roles.BusinessAnalyst) && !_currentUser.IsInRole(Roles.Reviewer))
+        {
+            throw new UnauthorizedAccessException("Only a Business Analyst or Reviewer can confirm an NFR target.");
+        }
+
+        if (artifact.ArtifactType != ArtifactType.NonFunctionalRequirement)
+        {
+            throw new RequestValidationException("Only a non-functional requirement has a target to confirm.");
+        }
+
+        // Separation of duties, whatever roles the caller holds: neither the NFR's author nor the
+        // author of its current version may confirm it.
+        var currentVersionAuthor = await _db.ArtifactVersions
+            .Where(v => v.ArtifactId == artifact.Id && v.VersionNumber == artifact.CurrentVersion)
+            .Select(v => v.ChangedByUserId)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (artifact.CreatedByUserId == _currentUser.UserId || currentVersionAuthor == _currentUser.UserId)
+        {
+            throw new UnauthorizedAccessException("You cannot confirm the target of an NFR you authored; another Business Analyst or Reviewer must confirm it.");
+        }
+
+        if (request.Version is not { } version)
+        {
+            throw new RequestValidationException("The version being confirmed is required.");
+        }
+
+        if (version != artifact.CurrentVersion)
+        {
+            throw new ConflictException($"v{version} is not the current version of this NFR (v{artifact.CurrentVersion}). Review the current version before confirming it.");
+        }
+
+        if (artifact.Status == ArtifactStatus.Rejected)
+        {
+            throw new ConflictException("A rejected NFR cannot be confirmed; it must be reworked first.");
+        }
+
+        if (NfrAssumption.TargetOf(artifact.DataJson) is null)
+        {
+            throw new RequestValidationException("This NFR has no target value to confirm.");
+        }
+
+        if (NfrAssumption.IsConfirmed(artifact.DataJson))
+        {
+            throw new ConflictException("This NFR's target is already confirmed.");
+        }
+
+        artifact.DataJson = NfrAssumption.Confirm(artifact.DataJson, _currentUser.UserId, DateTime.UtcNow);
+        await SaveNewVersionAsync(artifact, "NFR target confirmed", ArtifactOrigin.Human, cancellationToken);
+        return ToResponse(artifact);
+    }
+
     public async Task<IReadOnlyList<ArtifactVersionResponse>> GetVersionsAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        await EnsureAccessToArtifactAsync(id, cancellationToken);
+        if (!await EnsureAccessToArtifactAsync(id, cancellationToken))
+        {
+            return [];
+        }
 
         var versions = await _db.ArtifactVersions
             .Where(v => v.ArtifactId == id)
@@ -270,9 +370,10 @@ public class ArtifactService : IArtifactService
     }
 
     // §17/§4 — a comment-only review: feedback on the artifact's current version that neither approves
-    // nor rejects it and leaves its status alone. Any project member may add one; it is recorded under
-    // the role the reviewer acted as, which is how a Developer's design review is told apart from a
-    // Reviewer's approval.
+    // nor rejects it and leaves its status alone. Any project member who can see the artifact may add
+    // one (a Developer: technical artifacts in any status, requirements once approved -
+    // ArtifactVisibility); it is recorded under the role the reviewer acted as, which is how a
+    // Developer's design review is told apart from a Reviewer's approval.
     public async Task<ArtifactReviewResponse?> AddCommentReviewAsync(Guid id, string? comment, CancellationToken cancellationToken = default)
     {
         var artifact = await _db.Artifacts.FirstOrDefaultAsync(a => a.Id == id, cancellationToken);
@@ -282,6 +383,10 @@ public class ArtifactService : IArtifactService
         }
 
         await _projectAccess.EnsureMemberAsync(artifact.ProjectId, cancellationToken);
+        if (!_currentUser.CanSee(artifact))
+        {
+            return null;
+        }
 
         if (string.IsNullOrWhiteSpace(comment))
         {
@@ -310,7 +415,10 @@ public class ArtifactService : IArtifactService
 
     public async Task<IReadOnlyList<ArtifactReviewResponse>> GetReviewsAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        await EnsureAccessToArtifactAsync(id, cancellationToken);
+        if (!await EnsureAccessToArtifactAsync(id, cancellationToken))
+        {
+            return [];
+        }
 
         return await _db.ArtifactReviews
             .Where(r => r.ArtifactId == id)
@@ -321,16 +429,21 @@ public class ArtifactService : IArtifactService
 
     public async Task<IReadOnlyList<ArtifactRelationshipResponse>> GetRelationshipsAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        await EnsureAccessToArtifactAsync(id, cancellationToken);
+        if (!await EnsureAccessToArtifactAsync(id, cancellationToken))
+        {
+            return [];
+        }
 
+        // The related artifact's code and title are artifact data too, so the same visibility applies.
+        var visible = _db.Artifacts.VisibleTo(_currentUser);
         var outgoing = await _db.ArtifactRelationships
             .Where(r => r.SourceArtifactId == id)
-            .Join(_db.Artifacts, r => r.TargetArtifactId, a => a.Id, (r, a) => new { r.RelationshipType, Related = a, IsOutgoing = true })
+            .Join(visible, r => r.TargetArtifactId, a => a.Id, (r, a) => new { r.RelationshipType, Related = a, IsOutgoing = true })
             .ToListAsync(cancellationToken);
 
         var incoming = await _db.ArtifactRelationships
             .Where(r => r.TargetArtifactId == id)
-            .Join(_db.Artifacts, r => r.SourceArtifactId, a => a.Id, (r, a) => new { r.RelationshipType, Related = a, IsOutgoing = false })
+            .Join(visible, r => r.SourceArtifactId, a => a.Id, (r, a) => new { r.RelationshipType, Related = a, IsOutgoing = false })
             .ToListAsync(cancellationToken);
 
         return outgoing.Concat(incoming)
@@ -339,17 +452,136 @@ public class ArtifactService : IArtifactService
             .ToList();
     }
 
-    // GetVersionsAsync/GetRelationshipsAsync don't otherwise load the artifact, only its
-    // sub-records by ArtifactId - resolve just the ProjectId to check membership, and skip the
-    // check for an unknown id (that already existing behavior - an empty list, not 404 - is
-    // preserved rather than invented here).
-    private async Task EnsureAccessToArtifactAsync(Guid artifactId, CancellationToken cancellationToken)
+    // REAP-046 — "US-B depends on US-A" is stored as US-B -DependsOn-> US-A, the edge impact analysis
+    // already walks. A relationship, not content: like DerivedFrom objective links it creates no
+    // version and leaves status and ApprovedVersion alone.
+    public async Task<ArtifactRelationshipResponse?> AddDependencyAsync(Guid id, AddDependencyRequest request, CancellationToken cancellationToken = default)
     {
-        var projectId = await _db.Artifacts.Where(a => a.Id == artifactId).Select(a => (Guid?)a.ProjectId).FirstOrDefaultAsync(cancellationToken);
-        if (projectId is not null)
+        var story = await _db.Artifacts.FirstOrDefaultAsync(a => a.Id == id, cancellationToken);
+        if (story is null)
         {
-            await _projectAccess.EnsureMemberAsync(projectId.Value, cancellationToken);
+            return null;
         }
+
+        await _projectAccess.EnsureMemberAsync(story.ProjectId, cancellationToken);
+        if (!_currentUser.CanSee(story))
+        {
+            return null;
+        }
+
+        if (story.ArtifactType != ArtifactType.UserStory)
+        {
+            throw new RequestValidationException("Only a user story can have story dependencies.");
+        }
+
+        if (request.DependsOnArtifactId == id)
+        {
+            throw new RequestValidationException("A user story cannot depend on itself.");
+        }
+
+        // A missing, hidden or other-project target is answered the same way, so the endpoint can't
+        // be used to probe for artifacts the caller couldn't otherwise see.
+        var target = await _db.Artifacts.FirstOrDefaultAsync(a => a.Id == request.DependsOnArtifactId, cancellationToken);
+        if (target is null || target.ProjectId != story.ProjectId || !_currentUser.CanSee(target))
+        {
+            throw new RequestValidationException("The dependency must be a user story in the same project.");
+        }
+
+        if (target.ArtifactType != ArtifactType.UserStory)
+        {
+            throw new RequestValidationException("A user story can only depend on another user story.");
+        }
+
+        var projectArtifactIds = _db.Artifacts.Where(a => a.ProjectId == story.ProjectId).Select(a => a.Id);
+        var edges = await _db.ArtifactRelationships
+            .Where(r => r.RelationshipType == RelationshipType.DependsOn && projectArtifactIds.Contains(r.SourceArtifactId))
+            .Select(r => new { r.SourceArtifactId, r.TargetArtifactId })
+            .ToListAsync(cancellationToken);
+
+        if (edges.Any(e => e.SourceArtifactId == id && e.TargetArtifactId == target.Id))
+        {
+            throw new ConflictException($"{story.Code} already depends on {target.Code}.");
+        }
+
+        // The new edge closes a cycle if the target already (transitively) depends on this story.
+        var dependsOn = edges.ToLookup(e => e.SourceArtifactId, e => e.TargetArtifactId);
+        var seen = new HashSet<Guid> { target.Id };
+        var pending = new Queue<Guid>([target.Id]);
+        while (pending.Count > 0)
+        {
+            foreach (var next in dependsOn[pending.Dequeue()])
+            {
+                if (next == id)
+                {
+                    throw new ConflictException($"{target.Code} already depends on {story.Code}, directly or indirectly; the dependency would form a cycle.");
+                }
+
+                if (seen.Add(next))
+                {
+                    pending.Enqueue(next);
+                }
+            }
+        }
+
+        _db.ArtifactRelationships.Add(new ArtifactRelationship
+        {
+            Id = Guid.NewGuid(),
+            SourceArtifactId = story.Id,
+            TargetArtifactId = target.Id,
+            RelationshipType = RelationshipType.DependsOn,
+            CreatedAt = DateTime.UtcNow
+        });
+        await _db.SaveChangesAsync(cancellationToken);
+
+        return new ArtifactRelationshipResponse(target.Id, target.Code, target.Title, target.ArtifactType, RelationshipType.DependsOn, true);
+    }
+
+    public async Task<bool> RemoveDependencyAsync(Guid id, Guid targetId, CancellationToken cancellationToken = default)
+    {
+        var story = await _db.Artifacts.FirstOrDefaultAsync(a => a.Id == id, cancellationToken);
+        if (story is null)
+        {
+            return false;
+        }
+
+        await _projectAccess.EnsureMemberAsync(story.ProjectId, cancellationToken);
+        if (!_currentUser.CanSee(story) || story.ArtifactType != ArtifactType.UserStory)
+        {
+            return false;
+        }
+
+        // Only a story-to-story DependsOn link is removed here; no other relationship between the pair.
+        var storyIds = _db.Artifacts.Where(a => a.ProjectId == story.ProjectId && a.ArtifactType == ArtifactType.UserStory).Select(a => a.Id);
+        var links = await _db.ArtifactRelationships
+            .Where(r => r.SourceArtifactId == id && r.TargetArtifactId == targetId && r.RelationshipType == RelationshipType.DependsOn
+                        && storyIds.Contains(r.TargetArtifactId))
+            .ToListAsync(cancellationToken);
+        if (links.Count == 0)
+        {
+            return false;
+        }
+
+        _db.ArtifactRelationships.RemoveRange(links);
+        await _db.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    // GetVersionsAsync/GetRelationshipsAsync don't otherwise load the artifact, only its
+    // sub-records by ArtifactId - resolve just the ProjectId, type and status to check membership and
+    // visibility. An unknown id keeps its existing behavior (an empty list, not 404), and an
+    // artifact the caller may not see (ArtifactVisibility) is answered the same way.
+    private async Task<bool> EnsureAccessToArtifactAsync(Guid artifactId, CancellationToken cancellationToken)
+    {
+        var artifact = await _db.Artifacts.Where(a => a.Id == artifactId)
+            .Select(a => new { a.ProjectId, a.ArtifactType, a.Status })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (artifact is null)
+        {
+            return false;
+        }
+
+        await _projectAccess.EnsureMemberAsync(artifact.ProjectId, cancellationToken);
+        return _currentUser.CanSee(artifact.ArtifactType, artifact.Status);
     }
 
     private async Task SaveNewVersionAsync(Artifact artifact, string? reason, ArtifactOrigin changeOrigin, CancellationToken cancellationToken)

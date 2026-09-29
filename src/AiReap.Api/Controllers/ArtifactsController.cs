@@ -14,6 +14,7 @@ public class ArtifactsController : ControllerBase
 {
     private const string WriterRoles = $"{Roles.Administrator},{Roles.BusinessAnalyst}";
     private const string ReviewerRoles = $"{Roles.Administrator},{Roles.BusinessAnalyst},{Roles.Reviewer}";
+    private const string NfrConfirmerRoles = $"{Roles.BusinessAnalyst},{Roles.Reviewer}";
     // §4 — "QA: view requirements and generate/manage test cases". QA may author test cases only;
     // Update enforces that restriction per artifact.
     private const string WriterOrQaRoles = $"{Roles.Administrator},{Roles.BusinessAnalyst},{Roles.QA}";
@@ -90,6 +91,17 @@ public class ArtifactsController : ControllerBase
         return updated is null ? NotFound() : Ok(updated);
     }
 
+    // REAP-045 — confirming an NFR's proposed target. Requirement validation, not approval, so
+    // Administrator is not included; the service also refuses the NFR's own author.
+    [HttpPost("api/artifacts/{id:guid}/nfr-confirmation")]
+    [Authorize(Roles = NfrConfirmerRoles)]
+    [Capability("Review", "Confirm an NFR target (not one they authored)", 72)]
+    public async Task<ActionResult<ArtifactResponse>> ConfirmNfrTarget(Guid id, ConfirmNfrTargetRequest request, CancellationToken cancellationToken)
+    {
+        var updated = await _artifacts.ConfirmNfrTargetAsync(id, request, cancellationToken);
+        return updated is null ? NotFound() : Ok(updated);
+    }
+
     [HttpGet("api/artifacts/{id:guid}/versions")]
     public async Task<ActionResult<IReadOnlyList<ArtifactVersionResponse>>> GetVersions(Guid id, CancellationToken cancellationToken)
     {
@@ -147,6 +159,24 @@ public class ArtifactsController : ControllerBase
     public async Task<ActionResult<IReadOnlyList<ArtifactRelationshipResponse>>> GetRelationships(Guid id, CancellationToken cancellationToken)
     {
         return Ok(await _artifacts.GetRelationshipsAsync(id, cancellationToken));
+    }
+
+    // REAP-046 — user story {id} depends on another user story. A relationship, not an edit: no new
+    // version, no change to status or approval.
+    [HttpPost("api/artifacts/{id:guid}/dependencies")]
+    [Authorize(Roles = WriterRoles)]
+    [Capability("Author", "Link user story dependencies", 52)]
+    public async Task<ActionResult<ArtifactRelationshipResponse>> AddDependency(Guid id, AddDependencyRequest request, CancellationToken cancellationToken)
+    {
+        var added = await _artifacts.AddDependencyAsync(id, request, cancellationToken);
+        return added is null ? NotFound() : StatusCode(StatusCodes.Status201Created, added);
+    }
+
+    [HttpDelete("api/artifacts/{id:guid}/dependencies/{targetId:guid}")]
+    [Authorize(Roles = WriterRoles)]
+    public async Task<ActionResult> RemoveDependency(Guid id, Guid targetId, CancellationToken cancellationToken)
+    {
+        return await _artifacts.RemoveDependencyAsync(id, targetId, cancellationToken) ? NoContent() : NotFound();
     }
 
     // §13 — only valid when id is a UserStory artifact.

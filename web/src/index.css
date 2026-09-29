@@ -1087,9 +1087,11 @@ pre {
   color: var(--warning-strong);
 }
 
+/* Outlined, not the filled green of the Approved status pill: confirmation is a separate state. */
 .assumption-pill.assumption-confirmed {
-  background: var(--success-soft);
-  color: var(--success-strong);
+  background: transparent;
+  color: var(--primary);
+  box-shadow: inset 0 0 0 1px currentColor;
 }
 
 .kind-pill {

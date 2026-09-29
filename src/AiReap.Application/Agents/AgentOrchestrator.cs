@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using AiReap.Application.Common;
 using AiReap.Application.Persistence;
 using AiReap.Domain.Common;
@@ -85,7 +86,7 @@ public class AgentOrchestrator : IAgentOrchestrator
         }
 
         await ExecuteStageAsync(run, run.Stages.OrderBy(s => s.Order).First(), cancellationToken);
-        return ToResponse(run);
+        return await RespondAsync(run, cancellationToken);
     }
 
     public async Task<AgentRunResponse?> GetAsync(Guid runId, CancellationToken cancellationToken = default)
@@ -97,7 +98,7 @@ public class AgentOrchestrator : IAgentOrchestrator
         }
 
         await _projectAccess.EnsureMemberAsync(run.ProjectId, cancellationToken);
-        return ToResponse(run);
+        return await RespondAsync(run, cancellationToken);
     }
 
     public async Task<IReadOnlyList<AgentRunResponse>> GetForProjectAsync(Guid projectId, CancellationToken cancellationToken = default)
@@ -109,7 +110,8 @@ public class AgentOrchestrator : IAgentOrchestrator
             .Take(50)
             .ToListAsync(cancellationToken);
 
-        return runs.Select(ToResponse).ToList();
+        var hidden = await HiddenArtifactsAsync(projectId, cancellationToken);
+        return runs.Select(r => ToResponse(r, hidden)).ToList();
     }
 
     public async Task<AgentRunSummaryResponse> GetSummaryAsync(Guid projectId, CancellationToken cancellationToken = default)
@@ -202,7 +204,7 @@ public class AgentOrchestrator : IAgentOrchestrator
             run.Status = AgentRunStatus.Rejected;
             run.CompletedAt = stage.DecidedAt;
             await SaveClaimAsync(cancellationToken);
-            return ToResponse(run);
+            return await RespondAsync(run, cancellationToken);
         }
 
         stage.Status = AgentStageStatus.Approved;
@@ -212,13 +214,13 @@ public class AgentOrchestrator : IAgentOrchestrator
             run.Status = AgentRunStatus.Completed;
             run.CompletedAt = stage.DecidedAt;
             await SaveClaimAsync(cancellationToken);
-            return ToResponse(run);
+            return await RespondAsync(run, cancellationToken);
         }
 
         run.Status = AgentRunStatus.Running;
         await SaveClaimAsync(cancellationToken); // claim the decision before running anything
         await ExecuteStageAsync(run, next, cancellationToken);
-        return ToResponse(run);
+        return await RespondAsync(run, cancellationToken);
     }
 
     public async Task<AgentRunResponse> RetryAsync(Guid runId, CancellationToken cancellationToken = default)
@@ -234,7 +236,7 @@ public class AgentOrchestrator : IAgentOrchestrator
 
         run.Status = AgentRunStatus.Running;
         await ExecuteStageAsync(run, stage, cancellationToken);
-        return ToResponse(run);
+        return await RespondAsync(run, cancellationToken);
     }
 
     // Runs one agent step and parks the run at the human checkpoint (or Failed). This is the only
@@ -301,20 +303,75 @@ public class AgentOrchestrator : IAgentOrchestrator
     private Task<AgentRun?> LoadRunAsync(Guid runId, CancellationToken cancellationToken) =>
         _db.AgentRuns.Include(r => r.Stages).FirstOrDefaultAsync(r => r.Id == runId, cancellationToken);
 
-    private AgentRunResponse ToResponse(AgentRun run) => new(
-        run.Id, run.ProjectId, run.RequirementSourceId, run.Status, run.StartedByUserId, run.StartedAt, run.CompletedAt,
-        run.Stages.OrderBy(s => s.Order).Select(ToResponse).ToList(), run.ProjectStatusAtStart);
+    // §4 - a step's output lists the artifacts it produced (code, title) and findings that quote
+    // artifact codes. A caller limited by ArtifactVisibility (a Developer) gets the same run with the
+    // artifacts they may not see (unapproved requirements) left out, and with findings that name one
+    // replaced by a count. S2 - the Requirements agent's findings are its analysis of the raw
+    // requirement source (actors, capabilities, data elements, notes), so that caller gets none of
+    // them. Step statuses, metrics and the approve/reject workflow are unchanged.
+    private sealed record HiddenArtifacts(IReadOnlySet<Guid> Ids, Regex? Codes);
 
-    private AgentStepResponse ToResponse(AgentStageRun stage)
+    private async Task<HiddenArtifacts?> HiddenArtifactsAsync(Guid projectId, CancellationToken cancellationToken)
+    {
+        if (!_currentUser.SeesOnlyApprovedArtifacts())
+        {
+            return null;
+        }
+
+        var hidden = (await _db.Artifacts.AsNoTracking()
+                .Where(a => a.ProjectId == projectId)
+                .Select(a => new { a.Id, a.Code, a.ArtifactType, a.Status })
+                .ToListAsync(cancellationToken))
+            .Where(a => !_currentUser.CanSee(a.ArtifactType, a.Status))
+            .ToList();
+
+        var codes = hidden.Count == 0
+            ? null
+            : new Regex($@"\b(?:{string.Join("|", hidden.Select(a => Regex.Escape(a.Code)))})\b");
+        return new HiddenArtifacts(hidden.Select(a => a.Id).ToHashSet(), codes);
+    }
+
+    private async Task<AgentRunResponse> RespondAsync(AgentRun run, CancellationToken cancellationToken) =>
+        ToResponse(run, await HiddenArtifactsAsync(run.ProjectId, cancellationToken));
+
+    private AgentRunResponse ToResponse(AgentRun run, HiddenArtifacts? hidden) => new(
+        run.Id, run.ProjectId, run.RequirementSourceId, run.Status, run.StartedByUserId, run.StartedAt, run.CompletedAt,
+        run.Stages.OrderBy(s => s.Order).Select(s => ToResponse(s, hidden)).ToList(), run.ProjectStatusAtStart);
+
+    private AgentStepResponse ToResponse(AgentStageRun stage, HiddenArtifacts? hidden)
     {
         var agent = _agents.Single(a => a.Kind == stage.Agent);
         var output = stage.Status is AgentStageStatus.Pending or AgentStageStatus.Running or AgentStageStatus.Failed
             ? null
             : JsonSerializer.Deserialize<AgentOutput>(stage.OutputJson, JsonOptions);
+        if (output is not null && hidden is not null)
+        {
+            output = Redact(output, hidden, rawSourceFindings: stage.Agent == AgentKind.Requirements);
+        }
 
         return new AgentStepResponse(
             stage.Id, stage.Agent, stage.Order, agent.DisplayName, stage.Status, output, stage.Error,
             agent.ApproverRoles, stage.StartedAt, stage.FinishedAt, stage.DecidedByUserId, stage.DecidedAt, stage.DecisionComment,
             agent.LifecycleStages);
+    }
+
+    private static AgentOutput Redact(AgentOutput output, HiddenArtifacts hidden, bool rawSourceFindings)
+    {
+        var findings = rawSourceFindings
+            ? []
+            : output.Findings.Where(f => hidden.Codes is null || !hidden.Codes.IsMatch(f)).ToList();
+        var omitted = output.Findings.Count - findings.Count;
+        if (omitted > 0)
+        {
+            findings.Add(rawSourceFindings
+                ? $"{omitted} finding(s) not shown: they analyse the raw requirement source."
+                : $"{omitted} finding(s) not shown: they refer to artifacts that are not approved yet.");
+        }
+
+        return output with
+        {
+            ProducedArtifacts = output.ProducedArtifacts.Where(a => !hidden.Ids.Contains(a.Id)).ToList(),
+            Findings = findings
+        };
     }
 }

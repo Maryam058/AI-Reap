@@ -1,4 +1,5 @@
 using AiReap.Application.Ai;
+using AiReap.Application.Ai.Pipeline;
 using AiReap.Application.Common;
 using AiReap.Application.Lifecycle;
 using AiReap.Domain.Common;
@@ -22,6 +23,19 @@ public sealed class ApplicationExceptionHandler(ILogger<ApplicationExceptionHand
         }
 
         var (status, code, title, detail, retryable, extra) = mapped.Value;
+
+        // A source analysed in parts (GenerationSupport.CallAiAndParseChunkedAsync): name the part
+        // that failed, also where the detail above is a fixed sentence.
+        if (exception.Data[GenerationSupport.FailedPartKey] is int failedPart && exception.Data[GenerationSupport.PartCountKey] is int partCount)
+        {
+            extra["failedPart"] = failedPart;
+            extra["partCount"] = partCount;
+            var label = $"Part {failedPart} of {partCount} of the requirement source";
+            if (!detail.StartsWith(label, StringComparison.Ordinal))
+            {
+                detail = $"{label} failed; nothing was saved. {detail}";
+            }
+        }
 
         if (status >= 500)
         {

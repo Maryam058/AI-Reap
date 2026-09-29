@@ -47,7 +47,11 @@ public record LifecycleActions(
     bool CanDecide,
     bool CanWithdraw,
     bool CanRollback,
-    bool CanOverride);
+    bool CanOverride,
+    // The caller may advance/submit or approve only as an Administrator standing in for the stage
+    // owner or the Reviewer: allowed solely as an override, so a reason is required.
+    bool AdvanceIsOverride = false,
+    bool DecideIsOverride = false);
 
 public record ProjectLifecycleState(
     Guid ProjectId,

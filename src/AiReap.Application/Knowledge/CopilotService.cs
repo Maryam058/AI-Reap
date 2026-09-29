@@ -71,7 +71,8 @@ public partial class CopilotService : ICopilotService
         var project = await _db.Projects.FirstOrDefaultAsync(p => p.Id == projectId, cancellationToken)
             ?? throw new KeyNotFoundException($"Project {projectId} not found.");
 
-        var artifacts = await _db.Artifacts.Where(a => a.ProjectId == projectId).ToListAsync(cancellationToken);
+        // Every prompt block below is built from this list, so the assistant only answers from artifacts the caller may see.
+        var artifacts = await _db.Artifacts.VisibleTo(_currentUser).Where(a => a.ProjectId == projectId).ToListAsync(cancellationToken);
 
         var factsBlock = await BuildStructuredFactsAsync(artifacts, cancellationToken);
         var contentBlock = BuildArtifactContent(artifacts, question);
@@ -298,6 +299,13 @@ public partial class CopilotService : ICopilotService
 
     private async Task<(string Block, IReadOnlyList<RetrievedChunk> Chunks)> RetrieveChunksAsync(Guid projectId, string question, CancellationToken cancellationToken)
     {
+        // S2 - document excerpts are raw source text; a caller who may not read it gets none, so
+        // neither the answer nor its citations can quote it.
+        if (!_currentUser.CanReadRawSources())
+        {
+            return ("(project documents are not available to this user; answer from the artifacts above)", []);
+        }
+
         var result = await _retriever.RetrieveAsync(projectId, question, TopKChunks, cancellationToken);
         if (!result.HasDocuments)
         {

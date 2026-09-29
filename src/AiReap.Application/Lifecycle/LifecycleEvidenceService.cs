@@ -35,11 +35,13 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
 
     private readonly IAiReapDbContext _db;
     private readonly IUserRoleDirectory _roles;
+    private readonly ICurrentUser _currentUser;
 
-    public LifecycleEvidenceService(IAiReapDbContext db, IUserRoleDirectory roles)
+    public LifecycleEvidenceService(IAiReapDbContext db, IUserRoleDirectory roles, ICurrentUser currentUser)
     {
         _db = db;
         _roles = roles;
+        _currentUser = currentUser;
     }
 
     public async Task<IReadOnlyList<StageEvidence>> GetAsync(Guid projectId, CancellationToken cancellationToken = default)
@@ -118,12 +120,22 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
                     .Count(m => memberRoles.TryGetValue(m.UserId, out var roles) && roles.Contains(Roles.BusinessAnalyst)),
                 openNotices.Where(n => n.ProjectId == p.Id).Select(n => n.AffectedArtifactId).ToHashSet(),
                 reviewedVersions,
-                latestOutcome)));
+                latestOutcome),
+                _currentUser.CanSee));
     }
 
-    // The latest record per artifact is its current outcome (records are append-only).
+    // The role whose record is normal lifecycle evidence for an outcome: a Developer for task
+    // outcomes, QA for test outcomes.
+    public static string EvidenceRole(WorkOutcome outcome) =>
+        outcome is WorkOutcome.TaskCompleted or WorkOutcome.TaskReopened ? Roles.Developer : Roles.QA;
+
+    // The latest record per artifact is its current outcome (records are append-only). Only records
+    // made under the responsible role count: an Administrator may record work (it stays visible and
+    // audited), but it is not Developer/QA evidence - bypassing missing evidence is the explicit
+    // Administrator override on a stage transition.
     public static IReadOnlyDictionary<Guid, WorkOutcome> LatestOutcomes(IEnumerable<ArtifactWorkRecord> records) =>
         records
+            .Where(w => w.RecordedByRole == EvidenceRole(w.Outcome))
             .GroupBy(w => w.ArtifactId)
             .ToDictionary(g => g.Key, g => g.OrderByDescending(w => w.RecordedAt).ThenByDescending(w => w.Id).First().Outcome);
 
@@ -139,7 +151,10 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
         HashSet<(Guid ArtifactId, int Version)> DeveloperReviewedVersions,
         IReadOnlyDictionary<Guid, WorkOutcome> LatestOutcome);
 
-    private static IReadOnlyList<StageEvidence> Evaluate(ProjectEvidence e)
+    // Pass/fail and counts are the same for every caller. Only the artifact codes quoted in a failing
+    // check's detail follow ArtifactVisibility: an artifact the caller may not see (for a Developer,
+    // an unapproved requirement) is counted but not named.
+    private static IReadOnlyList<StageEvidence> Evaluate(ProjectEvidence e, Func<Artifact, bool> canSee)
     {
         var project = e.Project;
         var byId = e.All.ToDictionary(a => a.Id);
@@ -220,34 +235,34 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
                 Ran(Labels.QualityRun, QualityOperation, "Requirement quality analysis"),
                 Ran(Labels.ConflictRun, ConflictOperation, "Conflict detection"),
                 ConflictsResolved(),
-                Chain("Every functional requirement has a story and acceptance criteria", frs, stories, criteria, designs, tasks, tests, e.Relationships, full: false)),
+                Chain("Every functional requirement has a story and acceptance criteria", frs, stories, criteria, designs, tasks, tests, e.Relationships, full: false, canSee)),
 
             Stage(ProjectStatus.Design,
                 AllApproved(Labels.DesignApproved, designs, "solution designs"),
                 AllApproved(Labels.ApiApproved, Of(ArtifactType.ApiSpecification), "API specifications"),
                 AllApproved(Labels.DatabaseApproved, Of(ArtifactType.DataEntity), "data entities"),
-                DeveloperReviewed(designSet, e.DeveloperReviewedVersions),
-                OpenNotices("No open impact notices on design", designSet, e.OpenNoticeArtifactIds, "design artifact(s)"),
-                BaselineIntact(live)),
+                DeveloperReviewed(designSet, e.DeveloperReviewedVersions, canSee),
+                OpenNotices("No open impact notices on design", designSet, e.OpenNoticeArtifactIds, "design artifact(s)", canSee),
+                BaselineIntact(live, canSee)),
 
             Stage(ProjectStatus.Approved,
                 AllApproved(Labels.TasksApproved, tasks, "implementation tasks"),
-                Every("Every approved functional requirement has a task", approvedFrs, fr => TasksOf(fr).Count > 0, "have no implementation task", "approved functional requirements")),
+                Every("Every approved functional requirement has a task", approvedFrs, fr => TasksOf(fr).Count > 0, "have no implementation task", "approved functional requirements", canSee)),
 
             Stage(ProjectStatus.Implementation,
-                Every("Implementation tasks completed", tasks, t => Is(t.Id, WorkOutcome.TaskCompleted), "are not marked complete by a Developer", "implementation tasks"),
+                Every("Implementation tasks completed", tasks, t => Is(t.Id, WorkOutcome.TaskCompleted), "are not marked complete by a Developer", "implementation tasks", canSee),
                 Count(Labels.FrsImplemented, approvedFrs, implemented.Count, "implemented")),
 
             Stage(ProjectStatus.Testing,
                 AllApproved(Labels.TestsApproved, tests, "test cases"),
                 // Only approved requirements need tests; rejected or not-yet-approved ones are not in scope.
                 Every("Every approved functional requirement has an approved test case", approvedFrs,
-                    fr => TestsOf(fr).Any(t => ArtifactStatusTransitions.IsApprovedOrLater(byId[t].Status)), "have no approved test case", "approved functional requirements"),
-                Every("Test cases passed", tests, t => Is(t.Id, WorkOutcome.TestPassed), "have not passed (no QA outcome, failed or blocked)", "test cases"),
+                    fr => TestsOf(fr).Any(t => ArtifactStatusTransitions.IsApprovedOrLater(byId[t].Status)), "have no approved test case", "approved functional requirements", canSee),
+                Every("Test cases passed", tests, t => Is(t.Id, WorkOutcome.TestPassed), "have not passed (no QA outcome, failed or blocked)", "test cases", canSee),
                 Count(Labels.FrsVerified, approvedFrs,
                     implemented.Count(fr => TestsOf(fr) is { Count: > 0 } linked && linked.All(t => Is(t, WorkOutcome.TestPassed))), "verified"),
-                Chain(Labels.FullyTraced, approvedFrs, stories, criteria, designs, tasks, tests, e.Relationships, full: true),
-                OpenNotices("No open impact notices", live, e.OpenNoticeArtifactIds, "artifact(s)"),
+                Chain(Labels.FullyTraced, approvedFrs, stories, criteria, designs, tasks, tests, e.Relationships, full: true, canSee),
+                OpenNotices("No open impact notices", live, e.OpenNoticeArtifactIds, "artifact(s)", canSee),
                 ConflictsResolved()),
 
             Stage(ProjectStatus.Completed),
@@ -299,17 +314,17 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
             : new(label, false, $"{pending} of {items.Count} {noun} still need approval.");
     }
 
-    private static SdlcCheck Every(string label, IReadOnlyList<Artifact> items, Func<Artifact, bool> ok, string failure, string noun)
+    private static SdlcCheck Every(string label, IReadOnlyList<Artifact> items, Func<Artifact, bool> ok, string failure, string noun, Func<Artifact, bool> canSee)
     {
         if (items.Count == 0)
         {
             return new(label, false, $"No {noun} yet.");
         }
 
-        var bad = items.Where(a => !ok(a)).OrderBy(a => a.Code).Select(a => a.Code).ToList();
+        var bad = items.Where(a => !ok(a)).ToList();
         return bad.Count == 0
             ? new(label, true, $"All {items.Count} {noun} satisfy this.")
-            : new(label, false, $"{bad.Count} of {items.Count} {failure}: {Shown(bad)}.");
+            : new(label, false, $"{bad.Count} of {items.Count} {failure}{Listing(bad, canSee)}.");
     }
 
     private static SdlcCheck Count(string label, IReadOnlyList<Artifact> frs, int reached, string word)
@@ -326,7 +341,7 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
 
     // §17 — distinct from approval: a review recorded under the Developer role on the artifact's
     // current version. Editing the artifact creates a new version, which needs a new review.
-    private static SdlcCheck DeveloperReviewed(IReadOnlyList<Artifact> designSet, HashSet<(Guid, int)> reviewed)
+    private static SdlcCheck DeveloperReviewed(IReadOnlyList<Artifact> designSet, HashSet<(Guid, int)> reviewed, Func<Artifact, bool> canSee)
     {
         const string label = "Developer review of the current design";
         if (designSet.Count == 0)
@@ -334,30 +349,30 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
             return new(label, false, "No design artifacts yet.");
         }
 
-        var missing = designSet.Where(a => !reviewed.Contains((a.Id, a.CurrentVersion))).OrderBy(a => a.Code).Select(a => a.Code).ToList();
+        var missing = designSet.Where(a => !reviewed.Contains((a.Id, a.CurrentVersion))).ToList();
         return missing.Count == 0
             ? new(label, true, $"A Developer has reviewed the current version of all {designSet.Count} design artifacts.")
-            : new(label, false, $"{missing.Count} of {designSet.Count} design artifacts have no Developer review of their current version: {Shown(missing)}.");
+            : new(label, false, $"{missing.Count} of {designSet.Count} design artifacts have no Developer review of their current version{Listing(missing, canSee)}.");
     }
 
-    private static SdlcCheck OpenNotices(string label, IReadOnlyList<Artifact> scope, HashSet<Guid> open, string noun)
+    private static SdlcCheck OpenNotices(string label, IReadOnlyList<Artifact> scope, HashSet<Guid> open, string noun, Func<Artifact, bool> canSee)
     {
-        var flagged = scope.Where(a => open.Contains(a.Id)).OrderBy(a => a.Code).Select(a => a.Code).ToList();
+        var flagged = scope.Where(a => open.Contains(a.Id)).ToList();
         return flagged.Count == 0
             ? new(label, true, "No unacknowledged impact notices.")
-            : new(label, false, $"{flagged.Count} {noun} have unacknowledged impact notices: {Shown(flagged)}.");
+            : new(label, false, $"{flagged.Count} {noun} have unacknowledged impact notices{Listing(flagged, canSee)}.");
     }
 
     // The requirements approved during Analysis must not have been reopened (edited back into review).
-    private static SdlcCheck BaselineIntact(IReadOnlyList<Artifact> live)
+    private static SdlcCheck BaselineIntact(IReadOnlyList<Artifact> live, Func<Artifact, bool> canSee)
     {
         const string label = "Requirements baseline still approved";
         var reopened = live
             .Where(a => RequirementTypes.Contains(a.ArtifactType) && !ArtifactStatusTransitions.IsApprovedOrLater(a.Status))
-            .OrderBy(a => a.Code).Select(a => a.Code).ToList();
+            .ToList();
         return reopened.Count == 0
             ? new(label, true, "Every requirement, rule, story and acceptance criterion is still approved.")
-            : new(label, false, $"{reopened.Count} requirement artifact(s) are not approved: {Shown(reopened)}.");
+            : new(label, false, $"{reopened.Count} requirement artifact(s) are not approved{Listing(reopened, canSee)}.");
     }
 
     // §21 — every functional requirement traced to a story and acceptance criteria (and, when `full`,
@@ -365,7 +380,7 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
     // source-level fallback for design artifacts.
     private static SdlcCheck Chain(
         string label, List<Artifact> frs, List<Artifact> stories, List<Artifact> criteria, List<Artifact> designs,
-        List<Artifact> tasks, List<Artifact> tests, List<ArtifactRelationship> relationships, bool full)
+        List<Artifact> tasks, List<Artifact> tests, List<ArtifactRelationship> relationships, bool full, Func<Artifact, bool> canSee)
     {
         if (frs.Count == 0)
         {
@@ -377,7 +392,7 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
         var taskIds = tasks.Select(a => a.Id).ToHashSet();
         var testIds = tests.Select(a => a.Id).ToHashSet();
 
-        var gaps = new List<string>();
+        var gaps = new List<(Artifact Fr, string Text)>();
         foreach (var fr in frs.OrderBy(f => f.Code))
         {
             var frStories = relationships
@@ -400,7 +415,7 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
 
             if (missing.Count > 0)
             {
-                gaps.Add($"{fr.Code} (no {string.Join(", ", missing)})");
+                gaps.Add((fr, $"{fr.Code} (no {string.Join(", ", missing)})"));
             }
         }
 
@@ -411,10 +426,29 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
                 : $"All {frs.Count} functional requirements have a story with acceptance criteria.");
         }
 
-        var shown = string.Join("; ", gaps.Take(3)) + (gaps.Count > 3 ? $"; and {gaps.Count - 3} more" : "");
+        // Gaps on requirements the caller may not see are counted, never named.
+        var visible = gaps.Where(g => canSee(g.Fr)).Select(g => g.Text).ToList();
+        if (visible.Count == 0)
+        {
+            return new(label, false, $"{gaps.Count} of {frs.Count} have gaps (not listed until approved).");
+        }
+
+        var rest = gaps.Count - Math.Min(visible.Count, 3);
+        var shown = string.Join("; ", visible.Take(3)) + (rest > 0 ? $"; and {rest} more" : "");
         return new(label, false, $"{gaps.Count} of {frs.Count} have gaps: {shown}.");
     }
 
-    private static string Shown(List<string> codes) =>
-        string.Join(", ", codes.Take(5)) + (codes.Count > 5 ? $" and {codes.Count - 5} more" : "");
+    // ": CODE, CODE and N more" naming only the artifacts the caller may see (ArtifactVisibility);
+    // the rest are counted in "more", never named.
+    private static string Listing(IReadOnlyList<Artifact> items, Func<Artifact, bool> canSee)
+    {
+        var codes = items.Where(canSee).OrderBy(a => a.Code).Select(a => a.Code).ToList();
+        if (codes.Count == 0)
+        {
+            return items.Count == 0 ? "" : " (not listed until approved)";
+        }
+
+        var rest = items.Count - Math.Min(codes.Count, 5);
+        return ": " + string.Join(", ", codes.Take(5)) + (rest > 0 ? $" and {rest} more" : "");
+    }
 }

@@ -80,7 +80,14 @@ function App() {
                     </ProtectedRoute>
                   }
                 />
-                <Route path="/settings" element={<SettingsPage />} />
+                <Route
+                  path="/settings"
+                  element={
+                    <ProtectedRoute role="Administrator">
+                      <SettingsPage />
+                    </ProtectedRoute>
+                  }
+                />
               </Route>
 
               <Route path="*" element={<Navigate to="/dashboard" replace />} />

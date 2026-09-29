@@ -15,7 +15,8 @@ namespace AiReap.Application.Artifacts;
 // ArtifactStatusTransitions.CanSystemPromote): Approved -> Implemented once every linked task is
 // complete, Implemented -> Verified once every linked test case has passed. As before there is no
 // automatic demotion; lifecycle evidence reads the records directly, so a reopened task or failed
-// test still blocks the stage even while the requirement's status lags.
+// test still blocks the stage even while the requirement's status lags. An Administrator may record
+// work too, but only Developer/QA records are evidence (LifecycleEvidenceService.LatestOutcomes).
 public class ArtifactWorkService : IArtifactWorkService
 {
     private readonly IAiReapDbContext _db;
@@ -79,6 +80,10 @@ public class ArtifactWorkService : IArtifactWorkService
         var artifact = await _db.Artifacts.FirstOrDefaultAsync(a => a.Id == artifactId, cancellationToken)
             ?? throw new KeyNotFoundException($"Artifact {artifactId} not found.");
         await _projectAccess.EnsureMemberAsync(artifact.ProjectId, cancellationToken);
+        if (!_currentUser.CanSee(artifact))
+        {
+            throw new KeyNotFoundException($"Artifact {artifactId} not found.");
+        }
 
         var records = await _db.ArtifactWorkRecords
             .Where(w => w.ArtifactId == artifactId)

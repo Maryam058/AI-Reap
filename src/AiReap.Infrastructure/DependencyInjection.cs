@@ -2,6 +2,7 @@ using AiReap.Application.Common;
 using AiReap.Application.Ai;
 using AiReap.Application.Files;
 using AiReap.Application.Persistence;
+using AiReap.Application.Settings;
 using AiReap.Infrastructure.Ai;
 using AiReap.Infrastructure.Files;
 using AiReap.Infrastructure.Identity;
@@ -63,6 +64,7 @@ public static class DependencyInjection
         services.AddSingleton<AiProviderCooldown>();
         services.AddScoped<IAiChatClient>(ResolveAiChatClient);
         services.AddScoped<IAiHealthCheckService, AiHealthCheckService>();
+        services.AddScoped<ISystemSettingsService, SystemSettingsService>();
 
         services.Configure<OpenAiOptions>(configuration.GetSection(OpenAiOptions.SectionName));
 

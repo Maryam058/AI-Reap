@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { projectsApi } from '../api/projects';
-import type { Stakeholder } from '../api/types';
+import { ROLES, ROLE_LABELS, type Stakeholder, type UserAccount } from '../api/types';
 import { apiErrorText } from '../lib/errors';
 import { useToast } from '../context/ToastContext';
 import { Avatar } from './ui/Avatar';
@@ -12,6 +12,8 @@ import { TextField } from './ui/TextField';
 import { IconEdit, IconPlus, IconTrash, IconUsers } from './icons';
 
 const emptyForm = { name: '', roleInProject: '', contactInfo: '' };
+const roleOptions = ROLES.map((r) => ROLE_LABELS[r] ?? r);
+const EXTERNAL = '__external__';
 
 /** Stakeholder register for a project: list, add, edit, remove. Uses the existing stakeholder endpoints. */
 export function StakeholdersPanel({
@@ -37,6 +39,12 @@ export function StakeholdersPanel({
   const [removing, setRemoving] = useState<Stakeholder | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  // The stakeholder is picked from active users of the chosen role, via the BA/Admin stakeholder
+  // lookup (not the Administrator-only /api/users). If it fails, the free-text name field is used.
+  const [users, setUsers] = useState<UserAccount[] | null>(null);
+  const [usersFailed, setUsersFailed] = useState(false);
+  // External stakeholders (sponsors, customers...) aren't AI-REAP users: typed by name instead.
+  const [external, setExternal] = useState(false);
 
   const load = useCallback(async () => {
     setLoadError(false);
@@ -53,8 +61,20 @@ export function StakeholdersPanel({
     void load();
   }, [load]);
 
+  useEffect(() => {
+    if (!canManage || !editing || users || usersFailed) return;
+    projectsApi.getStakeholderCandidates(projectId, token).then(setUsers, () => setUsersFailed(true));
+  }, [canManage, editing, users, usersFailed, projectId, token]);
+
+  const usersForRole = (users ?? []).filter((u) => u.isActive && u.role && (ROLE_LABELS[u.role] ?? u.role) === form.roleInProject);
+  const pickUsers = canManage && users !== null;
+  // Options are keyed by user id (display names aren't unique); an existing stakeholder is matched
+  // back to a user by name + email, otherwise its name is kept as its own option.
+  const selectedUser = usersForRole.find((u) => u.displayName === form.name && u.email === form.contactInfo);
+
   const openDialog = (s: Stakeholder | 'new') => {
     setEditing(s);
+    setExternal(false);
     setFormError(null);
     setForm(s === 'new' ? emptyForm : { name: s.name, roleInProject: s.roleInProject ?? '', contactInfo: s.contactInfo ?? '' });
   };
@@ -196,12 +216,81 @@ export function StakeholdersPanel({
       {editing && (
         <Dialog
           title={editing === 'new' ? 'Add stakeholder' : 'Edit stakeholder'}
-          description="Stakeholders are recorded against this project only."
+          description="Adding a stakeholder does not grant project access. To give an AI-REAP user access to this project, add them under Project Members."
           onClose={() => !saving && setEditing(null)}
         >
           <form className="dialog-form" onSubmit={onSave} noValidate>
-            <TextField id="sh-name" label="Name *" value={form.name} onChange={(v) => setForm({ ...form, name: v })} placeholder="Full name" error={formError === 'Name is required.' ? formError : undefined} data-autofocus />
-            <TextField id="sh-role" label="Role in project" value={form.roleInProject} onChange={(v) => setForm({ ...form, roleInProject: v })} placeholder="e.g. Sponsor, End user" />
+            <label className="field" htmlFor="sh-role">
+              <span className="field-label">Role in project</span>
+              <select
+                id="sh-role"
+                className="select-input"
+                value={form.roleInProject}
+                onChange={(e) => setForm(pickUsers ? { ...form, roleInProject: e.target.value, name: '', contactInfo: '' } : { ...form, roleInProject: e.target.value })}
+                data-autofocus
+              >
+                <option value="">Select a role</option>
+                {/* Keep a legacy free-text role selectable when editing an older stakeholder. */}
+                {form.roleInProject && !roleOptions.includes(form.roleInProject) && <option value={form.roleInProject}>{form.roleInProject}</option>}
+                {roleOptions.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {pickUsers && !external ? (
+              <label className="field" htmlFor="sh-name">
+                <span className="field-label">Name *</span>
+                <select
+                  id="sh-name"
+                  className="select-input"
+                  value={selectedUser?.id ?? (form.name ? `name:${form.name}` : '')}
+                  disabled={!form.roleInProject}
+                  onChange={(e) => {
+                    if (e.target.value === EXTERNAL) {
+                      setExternal(true);
+                      setForm({ ...form, name: '', contactInfo: '' });
+                      return;
+                    }
+                    const user = usersForRole.find((u) => u.id === e.target.value);
+                    if (user) setForm({ ...form, name: user.displayName, contactInfo: user.email });
+                    else setForm({ ...form, name: e.target.value.replace(/^name:/, '') });
+                  }}
+                >
+                  <option value="">{!form.roleInProject ? 'Select a role first' : usersForRole.length ? 'Select a user' : 'No users with this role'}</option>
+                  {/* Keep the current name selectable when editing a stakeholder who isn't a user of this role. */}
+                  {form.name && !selectedUser && <option value={`name:${form.name}`}>{form.name}</option>}
+                  {usersForRole.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.displayName} ({u.email})
+                    </option>
+                  ))}
+                  <option value={EXTERNAL}>External stakeholder (not an AI-REAP user)…</option>
+                </select>
+                {formError === 'Name is required.' ? (
+                  <span className="field-error-text">{formError}</span>
+                ) : (
+                  selectedUser && <span className="field-hint">Recorded as a stakeholder only; this does not give {selectedUser.displayName} access to the project.</span>
+                )}
+              </label>
+            ) : (
+              <>
+                <TextField id="sh-name" label="Name *" value={form.name} onChange={(v) => setForm({ ...form, name: v })} placeholder="Full name" error={formError === 'Name is required.' ? formError : undefined} hint={external ? 'External stakeholders are recorded for reference only; they do not get an AI-REAP login or project access.' : undefined} />
+                {pickUsers && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => {
+                      setExternal(false);
+                      setForm({ ...form, name: '', contactInfo: '' });
+                    }}
+                  >
+                    Pick an AI-REAP user instead
+                  </button>
+                )}
+              </>
+            )}
             <TextField id="sh-contact" label="Contact info" value={form.contactInfo} onChange={(v) => setForm({ ...form, contactInfo: v })} placeholder="Email or phone" />
             {formError && formError !== 'Name is required.' && <p className="field-error-text">{formError}</p>}
             <div className="dialog-form-actions">

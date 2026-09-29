@@ -64,6 +64,11 @@ public class DocumentService : IDocumentService
 
     public async Task<IReadOnlyList<DocumentResponse>> GetForProjectAsync(Guid projectId, CancellationToken cancellationToken = default)
     {
+        if (!_currentUser.CanReadRawSources())
+        {
+            throw new UnauthorizedAccessException("Project documents are not available to your role; use the approved requirements.");
+        }
+
         return await _db.Documents
             .Where(d => d.ProjectId == projectId)
             .OrderByDescending(d => d.UploadedAt)

@@ -4,6 +4,7 @@ import { useProject } from '../context/ProjectContext';
 import { useProjectInsights } from '../hooks/useProjectInsights';
 import { ARTIFACT_TYPE_VALUES } from '../api/types';
 import { phasePath, WORK_AREAS } from '../lib/workAreas';
+import { readsRawSources } from '../lib/access';
 import { PageHeader } from '../components/ui/PageHeader';
 import { Tabs } from '../components/ui/Tabs';
 import { PhasePage, PlannedCard } from '../components/PhasePage';
@@ -18,7 +19,7 @@ import { AgentPipelinePanel } from '../components/AgentPipelinePanel';
 import { DocumentsPanel } from '../components/DocumentsPanel';
 import { AuditTrailPanel } from '../components/AuditTrailPanel';
 import { useProjectEditing } from './ProjectFormPages';
-import { IconBarChart, IconCheckCircle, IconCode, IconLayers, IconLink, IconShieldCheck, IconSparkles } from '../components/icons';
+import { IconBarChart, IconCheckCircle, IconLayers, IconLink, IconShieldCheck, IconSparkles } from '../components/icons';
 
 const phase = (key: string) => WORK_AREAS.find((p) => p.key === key)!;
 
@@ -188,12 +189,6 @@ export function DevelopmentPage() {
   return (
     <PhasePage phaseKey="development" title={phase('development').navLabel} description="Break the design into implementation tasks and keep them linked to requirements.">
       <Workspace view="development" />
-      <PlannedCard
-        icon={<IconCode width={18} height={18} />}
-        title="Task board"
-        description="Track implementation progress instead of only listing generated tasks."
-        items={['Status and assignee per task', 'Priority', 'Linked requirements on every task']}
-      />
     </PhasePage>
   );
 }
@@ -212,12 +207,6 @@ export function TestingPage() {
         </div>
       )}
       <Workspace view="testing" />
-      <PlannedCard
-        icon={<IconShieldCheck width={18} height={18} />}
-        title="Test execution results"
-        description="Recording runs and outcomes against test cases."
-        items={['Passed / failed / blocked status', 'Execution history', 'Defect links']}
-      />
     </PhasePage>
   );
 }
@@ -239,9 +228,13 @@ type CopilotTab = 'ask' | 'pipeline' | 'documents' | 'audit';
 
 export function CopilotPage() {
   const { project, bumpContent, contentVersion } = useProject();
+  const { hasRole } = useAuth();
+  // Project documents are raw source material, which the API withholds from Developers (S2).
+  const showDocuments = readsRawSources(hasRole);
   const [params, setParams] = useSearchParams();
   const requested = params.get('tab');
-  const tab: CopilotTab = requested === 'pipeline' || requested === 'documents' || requested === 'audit' ? requested : 'ask';
+  const tab: CopilotTab =
+    requested === 'pipeline' || (requested === 'documents' && showDocuments) || requested === 'audit' ? requested : 'ask';
   const fromPhase = WORK_AREAS.find((p) => p.key === params.get('phase'));
 
   return (
@@ -265,7 +258,7 @@ export function CopilotPage() {
         items={[
           { key: 'ask', label: 'Ask Copilot', icon: <IconSparkles width={15} height={15} /> },
           { key: 'pipeline', label: 'Agent pipeline', icon: <IconBarChart width={15} height={15} /> },
-          { key: 'documents', label: 'Project documents', icon: <IconLink width={15} height={15} /> },
+          ...(showDocuments ? [{ key: 'documents' as const, label: 'Project documents', icon: <IconLink width={15} height={15} /> }] : []),
           { key: 'audit', label: 'AI audit trail', icon: <IconShieldCheck width={15} height={15} /> },
         ]}
       />
