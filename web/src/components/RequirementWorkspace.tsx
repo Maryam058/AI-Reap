@@ -6,17 +6,23 @@ import { apiErrorText } from '../lib/errors';
 import { readsRawSources } from '../lib/access';
 import { requirementSourcesApi } from '../api/requirementSources';
 import { artifactsApi } from '../api/artifacts';
+import { traceabilityApi } from '../api/traceability';
 import {
   ARTIFACT_TYPE_VALUES,
   type AnalyzeRequirementResult,
   type ArtifactSummary,
+  type ClarificationQuestionData,
   type QualityFinding,
   type RequirementSource,
+  type TraceabilityRow,
 } from '../api/types';
+import { nextStamp, type DisclosureRequest } from '../lib/disclosure';
+import { apiResourceOf, byField, groupByRequirement, groupByValue, plural, statusSummary, type ArtifactGroup } from '../lib/grouping';
 import { ClarificationQuestionCard } from './ClarificationQuestionCard';
 import { ArtifactCard } from './ArtifactCard';
+import { CollectionGroup, CollectionGroups, CollectionSection, GeneratedOverview, type OverviewItem } from './GeneratedCollection';
 import { EmptyState } from './ui/EmptyState';
-import { IconAlert, IconCheckCircle, IconDocument, IconInbox, IconLock, IconSparkles, IconUpload } from './icons';
+import { IconAlert, IconCheck, IconCheckCircle, IconDocument, IconInbox, IconLock, IconSparkles, IconUpload } from './icons';
 
 /** Which SDLC phase's slice of the requirement pipeline to render. Each phase page mounts its own view. */
 export type WorkspaceView = 'gathering' | 'analysis' | 'validation' | 'design' | 'development' | 'testing';
@@ -49,6 +55,13 @@ export function RequirementWorkspace({
   const [artifacts, setArtifacts] = useState<ArtifactSummary[]>([]);
   const [qualityFindings, setQualityFindings] = useState<QualityFinding[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // Read-only traceability links, used only to group generated items by their requirement.
+  const [matrix, setMatrix] = useState<TraceabilityRow[] | null>(null);
+  // Requirements whose test-case generation succeeded in this session (used when links are unavailable).
+  const [testsGeneratedFor, setTestsGeneratedFor] = useState<ReadonlySet<string>>(new Set());
+  // Open-and-show requests: a section (overview jump) or a requirement group (after generating its tests).
+  const [revealSection, setRevealSection] = useState<{ id: string; request: DisclosureRequest } | null>(null);
+  const [revealGroup, setRevealGroup] = useState<{ key: string; request: DisclosureRequest } | null>(null);
 
   const selectedSource = sources.find((s) => s.id === selectedId) ?? null;
 
@@ -66,12 +79,15 @@ export function RequirementWorkspace({
 
   const loadDerived = async (sourceId: string) => {
     try {
-      const [q, a] = await Promise.all([
+      const [q, a, m] = await Promise.all([
         requirementSourcesApi.getClarificationQuestions(sourceId, token),
         artifactsApi.listForProject(projectId, token, { requirementSourceId: sourceId }),
+        // Grouping is a presentation nicety: without the links the lists simply render ungrouped.
+        traceabilityApi.getMatrix(projectId, token).catch(() => null),
       ]);
       setQuestions(q);
       setArtifacts(a.filter((x) => x.artifactType !== ARTIFACT_TYPE_VALUES.ClarificationQuestion));
+      setMatrix(m);
     } catch (err) {
       setError(apiErrorText(err, 'Failed to load requirement data.'));
     }
@@ -94,15 +110,18 @@ export function RequirementWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
+  // Resolves to whether the action succeeded, so callers only show a success state after a real success.
   const runAction = async (key: string, fn: () => Promise<void>) => {
     setBusy(key);
     setError(null);
     try {
       await fn();
       onChange?.();
+      return true;
     } catch (err) {
       // AI provider/validation failures and rejected status changes carry a user-facing explanation.
       setError(apiErrorText(err, 'Action failed. Please try again.'));
+      return false;
     } finally {
       setBusy(null);
     }
@@ -173,11 +192,16 @@ export function RequirementWorkspace({
       if (selectedId) await loadDerived(selectedId);
     });
 
-  const onGenerateTestCases = (functionalRequirementId: string) =>
-    runAction(`generate-tc-${functionalRequirementId}`, async () => {
+  const onGenerateTestCases = async (functionalRequirementId: string) => {
+    const succeeded = await runAction(`generate-tc-${functionalRequirementId}`, async () => {
       await artifactsApi.generateTestCases(functionalRequirementId, token);
       if (selectedId) await loadDerived(selectedId);
     });
+    if (succeeded) {
+      setTestsGeneratedFor((prev) => new Set(prev).add(functionalRequirementId));
+      setRevealGroup({ key: functionalRequirementId, request: { stamp: nextStamp(), open: true } });
+    }
+  };
 
   const onGenerateDesign = () =>
     selectedId &&
@@ -261,19 +285,86 @@ export function RequirementWorkspace({
     if (selectedId) loadDerived(selectedId);
   };
 
+  // Presentation-only groupings, built from payload fields and the existing traceability links.
+  const frGroups = groupByValue(functionalRequirements, byField('actor'), 'No actor specified');
+  const nfrGroups = groupByValue(nonFunctionalRequirements, byField('category'), 'Uncategorized');
+  const ruleGroups = groupByRequirement(businessRules, functionalRequirements, matrix, 'businessRules');
+  const storyGroups = groupByRequirement(userStories, functionalRequirements, matrix, 'userStories');
+  const criteriaGroups = groupByRequirement(acceptanceCriteria, functionalRequirements, matrix, 'acceptanceCriteria');
+  const apiGroups = groupByValue(apiSpecifications, apiResourceOf, 'Other routes');
+  const taskGroups =
+    groupByRequirement(implementationTasks, functionalRequirements, matrix, 'implementationTasks') ??
+    groupByValue(implementationTasks, byField('taskType'), 'Other');
+  const taskGroupedByType = taskGroups !== null && !taskGroups.some((g) => g.requirementId);
+  // Testing lists every requirement (for QA, including those without tests yet) so generation happens in place.
+  const testGroups = groupByRequirement(testCases, functionalRequirements, matrix, 'testCases', { includeEmpty: canManageTests });
+  const coveredRequirements = testGroups ? testGroups.filter((g) => g.requirementId && g.items.length > 0).length : 0;
+
+  const reveal = (id: string) => (revealSection?.id === id ? revealSection.request : null);
+  const jumpTo = (id: string) => {
+    setRevealSection({ id, request: { stamp: nextStamp(), open: true } });
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' }));
+  };
+  const overview = (items: OverviewItem[]) => <GeneratedOverview items={items.filter((i) => i.count > 0)} onJump={jumpTo} />;
+
   const reviewProps = { canReview, canEdit: canWrite, token, onApprove, onReject, onChangeStatus, onSaved: onArtifactSaved };
-  const generateButton = (key: string, label: string, busyLabel: string, run: () => unknown, disabled: boolean, primary = false, hint?: string) => (
-    <button
-      type="button"
-      className={`btn ${primary ? 'btn-primary' : 'btn-secondary'} btn-sm`}
-      disabled={busy === key || disabled}
-      onClick={run}
-      title={hint}
-    >
-      {primary && <IconSparkles width={14} height={14} />}
-      {busy === key ? busyLabel : label}
-    </button>
-  );
+  // `done` — how many items this step has already produced for the source; shown as a completed state.
+  // The button stays usable: running it again calls the generator again, exactly as before.
+  const generateButton = (key: string, label: string, busyLabel: string, run: () => unknown, disabled: boolean, primary = false, hint?: string, done = 0) => {
+    const running = busy === key;
+    const isDone = done > 0 && !running;
+    return (
+      <button
+        type="button"
+        className={`btn ${primary && !isDone ? 'btn-primary' : 'btn-secondary'} btn-sm${isDone ? ' btn-done' : ''}`}
+        disabled={running || disabled}
+        aria-busy={running || undefined}
+        onClick={run}
+        title={hint ?? (isDone ? `${done} already generated for this source. Running it again calls the AI generator again.` : undefined)}
+      >
+        {running ? <span className="btn-spinner" aria-hidden="true" /> : isDone ? <IconCheck width={14} height={14} /> : primary && <IconSparkles width={14} height={14} />}
+        {running ? busyLabel : label}
+        {isDone && <span className="btn-count">{done}</span>}
+      </button>
+    );
+  };
+
+  // Test-case generation for one requirement: Generate → Generating… → ✓ Generated (+ Generate more, which adds another set).
+  const testGenerateActions = (frId: string, generated: boolean) => {
+    const key = `generate-tc-${frId}`;
+    if (busy === key) {
+      return (
+        <button type="button" className="btn btn-secondary btn-sm" disabled aria-busy="true">
+          <span className="btn-spinner" aria-hidden="true" />
+          Generating…
+        </button>
+      );
+    }
+    if (generated) {
+      return (
+        <>
+          <span className="gen-done" role="status">
+            <IconCheck width={13} height={13} /> Test cases generated
+          </span>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => onGenerateTestCases(frId)}
+            title="Generates an additional set of AI test cases for this requirement. Existing test cases are kept."
+          >
+            Generate more
+          </button>
+        </>
+      );
+    }
+    return (
+      <button type="button" className="btn btn-secondary btn-sm" onClick={() => onGenerateTestCases(frId)}>
+        <IconSparkles width={14} height={14} />
+        Generate test cases
+      </button>
+    );
+  };
 
   return (
     <div className="req">
@@ -410,9 +501,9 @@ export function RequirementWorkspace({
                 {generateButton('analyze', 'Run AI analysis', 'Analyzing…', onAnalyze, false, true)}
               </PipelineStep>
               <PipelineStep n={2} title="Specify">
-                {generateButton('generate-requirements', 'Generate FR / NFR', 'Generating…', onGenerateRequirements, questions.length === 0, false, questions.length === 0 ? 'Run AI analysis first' : undefined)}
-                {generateButton('generate-stories', 'Generate user stories', 'Generating…', onGenerateStories, needsFr, false, needsFrHint)}
-                {generateButton('generate-rules', 'Extract business rules', 'Generating…', onGenerateBusinessRules, needsFr, false, needsFrHint)}
+                {generateButton('generate-requirements', 'Generate FR / NFR', 'Generating…', onGenerateRequirements, questions.length === 0, false, questions.length === 0 ? 'Run AI analysis first' : undefined, functionalRequirements.length + nonFunctionalRequirements.length)}
+                {generateButton('generate-stories', 'Generate user stories', 'Generating…', onGenerateStories, needsFr, false, needsFrHint, userStories.length)}
+                {generateButton('generate-rules', 'Extract business rules', 'Generating…', onGenerateBusinessRules, needsFr, false, needsFrHint, businessRules.length)}
               </PipelineStep>
             </div>
           )}
@@ -428,9 +519,9 @@ export function RequirementWorkspace({
           {canWrite && view === 'design' && (
             <div className="req-pipeline">
               <PipelineStep n={1} title="Generate design">
-                {generateButton('generate-design', 'Solution design', 'Generating…', onGenerateDesign, needsFr, true, needsFrHint)}
-                {generateButton('generate-data-entities', 'Data entities', 'Generating…', onGenerateDataEntities, needsFr, false, needsFrHint)}
-                {generateButton('generate-api-specs', 'API specs', 'Generating…', onGenerateApiSpecs, needsFr, false, needsFrHint)}
+                {generateButton('generate-design', 'Solution design', 'Generating…', onGenerateDesign, needsFr, true, needsFrHint, designArtifacts.length)}
+                {generateButton('generate-data-entities', 'Data entities', 'Generating…', onGenerateDataEntities, needsFr, false, needsFrHint, dataEntities.length)}
+                {generateButton('generate-api-specs', 'API specs', 'Generating…', onGenerateApiSpecs, needsFr, false, needsFrHint, apiSpecifications.length)}
               </PipelineStep>
             </div>
           )}
@@ -438,7 +529,7 @@ export function RequirementWorkspace({
           {canWrite && view === 'development' && (
             <div className="req-pipeline">
               <PipelineStep n={1} title="Plan implementation">
-                {generateButton('generate-tasks', 'Implementation tasks', 'Generating…', onGenerateTasks, needsFr, true, needsFrHint)}
+                {generateButton('generate-tasks', 'Implementation tasks', 'Generating…', onGenerateTasks, needsFr, true, needsFrHint, implementationTasks.length)}
               </PipelineStep>
             </div>
           )}
@@ -517,18 +608,7 @@ export function RequirementWorkspace({
           )}
 
           {view === 'validation' && questions.length > 0 && (
-            <section className="req-section" id="sec-clarifications">
-              <div className="req-section-head">
-                <h3>Clarification questions</h3>
-                <span className="req-count">{questions.length}</span>
-                {openQuestionCount > 0 && <span className="status-pill tone-warning">{openQuestionCount} open</span>}
-              </div>
-              <ul className="cq-list">
-                {questions.map((q) => (
-                  <ClarificationQuestionCard key={q.id} artifact={q} canAnswer={canWrite} onAnswer={onAnswer} />
-                ))}
-              </ul>
-            </section>
+            <ClarificationSection questions={questions} openCount={openQuestionCount} canAnswer={canWrite} onAnswer={onAnswer} />
           )}
 
           {view === 'analysis' && (
@@ -541,17 +621,33 @@ export function RequirementWorkspace({
                   description={canWrite ? 'Run AI analysis, then generate functional and non-functional requirements from this source.' : 'A business analyst has not generated requirements from this source yet.'}
                 />
               )}
+              {overview([
+                { id: 'sec-functional', label: 'Functional requirements', count: functionalRequirements.length },
+                { id: 'sec-nonfunctional', label: 'Non-functional requirements', count: nonFunctionalRequirements.length },
+                { id: 'sec-rules', label: 'Business rules', count: businessRules.length },
+                { id: 'sec-stories', label: 'User stories', count: userStories.length },
+                { id: 'sec-criteria', label: 'Acceptance criteria', count: acceptanceCriteria.length },
+              ])}
               {functionalRequirements.length > 0 && (
-                <ArtifactSection id="sec-functional" title="Functional Requirements" items={functionalRequirements} {...reviewProps} />
+                <ArtifactSection id="sec-functional" title="Functional Requirements" noun={['requirement', 'requirements']} items={functionalRequirements}
+                  groups={frGroups} groupEyebrow="Actor" reveal={reveal('sec-functional')} {...reviewProps} />
               )}
               {nonFunctionalRequirements.length > 0 && (
-                <ArtifactSection id="sec-nonfunctional" title="Non-Functional Requirements" items={nonFunctionalRequirements} {...reviewProps} />
+                <ArtifactSection id="sec-nonfunctional" title="Non-Functional Requirements" noun={['requirement', 'requirements']} items={nonFunctionalRequirements}
+                  groups={nfrGroups} groupEyebrow="Category" reveal={reveal('sec-nonfunctional')} {...reviewProps} />
               )}
-              {businessRules.length > 0 && <ArtifactSection title="Business Rules" items={businessRules} {...reviewProps} />}
+              {businessRules.length > 0 && (
+                <ArtifactSection id="sec-rules" title="Business Rules" noun={['rule', 'rules']} items={businessRules}
+                  groups={ruleGroups} reveal={reveal('sec-rules')} {...reviewProps} />
+              )}
               {userStories.length > 0 && (
-                <ArtifactSection title="User Stories" items={userStories} {...reviewProps} onGenerateAcceptanceCriteria={onGenerateAcceptanceCriteria} />
+                <ArtifactSection id="sec-stories" title="User Stories" noun={['story', 'stories']} items={userStories}
+                  groups={storyGroups} reveal={reveal('sec-stories')} {...reviewProps} onGenerateAcceptanceCriteria={onGenerateAcceptanceCriteria} />
               )}
-              {acceptanceCriteria.length > 0 && <ArtifactSection title="Acceptance Criteria" items={acceptanceCriteria} {...reviewProps} />}
+              {acceptanceCriteria.length > 0 && (
+                <ArtifactSection id="sec-criteria" title="Acceptance Criteria" noun={['criterion', 'criteria']} items={acceptanceCriteria}
+                  groups={criteriaGroups} reveal={reveal('sec-criteria')} {...reviewProps} />
+              )}
             </>
           )}
 
@@ -565,9 +661,23 @@ export function RequirementWorkspace({
                   description={needsFr ? 'Generate functional requirements in Requirements Analysis first — design is derived from them.' : 'Generate a solution design, data entities and API specifications from the requirements.'}
                 />
               )}
-              {designArtifacts.length > 0 && <ArtifactSection id="sec-architecture" title="Solution Design" items={designArtifacts} {...reviewProps} />}
-              {dataEntities.length > 0 && <ArtifactSection id="sec-data" title="Data Entities" items={dataEntities} {...reviewProps} />}
-              {apiSpecifications.length > 0 && <ArtifactSection id="sec-api" title="API Specifications" items={apiSpecifications} {...reviewProps} />}
+              {overview([
+                { id: 'sec-architecture', label: 'Solution design', count: designArtifacts.length },
+                { id: 'sec-data', label: 'Data entities', count: dataEntities.length },
+                { id: 'sec-api', label: 'API specifications', count: apiSpecifications.length },
+              ])}
+              {designArtifacts.length > 0 && (
+                <ArtifactSection id="sec-architecture" title="Solution Design" noun={['design', 'designs']} items={designArtifacts}
+                  reveal={reveal('sec-architecture')} {...reviewProps} />
+              )}
+              {dataEntities.length > 0 && (
+                <ArtifactSection id="sec-data" title="Data Entities" noun={['entity', 'entities']} items={dataEntities}
+                  reveal={reveal('sec-data')} {...reviewProps} />
+              )}
+              {apiSpecifications.length > 0 && (
+                <ArtifactSection id="sec-api" title="API Specifications" noun={['endpoint', 'endpoints']} items={apiSpecifications}
+                  groups={apiGroups} groupEyebrow="Resource" reveal={reveal('sec-api')} {...reviewProps} />
+              )}
             </>
           )}
 
@@ -581,49 +691,63 @@ export function RequirementWorkspace({
                   description={needsFr ? 'Generate functional requirements first — tasks are derived from them.' : 'Generate implementation tasks from the requirements and design.'}
                 />
               )}
-              {implementationTasks.length > 0 && <ArtifactSection id="sec-tasks" title="Implementation Tasks" items={implementationTasks} {...reviewProps} />}
+              {implementationTasks.length > 0 && (
+                <ArtifactSection id="sec-tasks" title="Implementation Tasks" noun={['task', 'tasks']} items={implementationTasks}
+                  groups={taskGroups} groupEyebrow={taskGroupedByType ? 'Type' : undefined} {...reviewProps} />
+              )}
             </>
           )}
 
           {view === 'testing' && (
             <>
-              {canManageTests && functionalRequirements.length > 0 && (
-                <section className="req-section">
-                  <div className="req-section-head">
-                    <h3>Generate test cases per requirement</h3>
-                    <span className="req-count">{functionalRequirements.length}</span>
-                  </div>
-                  <ul className="tc-source-list">
-                    {functionalRequirements.map((fr) => {
-                      return (
-                        <li key={fr.id}>
-                          <span className="code">{fr.code}</span>
-                          <span className="tc-source-title">{fr.title}</span>
-                          <button
-                            type="button"
-                            className="btn btn-secondary btn-sm"
-                            disabled={busy === `generate-tc-${fr.id}`}
-                            onClick={() => onGenerateTestCases(fr.id)}
-                          >
-                            <IconSparkles width={14} height={14} />
-                            {busy === `generate-tc-${fr.id}` ? 'Generating…' : 'Generate test cases'}
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </section>
+              {testGroups ? (
+                // Grouped by requirement: each requirement shows its test cases and generates them in place.
+                (testCases.length > 0 || (canManageTests && functionalRequirements.length > 0)) && (
+                  <ArtifactSection
+                    id="sec-tests"
+                    title="Test Cases"
+                    noun={['test case', 'test cases']}
+                    items={testCases}
+                    groups={testGroups}
+                    emptyGroupLabel="Not generated yet"
+                    summary={`${coveredRequirements} of ${functionalRequirements.length} requirements covered`}
+                    groupActions={canManageTests ? (g) => g.requirementId && testGenerateActions(g.requirementId, g.items.length > 0) : undefined}
+                    groupReveal={(g) => (revealGroup && revealGroup.key === g.key ? revealGroup.request : null)}
+                    {...reviewProps}
+                    canEdit={canManageTests}
+                  />
+                )
+              ) : (
+                <>
+                  {canManageTests && functionalRequirements.length > 0 && (
+                    <section className="req-section">
+                      <div className="req-section-head">
+                        <h3>Generate test cases per requirement</h3>
+                        <span className="req-count">{functionalRequirements.length}</span>
+                      </div>
+                      <ul className="tc-source-list">
+                        {functionalRequirements.map((fr) => (
+                          <li key={fr.id}>
+                            <span className="code">{fr.code}</span>
+                            <span className="tc-source-title">{fr.title}</span>
+                            <span className="tc-source-actions">{testGenerateActions(fr.id, testsGeneratedFor.has(fr.id))}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  )}
+                  {testCases.length > 0 && (
+                    <ArtifactSection id="sec-tests" title="Test Cases" noun={['test case', 'test cases']} items={testCases} {...reviewProps} canEdit={canManageTests} />
+                  )}
+                </>
               )}
-              {phaseArtifactCount === 0 && (
+              {phaseArtifactCount === 0 && (needsFr || !canManageTests) && (
                 <EmptyState
                   compact
                   icon={<IconInbox width={18} height={18} />}
                   title="No test cases yet"
-                  description={needsFr ? 'Generate functional requirements first — test cases are derived from them.' : 'Generate test cases from a functional requirement above.'}
+                  description={needsFr ? 'Generate functional requirements first — test cases are derived from them.' : 'Test cases have not been generated from these requirements yet.'}
                 />
-              )}
-              {testCases.length > 0 && (
-                <ArtifactSection id="sec-tests" title="Test Cases" items={testCases} {...reviewProps} canEdit={canManageTests} />
               )}
             </>
           )}
@@ -667,7 +791,15 @@ function SummaryRow({ label, items }: { label: string; items: string[] }) {
 function ArtifactSection({
   id,
   title,
+  noun,
   items,
+  groups,
+  groupEyebrow,
+  emptyGroupLabel,
+  summary,
+  reveal,
+  groupActions,
+  groupReveal,
   canReview,
   canEdit,
   token,
@@ -680,40 +812,150 @@ function ArtifactSection({
 }: {
   id?: string;
   title: string;
+  /** Singular and plural item name, for group counts ("5 test cases"). */
+  noun: [string, string];
   items: ArtifactSummary[];
+  /** Null or omitted when the data supports no meaningful grouping: the items render as one compact list. */
+  groups?: ArtifactGroup[] | null;
+  groupEyebrow?: string;
+  emptyGroupLabel?: string;
+  summary?: string;
+  reveal?: DisclosureRequest | null;
+  groupActions?: (group: ArtifactGroup) => ReactNode;
+  groupReveal?: (group: ArtifactGroup) => DisclosureRequest | null;
   canReview: boolean;
   canEdit: boolean;
   token: string | null;
   onApprove: (id: string, comment?: string) => Promise<boolean>;
   onReject: (id: string, comment?: string) => Promise<boolean>;
-  onChangeStatus: (id: string, status: number) => Promise<void>;
+  onChangeStatus: (id: string, status: number) => Promise<unknown>;
   onSaved: () => void;
-  onGenerateAcceptanceCriteria?: (id: string) => Promise<void>;
-  onGenerateTestCases?: (id: string) => Promise<void>;
+  onGenerateAcceptanceCriteria?: (id: string) => Promise<unknown>;
+  onGenerateTestCases?: (id: string) => Promise<unknown>;
 }) {
+  // A lone item is shown in full; in a collection, cards start compact.
+  const collapsible = items.length > 1;
+  const changeStatus = async (artifactId: string, status: number) => {
+    await onChangeStatus(artifactId, status);
+  };
+  const generateCriteria = onGenerateAcceptanceCriteria && (async (storyId: string) => void (await onGenerateAcceptanceCriteria(storyId)));
+  const generateTests = onGenerateTestCases && (async (frId: string) => void (await onGenerateTestCases(frId)));
+  const list = (members: ArtifactSummary[]) => (
+    <ul className="artifact-list">
+      {members.map((a) => (
+        <ArtifactCard
+          key={a.id}
+          artifact={a}
+          canReview={canReview}
+          canEdit={canEdit}
+          token={token}
+          onApprove={onApprove}
+          onReject={onReject}
+          onChangeStatus={changeStatus}
+          onSaved={onSaved}
+          onGenerateAcceptanceCriteria={generateCriteria}
+          onGenerateTestCases={generateTests}
+          collapsible={collapsible}
+        />
+      ))}
+    </ul>
+  );
+  // Small collections open every group; larger ones open only the first group with content.
+  const firstFilled = groups?.findIndex((g) => g.items.length > 0) ?? -1;
+
   return (
-    <section className="req-section" id={id}>
-      <div className="req-section-head">
-        <h3>{title}</h3>
-        <span className="req-count">{items.length}</span>
-      </div>
-      <ul className="artifact-list">
-        {items.map((a) => (
-          <ArtifactCard
-            key={a.id}
-            artifact={a}
-            canReview={canReview}
-            canEdit={canEdit}
-            token={token}
-            onApprove={onApprove}
-            onReject={onReject}
-            onChangeStatus={onChangeStatus}
-            onSaved={onSaved}
-            onGenerateAcceptanceCriteria={onGenerateAcceptanceCriteria}
-            onGenerateTestCases={onGenerateTestCases}
-          />
-        ))}
-      </ul>
-    </section>
+    <CollectionSection
+      id={id}
+      title={title}
+      count={items.length}
+      summary={summary ?? statusSummary(items)}
+      bulkControls={collapsible || (groups?.length ?? 0) > 1}
+      reveal={reveal}
+    >
+      {groups ? (
+        <CollectionGroups>
+          {groups.map((g, i) => (
+            <CollectionGroup
+              key={g.key}
+              code={g.code}
+              eyebrow={g.requirementId ? undefined : groupEyebrow}
+              label={g.label}
+              count={g.items.length}
+              countLabel={plural(g.items.length, noun[0], noun[1])}
+              emptyLabel={emptyGroupLabel}
+              summary={statusSummary(g.items)}
+              actions={groupActions?.(g)}
+              defaultOpen={items.length <= 6 || i === firstFilled}
+              reveal={groupReveal?.(g)}
+            >
+              {list(g.items)}
+            </CollectionGroup>
+          ))}
+        </CollectionGroups>
+      ) : (
+        list(items)
+      )}
+    </CollectionSection>
+  );
+}
+
+const CLARIFICATION_ORDER: { status: ClarificationQuestionData['clarificationStatus']; label: string }[] = [
+  { status: 'Open', label: 'Open' },
+  { status: 'Answered', label: 'Answered' },
+  { status: 'Resolved', label: 'Resolved' },
+  { status: 'NotApplicable', label: 'Not applicable' },
+];
+
+/** Clarification questions grouped by their existing status, open questions first and expanded. */
+function ClarificationSection({
+  questions,
+  openCount,
+  canAnswer,
+  onAnswer,
+}: {
+  questions: ArtifactSummary[];
+  openCount: number;
+  canAnswer: boolean;
+  onAnswer: (artifactId: string, answer: string, notApplicable: boolean) => Promise<unknown>;
+}) {
+  const statusOf = (q: ArtifactSummary) => (q.data as unknown as ClarificationQuestionData).clarificationStatus;
+  const groups = CLARIFICATION_ORDER.map((o) => ({ ...o, items: questions.filter((q) => statusOf(q) === o.status) })).filter((g) => g.items.length > 0);
+  const answer = async (artifactId: string, text: string, notApplicable: boolean) => {
+    await onAnswer(artifactId, text, notApplicable);
+  };
+  const list = (items: ArtifactSummary[]) => (
+    <ul className="cq-list">
+      {items.map((q) => (
+        <ClarificationQuestionCard key={q.id} artifact={q} canAnswer={canAnswer} onAnswer={answer} />
+      ))}
+    </ul>
+  );
+
+  return (
+    <CollectionSection
+      id="sec-clarifications"
+      title="Clarification questions"
+      count={questions.length}
+      summary={openCount > 0 ? `${openCount} open` : 'All addressed'}
+      bulkControls={groups.length > 1}
+    >
+      {groups.length > 1 ? (
+        <CollectionGroups>
+          {groups.map((g, i) => (
+            <CollectionGroup
+              key={g.status}
+              label={g.label}
+              count={g.items.length}
+              countLabel={plural(g.items.length, 'question', 'questions')}
+              defaultOpen={g.status === 'Open' || (openCount === 0 && i === 0)}
+            >
+              {list(g.items)}
+            </CollectionGroup>
+          ))}
+        </CollectionGroups>
+      ) : (
+        list(questions)
+      )}
+    </CollectionSection>
   );
 }

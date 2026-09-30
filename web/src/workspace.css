@@ -3438,3 +3438,289 @@ a.btn-ghost {
   gap: 0.3rem 0.6rem;
   font-size: 0.8rem;
 }
+
+/* ---- Generated collections (sections → groups → compact cards) -------------------------------
+   One pattern for AI-generated content in every work area: collapsible sections with counts,
+   collapsible groups built from existing data, and cards that stay compact until opened. */
+
+.gen-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.gen-heading {
+  margin: 0;
+  font-size: 0.95rem;
+}
+.gen-toggle,
+.gen-group-toggle,
+.artifact-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.gen-toggle:focus-visible,
+.gen-group-toggle:focus-visible,
+.artifact-toggle:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.gen-title {
+  font-weight: 700;
+}
+.gen-chevron {
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: transform var(--motion-fast);
+}
+[aria-expanded='false'] > .gen-chevron {
+  transform: rotate(-90deg);
+}
+.gen-summary {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.gen-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  margin-left: auto;
+}
+.gen-section-body[hidden],
+.gen-group-body[hidden],
+.artifact-content[hidden] {
+  display: none !important;
+}
+
+.gen-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.gen-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+}
+.gen-group.is-empty {
+  border-style: dashed;
+  background: transparent;
+  box-shadow: none;
+}
+.gen-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.75rem;
+  padding: 0.55rem 0.8rem;
+}
+.gen-group-toggle {
+  flex: 1 1 16rem;
+  display: flex;
+}
+.gen-group-toggle.is-static {
+  cursor: default;
+}
+.gen-group-toggle.is-static .gen-chevron {
+  visibility: hidden;
+}
+.gen-group-label {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.gen-eyebrow {
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-subtle);
+}
+.gen-group-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gen-group-count {
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.gen-group-count.is-empty {
+  font-weight: 500;
+  color: var(--muted-subtle);
+}
+.gen-group-summary {
+  white-space: nowrap;
+}
+.gen-group-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: auto;
+}
+.gen-group-body {
+  padding: 0.6rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface-sunken);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+/* "Generated" confirmation shown only after a successful generation. */
+.gen-done {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius-full);
+  background: var(--success-soft);
+  color: var(--success-strong);
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.btn.btn-done svg {
+  color: var(--success-strong);
+}
+.btn-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 0.35rem;
+  border-radius: var(--radius-full);
+  background: var(--success-soft);
+  color: var(--success-strong);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+.btn-spinner {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: btn-spin 0.8s linear infinite;
+}
+@keyframes btn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.tc-source-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+/* Compact artifact cards */
+.artifact-card.is-collapsible .artifact-toggle {
+  flex: 1 1 14rem;
+}
+.artifact-card.is-collapsed {
+  padding: 0.6rem 0.9rem;
+}
+.artifact-card.is-collapsed .artifact-header {
+  margin-bottom: 0;
+}
+.artifact-preview {
+  margin: 0.3rem 0 0;
+  padding-left: 1.45rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* First-level "what was generated" summary */
+.gen-overview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 1.25rem;
+}
+.gen-overview-label {
+  margin-right: 0.2rem;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-subtle);
+}
+.gen-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.4rem 0.25rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast);
+}
+.gen-chip:hover {
+  background: var(--primary-soft);
+  border-color: var(--primary-light);
+}
+.gen-chip:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.gen-chip-count {
+  min-width: 20px;
+  padding: 0 0.4rem;
+  border-radius: var(--radius-full);
+  background: var(--neutral-soft);
+  color: var(--neutral-strong);
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+@media (max-width: 720px) {
+  .gen-tools,
+  .gen-group-actions {
+    margin-left: 0;
+  }
+  .gen-group-summary {
+    white-space: normal;
+  }
+  .artifact-preview {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .tc-source-list li {
+    flex-wrap: wrap;
+  }
+}

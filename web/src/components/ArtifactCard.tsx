@@ -3,10 +3,11 @@ import { ArtifactDetails } from './ArtifactDetails';
 import { ArtifactEditDialog } from './ArtifactEditDialog';
 import { WorkRecordPanel } from './WorkRecordPanel';
 import { DesignReviewPanel } from './DesignReviewPanel';
-import { IconCheck, IconEdit, IconSparkles, IconX } from './icons';
+import { IconCheck, IconChevronDown, IconEdit, IconSparkles, IconX } from './icons';
 import { artifactsApi } from '../api/artifacts';
 import { useAuth } from '../auth/AuthContext';
 import { apiErrorText } from '../lib/errors';
+import { useDisclosure } from '../lib/disclosure';
 import {
   ARTIFACT_PRIORITY_LABELS,
   ARTIFACT_STATUS,
@@ -41,6 +42,9 @@ interface Props {
   onSaved: () => void;
   onGenerateAcceptanceCriteria?: (userStoryId: string) => Promise<void>;
   onGenerateTestCases?: (functionalRequirementId: string) => Promise<void>;
+  // Compact mode for generated collections: header and a one-line preview until expanded. Actions and
+  // review are unchanged once the card is open.
+  collapsible?: boolean;
 }
 
 // Artifact status (0 AI Generated … 6 Verified) → status-pill tone.
@@ -83,6 +87,7 @@ export function ArtifactCard({
   onSaved,
   onGenerateAcceptanceCriteria,
   onGenerateTestCases,
+  collapsible = false,
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -105,6 +110,10 @@ export function ArtifactCard({
   const openNotices = artifact.openImpactNoticeCount ?? 0;
   const isAiOrigin = artifact.origin === 0;
   const isEditable = canEdit && artifact.artifactType !== ARTIFACT_TYPE_VALUES.ClarificationQuestion;
+  // An upstream-change notice needs attention, so such a card starts open.
+  const disclosure = useDisclosure(!collapsible || openNotices > 0);
+  const expanded = !collapsible || disclosure.open;
+  const preview = collapsible && !expanded ? artifactPreview(artifact) : null;
 
   // REAP-045 — a BA or Reviewer other than the author confirms an NFR's proposed target. Confirmation
   // is not approval: the status is untouched. Mirrors ArtifactService.ConfirmNfrTargetAsync, which
@@ -181,10 +190,20 @@ export function ArtifactCard({
   };
 
   return (
-    <li className={`artifact-card tone-${STATUS_TONE[artifact.status] ?? 'neutral'}`}>
+    <li className={`artifact-card tone-${STATUS_TONE[artifact.status] ?? 'neutral'}${collapsible ? ' is-collapsible' : ''}${expanded ? '' : ' is-collapsed'}`}>
       <div className="artifact-header">
-        <span className="code">{artifact.code}</span>
-        <strong className="artifact-title">{artifact.title}</strong>
+        {collapsible ? (
+          <button type="button" className="artifact-toggle" aria-expanded={expanded} onClick={disclosure.toggle}>
+            <IconChevronDown width={15} height={15} className="gen-chevron" />
+            <span className="code">{artifact.code}</span>
+            <strong className="artifact-title">{artifact.title}</strong>
+          </button>
+        ) : (
+          <>
+            <span className="code">{artifact.code}</span>
+            <strong className="artifact-title">{artifact.title}</strong>
+          </>
+        )}
         <span className="artifact-badges">
           {artifact.priority !== null && (
             <span className={`status-pill tone-${PRIORITY_TONE[artifact.priority] ?? 'neutral'}`}>
@@ -203,148 +222,188 @@ export function ArtifactCard({
         </span>
       </div>
 
-      {editedAfterApproval && (
-        <p className="artifact-review-note">
-          Edited after approval: v{artifact.currentVersion} needs re-review. The approved content is preserved as v{artifact.approvedVersion} in the history.
-        </p>
-      )}
+      {preview && <p className="artifact-preview">{preview}</p>}
 
-      <div className="artifact-body">
-        {artifact.artifactType === ARTIFACT_TYPE_VALUES.FunctionalRequirement && (
-          <FunctionalRequirementDetails data={artifact.data as unknown as FunctionalRequirementData} />
+      <div className="artifact-content" hidden={!expanded}>
+        {editedAfterApproval && (
+          <p className="artifact-review-note">
+            Edited after approval: v{artifact.currentVersion} needs re-review. The approved content is preserved as v{artifact.approvedVersion} in the history.
+          </p>
         )}
-        {artifact.artifactType === ARTIFACT_TYPE_VALUES.NonFunctionalRequirement && (
-          <NonFunctionalRequirementDetails data={artifact.data as unknown as NonFunctionalRequirementData} />
-        )}
-        {artifact.artifactType === ARTIFACT_TYPE_VALUES.UserStory && (
-          <UserStoryDetails data={artifact.data as unknown as UserStoryData} />
-        )}
-        {artifact.artifactType === ARTIFACT_TYPE_VALUES.AcceptanceCriterion && (
-          <AcceptanceCriterionDetails data={artifact.data as unknown as AcceptanceCriterionData} />
-        )}
-        {artifact.artifactType === ARTIFACT_TYPE_VALUES.BusinessRule && (
-          <Detail label="Statement" value={(artifact.data as unknown as BusinessRuleData).statement} />
-        )}
-        {artifact.artifactType === ARTIFACT_TYPE_VALUES.DesignArtifact && (
-          <DesignArtifactDetails data={artifact.data as unknown as DesignArtifactData} />
-        )}
-        {artifact.artifactType === ARTIFACT_TYPE_VALUES.DataEntity && (
-          <DataEntityDetails data={artifact.data as unknown as DataEntityData} />
-        )}
-        {artifact.artifactType === ARTIFACT_TYPE_VALUES.ApiSpecification && (
-          <ApiSpecificationDetails data={artifact.data as unknown as ApiSpecificationData} />
-        )}
-        {artifact.artifactType === ARTIFACT_TYPE_VALUES.ImplementationTask && (
-          <ImplementationTaskDetails data={artifact.data as unknown as ImplementationTaskData} />
-        )}
-        {artifact.artifactType === ARTIFACT_TYPE_VALUES.TestCase && (
-          <TestCaseDetails data={artifact.data as unknown as TestCaseData} />
-        )}
-      </div>
 
-      <div className="artifact-actions">
-        {isEditable && (
-          <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setEditing(true)}>
-            <IconEdit width={14} height={14} />
-            Edit
-          </button>
-        )}
-        {canReview && onChangeStatus && canSubmit && (
-          <button type="button" className="btn btn-secondary btn-sm" disabled={busy}
-            onClick={() => act((id) => onChangeStatus(id, ARTIFACT_STATUS.UnderReview))}>
-            Submit for review
-          </button>
-        )}
-        {canReview && onChangeStatus && canReturnToDraft && (
-          <button type="button" className="btn btn-ghost btn-sm" disabled={busy}
-            onClick={() => act((id) => onChangeStatus(id, ARTIFACT_STATUS.Draft))}>
-            Return to draft
-          </button>
-        )}
-        {canReview && onChangeStatus && isApprovedOrLater && (
-          <button type="button" className="btn btn-ghost btn-sm" disabled={busy}
-            onClick={() => act((id) => onChangeStatus(id, ARTIFACT_STATUS.UnderReview))}>
-            Reopen review
-          </button>
-        )}
-        {canConfirmTarget && (
-          <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={confirmTarget}
-            title="Confirm this target value as a validated requirement. This does not approve the NFR.">
-            <IconCheck width={14} height={14} />
-            Confirm target
-          </button>
-        )}
-        {artifact.artifactType === ARTIFACT_TYPE_VALUES.UserStory && onGenerateAcceptanceCriteria && (
-          <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act(onGenerateAcceptanceCriteria)}>
-            <IconSparkles width={14} height={14} />
-            Generate acceptance criteria
-          </button>
-        )}
-        {artifact.artifactType === ARTIFACT_TYPE_VALUES.FunctionalRequirement && onGenerateTestCases && (
-          <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act(onGenerateTestCases)}>
-            <IconSparkles width={14} height={14} />
-            Generate test cases
-          </button>
-        )}
-      </div>
-      {confirmError && <p className="field-error-text">{confirmError}</p>}
-
-      {canReview && (
-        <div className="work-record" aria-label="Artifact review">
-          <div className="work-record-head">
-            <strong>Review</strong>
-            <span className="muted">v{artifact.currentVersion}</span>
-          </div>
-          <div className="work-record-actions">
-            <input
-              type="text"
-              placeholder={canDecide ? 'Review comment (optional to approve or comment; required to reject)' : 'Review comment'}
-              value={reviewComment}
-              onChange={(e) => {
-                setReviewComment(e.target.value);
-                setReviewError(null);
-              }}
-              disabled={busy}
-              aria-label={`Review comment for ${artifact.code}`}
-            />
-            <button type="button" className="btn btn-ghost btn-sm" disabled={busy || !trimmedComment} onClick={addComment}>
-              Comment
-            </button>
-            {canDecide && (
-              <>
-                <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => decide(true)}>
-                  <IconCheck width={14} height={14} />
-                  Approve
-                </button>
-                <button type="button" className="btn btn-secondary btn-sm btn-reject" disabled={busy} onClick={() => decide(false)}>
-                  <IconX width={14} height={14} />
-                  Reject
-                </button>
-              </>
-            )}
-          </div>
-          {reviewError && <p className="field-error-text">{reviewError}</p>}
+        <div className="artifact-body">
+          {artifact.artifactType === ARTIFACT_TYPE_VALUES.FunctionalRequirement && (
+            <FunctionalRequirementDetails data={artifact.data as unknown as FunctionalRequirementData} />
+          )}
+          {artifact.artifactType === ARTIFACT_TYPE_VALUES.NonFunctionalRequirement && (
+            <NonFunctionalRequirementDetails data={artifact.data as unknown as NonFunctionalRequirementData} />
+          )}
+          {artifact.artifactType === ARTIFACT_TYPE_VALUES.UserStory && (
+            <UserStoryDetails data={artifact.data as unknown as UserStoryData} />
+          )}
+          {artifact.artifactType === ARTIFACT_TYPE_VALUES.AcceptanceCriterion && (
+            <AcceptanceCriterionDetails data={artifact.data as unknown as AcceptanceCriterionData} />
+          )}
+          {artifact.artifactType === ARTIFACT_TYPE_VALUES.BusinessRule && (
+            <Detail label="Statement" value={(artifact.data as unknown as BusinessRuleData).statement} />
+          )}
+          {artifact.artifactType === ARTIFACT_TYPE_VALUES.DesignArtifact && (
+            <DesignArtifactDetails data={artifact.data as unknown as DesignArtifactData} />
+          )}
+          {artifact.artifactType === ARTIFACT_TYPE_VALUES.DataEntity && (
+            <DataEntityDetails data={artifact.data as unknown as DataEntityData} />
+          )}
+          {artifact.artifactType === ARTIFACT_TYPE_VALUES.ApiSpecification && (
+            <ApiSpecificationDetails data={artifact.data as unknown as ApiSpecificationData} />
+          )}
+          {artifact.artifactType === ARTIFACT_TYPE_VALUES.ImplementationTask && (
+            <ImplementationTaskDetails data={artifact.data as unknown as ImplementationTaskData} />
+          )}
+          {artifact.artifactType === ARTIFACT_TYPE_VALUES.TestCase && (
+            <TestCaseDetails data={artifact.data as unknown as TestCaseData} />
+          )}
         </div>
-      )}
-      {(artifact.artifactType === ARTIFACT_TYPE_VALUES.ImplementationTask || artifact.artifactType === ARTIFACT_TYPE_VALUES.TestCase) && (
-        <WorkRecordPanel artifact={artifact} onRecorded={onSaved} />
-      )}
-      {(artifact.artifactType === ARTIFACT_TYPE_VALUES.DesignArtifact ||
-        artifact.artifactType === ARTIFACT_TYPE_VALUES.ApiSpecification ||
-        artifact.artifactType === ARTIFACT_TYPE_VALUES.DataEntity) && <DesignReviewPanel artifact={artifact} onRecorded={onSaved} />}
 
-      <ArtifactDetails
-        artifactId={artifact.id}
-        artifactType={artifact.artifactType}
-        projectId={artifact.projectId}
-        openImpactNoticeCount={openNotices}
-        onNoticeAcknowledged={onSaved}
-        refreshKey={`${artifact.status}-${artifact.currentVersion}-${reviewsRecorded}`}
-      />
+        <div className="artifact-actions">
+          {isEditable && (
+            <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setEditing(true)}>
+              <IconEdit width={14} height={14} />
+              Edit
+            </button>
+          )}
+          {canReview && onChangeStatus && canSubmit && (
+            <button type="button" className="btn btn-secondary btn-sm" disabled={busy}
+              onClick={() => act((id) => onChangeStatus(id, ARTIFACT_STATUS.UnderReview))}>
+              Submit for review
+            </button>
+          )}
+          {canReview && onChangeStatus && canReturnToDraft && (
+            <button type="button" className="btn btn-ghost btn-sm" disabled={busy}
+              onClick={() => act((id) => onChangeStatus(id, ARTIFACT_STATUS.Draft))}>
+              Return to draft
+            </button>
+          )}
+          {canReview && onChangeStatus && isApprovedOrLater && (
+            <button type="button" className="btn btn-ghost btn-sm" disabled={busy}
+              onClick={() => act((id) => onChangeStatus(id, ARTIFACT_STATUS.UnderReview))}>
+              Reopen review
+            </button>
+          )}
+          {canConfirmTarget && (
+            <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={confirmTarget}
+              title="Confirm this target value as a validated requirement. This does not approve the NFR.">
+              <IconCheck width={14} height={14} />
+              Confirm target
+            </button>
+          )}
+          {artifact.artifactType === ARTIFACT_TYPE_VALUES.UserStory && onGenerateAcceptanceCriteria && (
+            <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act(onGenerateAcceptanceCriteria)}>
+              <IconSparkles width={14} height={14} />
+              Generate acceptance criteria
+            </button>
+          )}
+          {artifact.artifactType === ARTIFACT_TYPE_VALUES.FunctionalRequirement && onGenerateTestCases && (
+            <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act(onGenerateTestCases)}>
+              <IconSparkles width={14} height={14} />
+              Generate test cases
+            </button>
+          )}
+        </div>
+        {confirmError && <p className="field-error-text">{confirmError}</p>}
+
+        {canReview && (
+          <div className="work-record" aria-label="Artifact review">
+            <div className="work-record-head">
+              <strong>Review</strong>
+              <span className="muted">v{artifact.currentVersion}</span>
+            </div>
+            <div className="work-record-actions">
+              <input
+                type="text"
+                placeholder={canDecide ? 'Review comment (optional to approve or comment; required to reject)' : 'Review comment'}
+                value={reviewComment}
+                onChange={(e) => {
+                  setReviewComment(e.target.value);
+                  setReviewError(null);
+                }}
+                disabled={busy}
+                aria-label={`Review comment for ${artifact.code}`}
+              />
+              <button type="button" className="btn btn-ghost btn-sm" disabled={busy || !trimmedComment} onClick={addComment}>
+                Comment
+              </button>
+              {canDecide && (
+                <>
+                  <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => decide(true)}>
+                    <IconCheck width={14} height={14} />
+                    Approve
+                  </button>
+                  <button type="button" className="btn btn-secondary btn-sm btn-reject" disabled={busy} onClick={() => decide(false)}>
+                    <IconX width={14} height={14} />
+                    Reject
+                  </button>
+                </>
+              )}
+            </div>
+            {reviewError && <p className="field-error-text">{reviewError}</p>}
+          </div>
+        )}
+        {(artifact.artifactType === ARTIFACT_TYPE_VALUES.ImplementationTask || artifact.artifactType === ARTIFACT_TYPE_VALUES.TestCase) && (
+          <WorkRecordPanel artifact={artifact} onRecorded={onSaved} />
+        )}
+        {(artifact.artifactType === ARTIFACT_TYPE_VALUES.DesignArtifact ||
+          artifact.artifactType === ARTIFACT_TYPE_VALUES.ApiSpecification ||
+          artifact.artifactType === ARTIFACT_TYPE_VALUES.DataEntity) && <DesignReviewPanel artifact={artifact} onRecorded={onSaved} />}
+
+        <ArtifactDetails
+          artifactId={artifact.id}
+          artifactType={artifact.artifactType}
+          projectId={artifact.projectId}
+          openImpactNoticeCount={openNotices}
+          onNoticeAcknowledged={onSaved}
+          refreshKey={`${artifact.status}-${artifact.currentVersion}-${reviewsRecorded}`}
+        />
+      </div>
 
       {editing && <ArtifactEditDialog artifact={artifact} token={token} onClose={() => setEditing(false)} onSaved={onSaved} />}
     </li>
   );
+}
+
+const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+
+/** One-line summary shown on a collapsed card, built only from the artifact's own payload. */
+function artifactPreview(a: ArtifactSummary): string | null {
+  const d = a.data;
+  const join = (...parts: string[]) => parts.filter(Boolean).join(' · ') || null;
+  switch (a.artifactType) {
+    case ARTIFACT_TYPE_VALUES.FunctionalRequirement:
+      return join(text(d.actor), text(d.expectedResult) || text(d.processing));
+    case ARTIFACT_TYPE_VALUES.NonFunctionalRequirement:
+      return join(text(d.targetValue), text(d.description));
+    case ARTIFACT_TYPE_VALUES.UserStory:
+      return text(d.persona) || text(d.valueStatement) ? `As ${text(d.persona) || '…'}: ${text(d.valueStatement)}` : null;
+    case ARTIFACT_TYPE_VALUES.AcceptanceCriterion:
+      return join(text(d.kind), text(d.given) && `Given ${text(d.given)}`);
+    case ARTIFACT_TYPE_VALUES.BusinessRule:
+      return text(d.statement) || null;
+    case ARTIFACT_TYPE_VALUES.DesignArtifact:
+      return text(d.architectureOverview) || null;
+    case ARTIFACT_TYPE_VALUES.DataEntity: {
+      const fields = Array.isArray(d.fields) ? d.fields.length : 0;
+      return join(fields ? `${fields} field${fields === 1 ? '' : 's'}` : '', text(d.relationships));
+    }
+    case ARTIFACT_TYPE_VALUES.ApiSpecification:
+      return join(`${text(d.method)} ${text(d.route)}`.trim(), text(d.purpose));
+    case ARTIFACT_TYPE_VALUES.ImplementationTask:
+      return join(text(d.taskType), text(d.estimate), text(d.description));
+    case ARTIFACT_TYPE_VALUES.TestCase: {
+      const steps = Array.isArray(d.steps) ? d.steps.length : 0;
+      return join(text(d.testKind), steps ? `${steps} step${steps === 1 ? '' : 's'}` : '', text(d.expectedResult));
+    }
+    default:
+      return null;
+  }
 }
 
 function FunctionalRequirementDetails({ data }: { data: FunctionalRequirementData }) {
