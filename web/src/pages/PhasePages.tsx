@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useProject } from '../context/ProjectContext';
@@ -14,6 +15,7 @@ import { MembersPanel } from '../components/MembersPanel';
 import { ProjectEditor, ProjectSummary } from '../components/ProjectForm';
 import { ConflictsPanel } from '../components/ConflictsPanel';
 import { TraceabilityMatrix } from '../components/TraceabilityMatrix';
+import { TestQaSummary } from '../components/TestQaSummary';
 import { CopilotPanel } from '../components/CopilotPanel';
 import { AgentPipelinePanel } from '../components/AgentPipelinePanel';
 import { DocumentsPanel } from '../components/DocumentsPanel';
@@ -196,10 +198,12 @@ export function DevelopmentPage() {
 export function TestingPage() {
   const { project, contentVersion } = useProject();
   const { artifacts, matrix } = useProjectInsights(project.id, contentVersion);
-  const testCount = artifacts ? artifacts.filter((a) => a.artifactType === ARTIFACT_TYPE_VALUES.TestCase).length : null;
+  const testCases = useMemo(() => artifacts?.filter((a) => a.artifactType === ARTIFACT_TYPE_VALUES.TestCase) ?? null, [artifacts]);
+  const testCount = testCases ? testCases.length : null;
   const covered = matrix && matrix.length > 0 ? matrix.filter((r) => r.testCases.length > 0).length : null;
   return (
     <PhasePage phaseKey="testing" title={phase('testing').navLabel} description="Derive test cases from functional requirements and see how much of the specification they cover.">
+      {testCases && <TestQaSummary projectId={project.id} testCases={testCases} />}
       {(testCount !== null || covered !== null) && (
         <div className="stat-grid phase-stats">
           {testCount !== null && <Stat label="Test cases" value={testCount} />}

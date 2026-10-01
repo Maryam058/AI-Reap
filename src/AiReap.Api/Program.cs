@@ -65,6 +65,7 @@ builder.Services.AddScoped<ISdlcProgressService, SdlcProgressService>();
 builder.Services.AddScoped<ILifecycleEvidenceService, LifecycleEvidenceService>();
 builder.Services.AddScoped<IProjectLifecycleService, ProjectLifecycleService>();
 builder.Services.AddScoped<LifecycleNotifications>();
+builder.Services.AddScoped<ExitCheckGuidanceService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IArtifactWorkService, ArtifactWorkService>();
 builder.Services.AddScoped<ITraceabilityService, TraceabilityService>();

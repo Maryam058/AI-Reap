@@ -7,8 +7,6 @@ import {
   IconFolder,
   IconGrid,
   IconLayers,
-  IconRefresh,
-  IconRocket,
   IconSearch,
   IconSettings,
   IconShieldCheck,
@@ -72,7 +70,6 @@ export const SEGMENT_DEFAULT_TAB: Record<string, string> = {
  *   Design                /projects/:id/design
  *   Development           /projects/:id/development
  *   Testing               /projects/:id/testing
- *   Deployment, Maint.    not built yet (shown as Soon, no route)
  *   AI Assistant          /projects/:id/copilot
  *   Agent Pipeline        /projects/:id/copilot?tab=pipeline
  *   Quality & Validation  /projects/:id/validation
@@ -108,8 +105,6 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: 'design', label: 'Design', icon: IconLayers, status: 'in-progress', segment: 'design', stages: [3], description: 'Turn validated requirements into architecture, data and interfaces.' },
       { key: 'development', label: 'Development', icon: IconCode, status: 'in-progress', segment: 'development', stages: [4, 5], description: 'Break the design into implementation tasks and track their completion.' },
       { key: 'testing', label: 'Testing', icon: IconShieldCheck, status: 'in-progress', segment: 'testing', stages: [6], description: 'Derive test cases from requirements and track coverage.' },
-      { key: 'deployment', label: 'Deployment', icon: IconRocket, status: 'planned', description: 'Release planning and environments.' },
-      { key: 'maintenance', label: 'Maintenance', icon: IconRefresh, status: 'planned', description: 'Change requests and post-release support.' },
     ],
   },
   {

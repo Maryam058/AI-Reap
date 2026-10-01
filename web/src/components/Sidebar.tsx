@@ -5,7 +5,7 @@ import { useSidebar } from '../context/SidebarContext';
 import { readLastProject, useProjectContext } from '../context/ProjectContext';
 import { NAV_GROUPS, SEGMENT_DEFAULT_TAB, type NavGroup, type NavModule } from '../navigation/navConfig';
 import { phasePath } from '../lib/workAreas';
-import { lifecycleProgress, LIFECYCLE_STAGES, stageLabel, stageState, type StageState } from '../lib/lifecycle';
+import { LAST_STAGE, lifecycleProgress, LIFECYCLE_STAGES, stageLabel, stageState, type StageState } from '../lib/lifecycle';
 import { useProjectLifecycle } from '../hooks/useLifecycle';
 import { statusLabel, statusVariant } from '../lib/format';
 import { IconCheck, IconChevronDown, IconChevronLeft, IconFolder, IconSparkles, IconX } from './icons';
@@ -221,9 +221,22 @@ export function Sidebar() {
           {NAV_GROUPS.slice(1).map(renderGroup)}
         </nav>
 
-        <button className="sidebar-collapse-toggle" onClick={toggleCollapsed} aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'} title={collapsed ? 'Expand navigation' : 'Collapse navigation'}>
-          <IconChevronLeft className={collapsed ? 'rotated' : undefined} />
-        </button>
+        <div className="sidebar-footer">
+          <button
+            type="button"
+            className="sidebar-collapse-btn"
+            onClick={toggleCollapsed}
+            aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
+            aria-expanded={!collapsed}
+            onMouseEnter={showTip('Expand navigation')}
+            onMouseLeave={hideTip}
+            onFocus={showTip('Expand navigation')}
+            onBlur={hideTip}
+          >
+            <IconChevronLeft className={collapsed ? 'rotated' : undefined} width={16} height={16} />
+            {!rail && <span>Collapse</span>}
+          </button>
+        </div>
       </aside>
       {tip && rail && (
         <div className="nav-tooltip" role="tooltip" style={{ top: tip.top, left: tip.left }}>
@@ -250,17 +263,19 @@ function SidebarLifecycle({ projectId, status, stamp, active, name }: { projectI
           Stage {progress.stageNumber}/{LIFECYCLE_STAGES.length}
         </span>
       </div>
-      <ol className="phase-track" aria-label="Project lifecycle">
+      <ol className={`phase-track${progress.finished ? ' finished' : ''}`} aria-label="Project lifecycle">
         {LIFECYCLE_STAGES.map((s) => {
-          const st = stageState(s.status, status);
+          // As in LifecycleStepper: the final stage, once reached, is finished rather than current.
+          const reached = stageState(s.status, status);
+          const st = reached === 'current' && s.status === LAST_STAGE ? 'completed' : reached;
           return <li key={s.status} className={`phase-seg ${st}${pending && st === 'current' ? ' awaiting' : ''}`} title={`${s.status + 1}. ${s.label}`} />;
         })}
       </ol>
       <div className="nav-project-phase">
         {progress.finished ? (
-          <>
-            <IconCheck width={12} height={12} strokeWidth={3} /> Lifecycle completed
-          </>
+          <span className="nav-project-done">
+            <IconCheck width={12} height={12} strokeWidth={3} /> Lifecycle completed · 100%
+          </span>
         ) : pending ? (
           <>
             <span className="nav-state current" aria-hidden="true" /> <strong>Awaiting review</strong> to {stageLabel(state!.pendingTransition!.toStatus)}

@@ -41,16 +41,18 @@ public class ProjectLifecycleService : IProjectLifecycleService
     private readonly IProjectAccessService _projectAccess;
     private readonly ILifecycleEvidenceService _evidence;
     private readonly LifecycleNotifications _notifications;
+    private readonly ExitCheckGuidanceService _guidance;
 
     public ProjectLifecycleService(
         IAiReapDbContext db, ICurrentUser currentUser, IProjectAccessService projectAccess,
-        ILifecycleEvidenceService evidence, LifecycleNotifications notifications)
+        ILifecycleEvidenceService evidence, LifecycleNotifications notifications, ExitCheckGuidanceService guidance)
     {
         _db = db;
         _currentUser = currentUser;
         _projectAccess = projectAccess;
         _evidence = evidence;
         _notifications = notifications;
+        _guidance = guidance;
     }
 
     // The first history row of a new project (ProjectService.CreateAsync), matching the Baseline
@@ -74,7 +76,8 @@ public class ProjectLifecycleService : IProjectLifecycleService
     public async Task<ProjectLifecycleState> GetStateAsync(Guid projectId, CancellationToken cancellationToken = default)
     {
         var project = await LoadProjectAsync(projectId, cancellationToken);
-        var stages = await _evidence.GetAsync(projectId, cancellationToken);
+        var stages = await _evidence.GetDetailedAsync(projectId, cancellationToken);
+        var view = await _guidance.ForProjectAsync(projectId, cancellationToken);
         var history = await HistoryAsync(projectId, cancellationToken);
         var pending = history.FirstOrDefault(t => t.State == StageTransitionState.Pending);
 
@@ -104,10 +107,13 @@ public class ProjectLifecycleService : IProjectLifecycleService
             next,
             gated,
             project.Status == ProjectStatus.Testing,
-            current.Checks,
-            current.Passed,
+            current.Checks.Select(view).ToList(),
+            current.Checks.All(c => c.Check.Passed),
             pending is null ? null : ToResponse(pending),
-            stages.Where(s => ProjectLifecyclePolicy.IndexOf(s.Stage) < index && !s.Passed).ToList(),
+            stages
+                .Where(s => ProjectLifecyclePolicy.IndexOf(s.Stage) < index && !s.Checks.All(c => c.Check.Passed))
+                .Select(s => new StageEvidenceView(s.Stage, s.Label, s.OwnerRole, s.Checks.Select(view).ToList()))
+                .ToList(),
             actions,
             history.Select(ToResponse).ToList());
     }
@@ -171,7 +177,7 @@ public class ProjectLifecycleService : IProjectLifecycleService
         var gated = ProjectLifecyclePolicy.IsGated(from);
         var note = Clean(request.Note);
         var checks = await EvaluateExitAsync(project, role, note, cancellationToken);
-        var overrideReason = ResolveOverride(checks, request.OverrideReason, alreadyOverridden: false, stage.Label)
+        var overrideReason = await ResolveOverrideAsync(projectId, checks, request.OverrideReason, alreadyOverridden: false, stage.Label, cancellationToken)
             ?? StandInOverride(role, stage.OwnerRole, request.OverrideReason, $"move the project out of {stage.Label}");
 
         var now = DateTime.UtcNow;
@@ -190,7 +196,7 @@ public class ProjectLifecycleService : IProjectLifecycleService
             RequestNote = note,
             IsOverride = overrideReason is not null,
             OverrideReason = overrideReason,
-            EvidenceSnapshotJson = Snapshot(checks)
+            EvidenceSnapshotJson = Snapshot(checks.Select(c => c.Check).ToList())
         };
 
         if (!gated)
@@ -258,7 +264,7 @@ public class ProjectLifecycleService : IProjectLifecycleService
 
         // Evidence can have changed since submission: judge it again, as it stands now.
         var checks = await EvaluateExitAsync(project, transition.RequestedByRole, transition.RequestNote, cancellationToken);
-        var overrideReason = ResolveOverride(checks, request.OverrideReason, transition.IsOverride, stage.Label)
+        var overrideReason = await ResolveOverrideAsync(project.Id, checks, request.OverrideReason, transition.IsOverride, stage.Label, cancellationToken)
             ?? StandInOverride(role, ProjectLifecyclePolicy.GateApproverRole, request.OverrideReason, $"approve moving the project out of {stage.Label}");
         if (overrideReason is not null)
         {
@@ -268,7 +274,7 @@ public class ProjectLifecycleService : IProjectLifecycleService
                 : $"{transition.OverrideReason} | {overrideReason}";
         }
 
-        transition.EvidenceSnapshotJson = Snapshot(checks);
+        transition.EvidenceSnapshotJson = Snapshot(checks.Select(c => c.Check).ToList());
         Decide(transition, StageTransitionState.Completed, role, now, reason);
         // Added through the DbSet: a pre-keyed child added via the navigation would be treated as existing.
         _db.ProjectStageReviews.Add(Review(transition, role, ReviewDecision.Approved, reason, now));
@@ -350,15 +356,18 @@ public class ProjectLifecycleService : IProjectLifecycleService
 
     // The current stage's exit checks, plus - for the Testing gate - QA's sign-off, which is the
     // submission itself: made under the QA role, with a sign-off note.
-    private async Task<IReadOnlyList<SdlcCheck>> EvaluateExitAsync(Project project, string? requesterRole, string? note, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<CheckEvidence>> EvaluateExitAsync(Project project, string? requesterRole, string? note, CancellationToken cancellationToken)
     {
-        var checks = (await _evidence.GetAsync(project.Id, cancellationToken)).Single(s => s.Stage == project.Status).Checks.ToList();
+        var checks = (await _evidence.GetDetailedAsync(project.Id, cancellationToken)).Single(s => s.Stage == project.Status).Checks.ToList();
         if (project.Status == ProjectStatus.Testing)
         {
             var signedOff = requesterRole == Roles.QA && !string.IsNullOrWhiteSpace(note);
-            checks.Add(new SdlcCheck(SignOffLabel, signedOff, signedOff
-                ? "QA submitted Testing for approval with a sign-off note."
-                : "Testing must be submitted by QA with a sign-off note."));
+            checks.Add(new CheckEvidence(
+                new SdlcCheck(SignOffLabel, signedOff, signedOff
+                    ? "QA submitted Testing for approval with a sign-off note."
+                    : "Testing must be submitted by QA with a sign-off note."),
+                ExitCheckKeys.QaSignOff,
+                signedOff ? [] : [CheckBlocker.Of(BlockerReasons.SignOff)]));
         }
 
         return checks;
@@ -367,9 +376,10 @@ public class ProjectLifecycleService : IProjectLifecycleService
     // Returns the override reason to record, or null when the evidence passes. Failing evidence
     // needs an Administrator's reason - unless the request already carries one (a gated request an
     // Administrator submitted with an override, now being approved).
-    private string? ResolveOverride(IReadOnlyList<SdlcCheck> checks, string? requestedReason, bool alreadyOverridden, string stageLabel)
+    private async Task<string?> ResolveOverrideAsync(
+        Guid projectId, IReadOnlyList<CheckEvidence> checks, string? requestedReason, bool alreadyOverridden, string stageLabel, CancellationToken cancellationToken)
     {
-        var failing = checks.Where(c => !c.Passed).ToList();
+        var failing = checks.Where(c => !c.Check.Passed).ToList();
         if (failing.Count == 0)
         {
             return null;
@@ -385,7 +395,7 @@ public class ProjectLifecycleService : IProjectLifecycleService
 
             throw new LifecycleEvidenceException(
                 $"{stageLabel} is not complete: {failing.Count} check(s) failing. An Administrator may override with a reason.",
-                failing);
+                await _guidance.ViewsAsync(projectId, failing, cancellationToken));
         }
 
         if (ProjectLifecyclePolicy.OverrideRole(_currentUser.IsInRole) is null)
@@ -488,6 +498,7 @@ public class ProjectLifecycleService : IProjectLifecycleService
 
     private static string? Clean(string? text) => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
 
+    // Plain SdlcCheck only: history is shown to every member, so per-viewer guidance is never stored.
     private static string Snapshot(IReadOnlyList<SdlcCheck> checks) => JsonSerializer.Serialize(checks, JsonOptions);
 
     public static StageTransitionResponse ToResponse(ProjectStageTransition t) => new(

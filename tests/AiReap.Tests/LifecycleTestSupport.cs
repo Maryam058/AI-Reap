@@ -55,8 +55,14 @@ public sealed class ServicesAs : IDisposable
         {
             var r = NewRequest();
             return new ProjectLifecycleService(r.Db, _user, r.Access, EvidenceFor(r.Db, r.Sp),
-                new LifecycleNotifications(r.Db, r.Sp.GetRequiredService<IUserRoleDirectory>()));
+                new LifecycleNotifications(r.Db, r.Sp.GetRequiredService<IUserRoleDirectory>()),
+                new ExitCheckGuidanceService(r.Db, r.Sp.GetRequiredService<IUserRoleDirectory>(), _user));
         }
+    }
+
+    public ExitCheckGuidanceService Guidance
+    {
+        get { var r = NewRequest(); return new ExitCheckGuidanceService(r.Db, r.Sp.GetRequiredService<IUserRoleDirectory>(), _user); }
     }
 
     public IArtifactWorkService Work

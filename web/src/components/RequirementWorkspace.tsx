@@ -1,6 +1,7 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { phasePath } from '../lib/workAreas';
+import { sectionForArtifactType } from '../lib/checkGuidance';
 import { useAuth } from '../auth/AuthContext';
 import { apiErrorText } from '../lib/errors';
 import { readsRawSources } from '../lib/access';
@@ -62,6 +63,15 @@ export function RequirementWorkspace({
   // Open-and-show requests: a section (overview jump) or a requirement group (after generating its tests).
   const [revealSection, setRevealSection] = useState<{ id: string; request: DisclosureRequest } | null>(null);
   const [revealGroup, setRevealGroup] = useState<{ key: string; request: DisclosureRequest } | null>(null);
+  // Deep links from lifecycle guidance: ?source=<requirement source>&focus=<artifact id>, or ?section=<anchor>.
+  const [params] = useSearchParams();
+  const requestedSource = params.get('source');
+  const requestedFocus = params.get('focus');
+  const requestedSection = params.get('section');
+  const [focus, setFocus] = useState<{ id: string; request: DisclosureRequest } | null>(null);
+  // The source whose artifacts are currently loaded, so a deep link never acts on a previous source's list.
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  const handledLink = useRef<string | null>(null);
 
   const selectedSource = sources.find((s) => s.id === selectedId) ?? null;
 
@@ -70,7 +80,7 @@ export function RequirementWorkspace({
       const list = await requirementSourcesApi.listForProject(projectId, token);
       setSources(list);
       if (!selectedId && list.length > 0) {
-        setSelectedId(list[0].id);
+        setSelectedId(list.find((s) => s.id === requestedSource)?.id ?? list[0].id);
       }
     } catch (err) {
       setError(apiErrorText(err, 'Failed to load requirement sources.'));
@@ -88,6 +98,7 @@ export function RequirementWorkspace({
       setQuestions(q);
       setArtifacts(a.filter((x) => x.artifactType !== ARTIFACT_TYPE_VALUES.ClarificationQuestion));
       setMatrix(m);
+      setLoadedFor(sourceId);
     } catch (err) {
       setError(apiErrorText(err, 'Failed to load requirement data.'));
     }
@@ -98,9 +109,18 @@ export function RequirementWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
+  // A deep link to another source (e.g. following a second guidance link on the same page) switches to it.
+  useEffect(() => {
+    if (requestedSource && requestedSource !== selectedId && sources.some((s) => s.id === requestedSource)) {
+      setSelectedId(requestedSource);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedSource, sources]);
+
   useEffect(() => {
     setAnalysis(null);
     setQualityFindings(null);
+    setLoadedFor(null);
     if (selectedId) {
       loadDerived(selectedId);
     } else {
@@ -283,6 +303,8 @@ export function RequirementWorkspace({
 
   const onArtifactSaved = () => {
     if (selectedId) loadDerived(selectedId);
+    // Lets page-level summaries (e.g. Testing's QA results) reload after an edit or a recorded result.
+    onChange?.();
   };
 
   // Presentation-only groupings, built from payload fields and the existing traceability links.
@@ -308,7 +330,44 @@ export function RequirementWorkspace({
   };
   const overview = (items: OverviewItem[]) => <GeneratedOverview items={items.filter((i) => i.count > 0)} onJump={jumpTo} />;
 
-  const reviewProps = { canReview, canEdit: canWrite, token, onApprove, onReject, onChangeStatus, onSaved: onArtifactSaved };
+  // Act on a guidance deep link once, after the requested source's artifacts have loaded: open the
+  // artifact's section, group and card (the card scrolls itself into view and is highlighted), or
+  // scroll to the requested section. A target not in this list (e.g. not visible to this user) is ignored.
+  useEffect(() => {
+    if (!requestedFocus && !requestedSection) return;
+    if (!selectedId || loadedFor !== selectedId) return;
+    if (requestedSource && requestedSource !== selectedId && sources.some((s) => s.id === requestedSource)) return;
+    const link = `${selectedId}|${requestedFocus ?? ''}|${requestedSection ?? ''}`;
+    if (handledLink.current === link) return;
+    handledLink.current = link;
+
+    const target = requestedFocus ? artifacts.find((a) => a.id === requestedFocus) : undefined;
+    if (target) {
+      const request = { stamp: nextStamp(), open: true };
+      setFocus({ id: target.id, request });
+      const section = sectionForArtifactType(target.artifactType);
+      if (section) setRevealSection({ id: section, request });
+      return;
+    }
+
+    if (requestedSection) {
+      // Some anchors (conflicts, quality) render in panels that load on their own; retry briefly.
+      const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      const timers = [0, 400, 1200].map((delay) =>
+        window.setTimeout(() => {
+          const el = document.getElementById(requestedSection);
+          if (el && !el.dataset.guidanceScrolled) {
+            el.dataset.guidanceScrolled = '1';
+            setRevealSection({ id: requestedSection, request: { stamp: nextStamp(), open: true } });
+            el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+          }
+        }, delay),
+      );
+      return () => timers.forEach((t) => window.clearTimeout(t));
+    }
+  }, [requestedFocus, requestedSection, requestedSource, selectedId, loadedFor, artifacts, sources]);
+
+  const reviewProps = { canReview, canEdit: canWrite, token, onApprove, onReject, onChangeStatus, onSaved: onArtifactSaved, focus };
   // `done` — how many items this step has already produced for the source; shown as a completed state.
   // The button stays usable: running it again calls the generator again, exactly as before.
   const generateButton = (key: string, label: string, busyLabel: string, run: () => unknown, disabled: boolean, primary = false, hint?: string, done = 0) => {
@@ -693,7 +752,7 @@ export function RequirementWorkspace({
               )}
               {implementationTasks.length > 0 && (
                 <ArtifactSection id="sec-tasks" title="Implementation Tasks" noun={['task', 'tasks']} items={implementationTasks}
-                  groups={taskGroups} groupEyebrow={taskGroupedByType ? 'Type' : undefined} {...reviewProps} />
+                  groups={taskGroups} groupEyebrow={taskGroupedByType ? 'Type' : undefined} reveal={reveal('sec-tasks')} {...reviewProps} />
               )}
             </>
           )}
@@ -713,6 +772,7 @@ export function RequirementWorkspace({
                     summary={`${coveredRequirements} of ${functionalRequirements.length} requirements covered`}
                     groupActions={canManageTests ? (g) => g.requirementId && testGenerateActions(g.requirementId, g.items.length > 0) : undefined}
                     groupReveal={(g) => (revealGroup && revealGroup.key === g.key ? revealGroup.request : null)}
+                    reveal={reveal('sec-tests')}
                     {...reviewProps}
                     canEdit={canManageTests}
                   />
@@ -737,7 +797,7 @@ export function RequirementWorkspace({
                     </section>
                   )}
                   {testCases.length > 0 && (
-                    <ArtifactSection id="sec-tests" title="Test Cases" noun={['test case', 'test cases']} items={testCases} {...reviewProps} canEdit={canManageTests} />
+                    <ArtifactSection id="sec-tests" title="Test Cases" noun={['test case', 'test cases']} items={testCases} reveal={reveal('sec-tests')} {...reviewProps} canEdit={canManageTests} />
                   )}
                 </>
               )}
@@ -809,6 +869,7 @@ function ArtifactSection({
   onSaved,
   onGenerateAcceptanceCriteria,
   onGenerateTestCases,
+  focus,
 }: {
   id?: string;
   title: string;
@@ -832,6 +893,8 @@ function ArtifactSection({
   onSaved: () => void;
   onGenerateAcceptanceCriteria?: (id: string) => Promise<unknown>;
   onGenerateTestCases?: (id: string) => Promise<unknown>;
+  /** A guidance deep link's target: its group and card open, and the card is highlighted. */
+  focus?: { id: string; request: DisclosureRequest } | null;
 }) {
   // A lone item is shown in full; in a collection, cards start compact.
   const collapsible = items.length > 1;
@@ -856,6 +919,8 @@ function ArtifactSection({
           onGenerateAcceptanceCriteria={generateCriteria}
           onGenerateTestCases={generateTests}
           collapsible={collapsible}
+          reveal={focus?.id === a.id ? focus.request : null}
+          focused={focus?.id === a.id}
         />
       ))}
     </ul>
@@ -886,7 +951,7 @@ function ArtifactSection({
               summary={statusSummary(g.items)}
               actions={groupActions?.(g)}
               defaultOpen={items.length <= 6 || i === firstFilled}
-              reveal={groupReveal?.(g)}
+              reveal={focus && g.items.some((a) => a.id === focus.id) ? focus.request : groupReveal?.(g)}
             >
               {list(g.items)}
             </CollectionGroup>

@@ -182,10 +182,7 @@ public class ProjectsController : ControllerBase
         foreach (var member in members)
         {
             var user = await _userManager.FindByIdAsync(member.UserId);
-            responses.Add(new ProjectMemberDetailResponse(
-                member.Id, member.ProjectId, member.UserId,
-                user?.Email ?? "(deleted user)", user?.DisplayName ?? "(deleted user)",
-                member.AddedByUserId, member.AddedAt));
+            responses.Add(await ToMemberResponseAsync(member, user, "(deleted user)"));
         }
 
         return Ok(responses);
@@ -208,9 +205,7 @@ public class ProjectsController : ControllerBase
             return NotFound();
         }
 
-        var response = new ProjectMemberDetailResponse(
-            member.Id, member.ProjectId, member.UserId, user.Email ?? request.Email, user.DisplayName,
-            member.AddedByUserId, member.AddedAt);
+        var response = await ToMemberResponseAsync(member, user, request.Email);
         return CreatedAtAction(nameof(GetMembers), new { projectId }, response);
     }
 
@@ -221,9 +216,29 @@ public class ProjectsController : ControllerBase
         var removed = await _projectService.RemoveMemberAsync(projectId, userId, cancellationToken);
         return removed ? NoContent() : NotFound();
     }
+
+    // Account role and active state come from Identity, as in UsersController.ToResponseAsync, so the
+    // Members list can show them to Business Analysts who can't call the Administrator-only /api/users.
+    // A deleted account reads as inactive with no role.
+    private async Task<ProjectMemberDetailResponse> ToMemberResponseAsync(ProjectMemberResponse member, ApplicationUser? user, string fallbackEmail)
+    {
+        string? role = null;
+        var isActive = false;
+        if (user is not null)
+        {
+            role = (await _userManager.GetRolesAsync(user)).FirstOrDefault();
+            isActive = !await _userManager.IsLockedOutAsync(user);
+        }
+
+        return new ProjectMemberDetailResponse(
+            member.Id, member.ProjectId, member.UserId,
+            user?.Email ?? fallbackEmail, user?.DisplayName ?? "(deleted user)",
+            member.AddedByUserId, member.AddedAt, role, isActive);
+    }
 }
 
 // API-layer only (depends on Identity for Email/DisplayName) - the Application-layer
 // ProjectMemberResponse stays UserId-only on purpose; see the comment on GetMembers above.
 public record ProjectMemberDetailResponse(
-    Guid Id, Guid ProjectId, string UserId, string Email, string DisplayName, string AddedByUserId, DateTime AddedAt);
+    Guid Id, Guid ProjectId, string UserId, string Email, string DisplayName, string AddedByUserId, DateTime AddedAt,
+    string? Role, bool IsActive);

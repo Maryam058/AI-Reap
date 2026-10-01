@@ -74,9 +74,8 @@ public class LifecycleNotifications
 
     private async Task<IReadOnlyList<string>> MembersInRoleOrAdministratorsAsync(Guid projectId, string role, CancellationToken cancellationToken)
     {
-        var memberIds = await _db.ProjectMembers.Where(m => m.ProjectId == projectId).Select(m => m.UserId).ToListAsync(cancellationToken);
-        var roles = await _roles.GetActiveUserRolesAsync(memberIds, cancellationToken);
-        var holders = memberIds.Where(id => roles.TryGetValue(id, out var r) && r.Contains(role)).ToList();
+        var roles = await ProjectMemberRoles.GetAsync(_db, _roles, projectId, cancellationToken);
+        var holders = roles.Where(m => m.Value.Contains(role)).Select(m => m.Key).ToList();
         return holders.Count > 0 ? holders : await _roles.GetActiveUsersInRoleAsync(Roles.Administrator, cancellationToken);
     }
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArtifactDetails } from './ArtifactDetails';
 import { ArtifactEditDialog } from './ArtifactEditDialog';
 import { WorkRecordPanel } from './WorkRecordPanel';
@@ -7,7 +7,8 @@ import { IconCheck, IconChevronDown, IconEdit, IconSparkles, IconX } from './ico
 import { artifactsApi } from '../api/artifacts';
 import { useAuth } from '../auth/AuthContext';
 import { apiErrorText } from '../lib/errors';
-import { useDisclosure } from '../lib/disclosure';
+import { useDisclosure, type DisclosureRequest } from '../lib/disclosure';
+import { testCaseReviewNote } from '../lib/testCaseReview';
 import {
   ARTIFACT_PRIORITY_LABELS,
   ARTIFACT_STATUS,
@@ -45,6 +46,10 @@ interface Props {
   // Compact mode for generated collections: header and a one-line preview until expanded. Actions and
   // review are unchanged once the card is open.
   collapsible?: boolean;
+  /** Open this card (a guidance link's ?focus= target). */
+  reveal?: DisclosureRequest | null;
+  /** Scroll to and briefly highlight this card. */
+  focused?: boolean;
 }
 
 // Artifact status (0 AI Generated … 6 Verified) → status-pill tone.
@@ -88,6 +93,8 @@ export function ArtifactCard({
   onGenerateAcceptanceCriteria,
   onGenerateTestCases,
   collapsible = false,
+  reveal = null,
+  focused = false,
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -107,12 +114,23 @@ export function ArtifactCard({
     status === ARTIFACT_STATUS.Approved || status === ARTIFACT_STATUS.Implemented || status === ARTIFACT_STATUS.Verified;
   const editedAfterApproval =
     status === ARTIFACT_STATUS.UnderReview && artifact.approvedVersion != null && artifact.approvedVersion < artifact.currentVersion;
+  // Explains why a Draft test case offers Submit for review rather than Approve/Reject (text only).
+  const reviewNote = artifact.artifactType === ARTIFACT_TYPE_VALUES.TestCase ? testCaseReviewNote(status) : null;
   const openNotices = artifact.openImpactNoticeCount ?? 0;
   const isAiOrigin = artifact.origin === 0;
   const isEditable = canEdit && artifact.artifactType !== ARTIFACT_TYPE_VALUES.ClarificationQuestion;
   // An upstream-change notice needs attention, so such a card starts open.
-  const disclosure = useDisclosure(!collapsible || openNotices > 0);
+  const disclosure = useDisclosure(!collapsible || openNotices > 0, reveal);
   const expanded = !collapsible || disclosure.open;
+  // A guidance link targeted this card: bring it into view once it has opened.
+  const cardRef = useRef<HTMLLIElement>(null);
+  const focusStamp = focused ? reveal?.stamp : undefined;
+  useEffect(() => {
+    if (focusStamp === undefined) return;
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const timer = window.setTimeout(() => cardRef.current?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' }), 120);
+    return () => window.clearTimeout(timer);
+  }, [focusStamp]);
   const preview = collapsible && !expanded ? artifactPreview(artifact) : null;
 
   // REAP-045 — a BA or Reviewer other than the author confirms an NFR's proposed target. Confirmation
@@ -190,7 +208,11 @@ export function ArtifactCard({
   };
 
   return (
-    <li className={`artifact-card tone-${STATUS_TONE[artifact.status] ?? 'neutral'}${collapsible ? ' is-collapsible' : ''}${expanded ? '' : ' is-collapsed'}`}>
+    <li
+      ref={cardRef}
+      id={`artifact-${artifact.id}`}
+      className={`artifact-card tone-${STATUS_TONE[artifact.status] ?? 'neutral'}${collapsible ? ' is-collapsible' : ''}${expanded ? '' : ' is-collapsed'}${focused ? ' is-focused' : ''}`}
+    >
       <div className="artifact-header">
         {collapsible ? (
           <button type="button" className="artifact-toggle" aria-expanded={expanded} onClick={disclosure.toggle}>
@@ -310,6 +332,7 @@ export function ArtifactCard({
           )}
         </div>
         {confirmError && <p className="field-error-text">{confirmError}</p>}
+        {reviewNote && <p className="hint">{reviewNote}</p>}
 
         {canReview && (
           <div className="work-record" aria-label="Artifact review">

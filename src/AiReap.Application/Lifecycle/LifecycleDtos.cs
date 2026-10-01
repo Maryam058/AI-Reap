@@ -62,12 +62,13 @@ public record ProjectLifecycleState(
     bool NextIsGated,
     // QA's sign-off note, given when submitting Testing for approval, is part of that gate.
     bool RequiresSignOff,
-    IReadOnlyList<SdlcCheck> ExitChecks,
+    // Each check with, when failing, guidance for the current viewer (ExitCheckGuidanceService).
+    IReadOnlyList<ExitCheckView> ExitChecks,
     bool ReadyToAdvance,
     StageTransitionResponse? PendingTransition,
     // Stages the project has already passed whose checks no longer hold (e.g. a project that
     // predates lifecycle tracking, or approved work reopened since). Reported, never auto-corrected.
-    IReadOnlyList<StageEvidence> EvidenceGaps,
+    IReadOnlyList<StageEvidenceView> EvidenceGaps,
     LifecycleActions Actions,
     // Every lifecycle event, oldest first (baseline, advances, requests and their outcomes, rollbacks).
     IReadOnlyList<StageTransitionResponse> History);

@@ -1,11 +1,11 @@
 using AiReap.Application.Common;
-using AiReap.Application.Sdlc;
 
 namespace AiReap.Application.Lifecycle;
 
-// The stage's exit checks are not met. Carries the failing checks so the caller can show exactly
-// what is missing. Mapped to 409 by the API layer, like every ConflictException.
-public class LifecycleEvidenceException(string message, IReadOnlyList<SdlcCheck> failingChecks) : ConflictException(message)
+// The stage's exit checks are not met. Carries the failing checks, with guidance for the caller, so
+// they can see exactly what is missing and how to meet it. Mapped to 409 by the API layer, like every
+// ConflictException.
+public class LifecycleEvidenceException(string message, IReadOnlyList<ExitCheckView> failingChecks) : ConflictException(message)
 {
-    public IReadOnlyList<SdlcCheck> FailingChecks { get; } = failingChecks;
+    public IReadOnlyList<ExitCheckView> FailingChecks { get; } = failingChecks;
 }

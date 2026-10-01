@@ -427,6 +427,14 @@ export function IconBarChart(props: IconProps) {
   );
 }
 
+export function IconFilter(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M3 5h18l-7 8.5V19l-4 2v-7.5L3 5z" />
+    </svg>
+  );
+}
+
 export function IconBell(props: IconProps) {
   return (
     <svg {...base(props)}>

@@ -1,4 +1,5 @@
 import { ApiError } from '../api/client';
+import type { LifecycleCheck } from '../api/types';
 
 // Stable codes the API puts on ProblemDetails responses (ApplicationExceptionHandler). Their
 // `detail` text is written for end users and never contains secrets or stack traces.
@@ -43,10 +44,10 @@ export function apiErrorCode(err: unknown): string | null {
 }
 
 /** The failing exit checks a lifecycle 409 (`lifecycle_evidence_failed`) carries, or []. */
-export function failingChecksOf(err: unknown): { label: string; passed: boolean; detail: string }[] {
+export function failingChecksOf(err: unknown): LifecycleCheck[] {
   if (!(err instanceof ApiError)) return [];
   const parsed = parseBody(err) as { failingChecks?: unknown } | undefined;
-  return parsed && Array.isArray(parsed.failingChecks) ? (parsed.failingChecks as { label: string; passed: boolean; detail: string }[]) : [];
+  return parsed && Array.isArray(parsed.failingChecks) ? (parsed.failingChecks as LifecycleCheck[]) : [];
 }
 
 /** True when the API says trying the same request again later may succeed (rate limit, timeout, outage). */

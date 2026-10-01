@@ -50,13 +50,28 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
         return result.TryGetValue(projectId, out var stages) ? stages : [];
     }
 
+    public async Task<IReadOnlyList<StageCheckEvidence>> GetDetailedAsync(Guid projectId, CancellationToken cancellationToken = default)
+    {
+        var result = await EvaluateManyAsync([projectId], cancellationToken);
+        return result.TryGetValue(projectId, out var stages) ? stages : [];
+    }
+
     public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<StageEvidence>>> GetManyAsync(
         IReadOnlyCollection<Guid> projectIds, CancellationToken cancellationToken = default)
+    {
+        var detailed = await EvaluateManyAsync(projectIds, cancellationToken);
+        return detailed.ToDictionary(
+            p => p.Key,
+            p => (IReadOnlyList<StageEvidence>)p.Value.Select(s => s.ToStageEvidence()).ToList());
+    }
+
+    private async Task<IReadOnlyDictionary<Guid, IReadOnlyList<StageCheckEvidence>>> EvaluateManyAsync(
+        IReadOnlyCollection<Guid> projectIds, CancellationToken cancellationToken)
     {
         var ids = projectIds.Distinct().ToList();
         if (ids.Count == 0)
         {
-            return new Dictionary<Guid, IReadOnlyList<StageEvidence>>();
+            return new Dictionary<Guid, IReadOnlyList<StageCheckEvidence>>();
         }
 
         var projects = await _db.Projects.AsNoTracking().Where(p => ids.Contains(p.Id)).ToListAsync(cancellationToken);
@@ -153,8 +168,10 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
 
     // Pass/fail and counts are the same for every caller. Only the artifact codes quoted in a failing
     // check's detail follow ArtifactVisibility: an artifact the caller may not see (for a Developer,
-    // an unapproved requirement) is counted but not named.
-    private static IReadOnlyList<StageEvidence> Evaluate(ProjectEvidence e, Func<Artifact, bool> canSee)
+    // an unapproved requirement) is counted but not named. The blocking artifacts behind a failing
+    // check are kept (CheckEvidence.Blockers) for ExitCheckGuidanceService, which applies the same
+    // visibility rule before any of them is returned.
+    private static IReadOnlyList<StageCheckEvidence> Evaluate(ProjectEvidence e, Func<Artifact, bool> canSee)
     {
         var project = e.Project;
         var byId = e.All.ToDictionary(a => a.Id);
@@ -179,95 +196,142 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
             .Where(r => r.RelationshipType == RelationshipType.TestedBy && r.SourceArtifactId == fr.Id && testIds.Contains(r.TargetArtifactId))
             .Select(r => r.TargetArtifactId).ToList();
         bool Is(Guid id, WorkOutcome outcome) => e.LatestOutcome.TryGetValue(id, out var o) && o == outcome;
+        List<Artifact> Artifacts(IEnumerable<Guid> ids) => ids.Distinct().Select(id => byId[id]).ToList();
 
-        SdlcCheck Ran(string label, string operation, string what) =>
+        CheckEvidence Ran(string key, string label, string operation, string what) =>
             e.OperationsRun.Contains(operation)
-                ? new(label, true, $"{what} has been run.")
-                : new(label, false, $"{what} has not been run yet.");
+                ? Result(key, new(label, true, $"{what} has been run."))
+                : Result(key, new(label, false, $"{what} has not been run yet."), CheckBlocker.Of(BlockerReasons.NotRun));
 
-        SdlcCheck Recorded(string label, string? value, string what) =>
+        CheckEvidence Recorded(string key, string label, string? value, string what) =>
             string.IsNullOrWhiteSpace(value)
-                ? new(label, false, $"The project has no {what} yet.")
-                : new(label, true, $"{char.ToUpperInvariant(what[0])}{what[1..]} recorded.");
+                ? Result(key, new(label, false, $"The project has no {what} yet."), CheckBlocker.Of(BlockerReasons.Missing))
+                : Result(key, new(label, true, $"{char.ToUpperInvariant(what[0])}{what[1..]} recorded."));
 
-        var openQuestions = Of(ArtifactType.ClarificationQuestion).Count(q =>
-            (JsonSerializer.Deserialize<ClarificationQuestionPayload>(q.DataJson, JsonOptions)?.ClarificationStatus ?? "Open") == "Open");
+        var openQuestions = Of(ArtifactType.ClarificationQuestion).Where(q =>
+            (JsonSerializer.Deserialize<ClarificationQuestionPayload>(q.DataJson, JsonOptions)?.ClarificationStatus ?? "Open") == "Open").ToList();
 
         // §15 — conflicts are never deleted; a human resolves one by rejecting one side of the pair.
-        var unresolvedConflicts = e.Relationships.Count(r =>
+        var conflictPairs = e.Relationships.Where(r =>
             r.RelationshipType is RelationshipType.ConflictsWith or RelationshipType.DuplicateOf
             && byId.TryGetValue(r.SourceArtifactId, out var a) && a.Status != ArtifactStatus.Rejected
-            && byId.TryGetValue(r.TargetArtifactId, out var b) && b.Status != ArtifactStatus.Rejected);
-        SdlcCheck ConflictsResolved() => new(Labels.ConflictsResolved, unresolvedConflicts == 0,
-            unresolvedConflicts == 0 ? "No unresolved conflicts or duplicates." : $"{unresolvedConflicts} conflict/duplicate pair(s) need a human decision.");
+            && byId.TryGetValue(r.TargetArtifactId, out var b) && b.Status != ArtifactStatus.Rejected).ToList();
+        var unresolvedConflicts = conflictPairs.Count;
+        CheckEvidence ConflictsResolved() => Result(ExitCheckKeys.ConflictsResolved, new(Labels.ConflictsResolved, unresolvedConflicts == 0,
+            unresolvedConflicts == 0 ? "No unresolved conflicts or duplicates." : $"{unresolvedConflicts} conflict/duplicate pair(s) need a human decision."),
+            ConflictBlocker(conflictPairs, byId));
 
-        var objectives = Recorded(Labels.Objectives, project.Objectives, "objectives");
+        var objectives = Recorded(ExitCheckKeys.Objectives, Labels.Objectives, project.Objectives, "objectives");
 
         // Implementation evidence: every linked task completed by a Developer (work record), not merely approved.
         var implemented = approvedFrs.Where(fr => TasksOf(fr) is { Count: > 0 } linked && linked.All(t => Is(t, WorkOutcome.TaskCompleted))).ToList();
+        var implementedIds = implemented.Select(fr => fr.Id).ToHashSet();
+        var verifiedIds = implemented
+            .Where(fr => TestsOf(fr) is { Count: > 0 } linked && linked.All(t => Is(t, WorkOutcome.TestPassed)))
+            .Select(fr => fr.Id).ToHashSet();
+
+        // Why an approved FR is not implemented: no task at all, or linked tasks not yet complete.
+        Gap NotImplementedGap(Artifact fr, string waitingReason) =>
+            TasksOf(fr) is { Count: > 0 } linked
+                ? new(waitingReason, "waiting on", Artifacts(linked.Where(t => !Is(t, WorkOutcome.TaskCompleted))))
+                : new(BlockerReasons.NoTask);
 
         return
         [
             Stage(ProjectStatus.Draft,
-                Recorded("Business problem recorded", project.BusinessProblem, "business problem"),
+                Recorded(ExitCheckKeys.BusinessProblem, "Business problem recorded", project.BusinessProblem, "business problem"),
                 objectives,
-                Recorded("Scope recorded", project.Scope, "scope"),
-                new("Business Analyst on the project", e.BusinessAnalystMembers > 0,
-                    e.BusinessAnalystMembers > 0 ? $"{e.BusinessAnalystMembers} active Business Analyst member(s)." : "No active Business Analyst is a member of this project.")),
+                Recorded(ExitCheckKeys.Scope, "Scope recorded", project.Scope, "scope"),
+                Result(ExitCheckKeys.BusinessAnalystMember, new("Business Analyst on the project", e.BusinessAnalystMembers > 0,
+                    e.BusinessAnalystMembers > 0 ? $"{e.BusinessAnalystMembers} active Business Analyst member(s)." : "No active Business Analyst is a member of this project."),
+                    CheckBlocker.Of(BlockerReasons.Missing))),
 
             Stage(ProjectStatus.RequirementsGathering,
-                new(Labels.RawRequirements, e.SourceCount > 0,
+                Result(ExitCheckKeys.RawRequirements, new(Labels.RawRequirements, e.SourceCount > 0,
                     e.SourceCount > 0 ? $"{e.SourceCount} requirement source(s) recorded." : "No raw requirements entered or uploaded yet."),
+                    CheckBlocker.Of(BlockerReasons.Missing)),
                 objectives,
-                new(Labels.Stakeholders, e.StakeholderCount > 0,
-                    e.StakeholderCount > 0 ? $"{e.StakeholderCount} stakeholder(s) recorded." : "No stakeholders recorded yet.")),
+                Result(ExitCheckKeys.Stakeholders, new(Labels.Stakeholders, e.StakeholderCount > 0,
+                    e.StakeholderCount > 0 ? $"{e.StakeholderCount} stakeholder(s) recorded." : "No stakeholders recorded yet."),
+                    CheckBlocker.Of(BlockerReasons.Missing))),
 
             Stage(ProjectStatus.Analysis,
-                Ran(Labels.AnalysisRun, AnalysisOperation, "Requirement analysis"),
-                new(Labels.QuestionsAnswered, openQuestions == 0,
-                    openQuestions == 0 ? "No open clarification questions." : $"{openQuestions} clarification question(s) still open."),
-                AllApproved(Labels.FrsApproved, frs, "functional requirements"),
+                Ran(ExitCheckKeys.AnalysisRun, Labels.AnalysisRun, AnalysisOperation, "Requirement analysis"),
+                Result(ExitCheckKeys.QuestionsAnswered, new(Labels.QuestionsAnswered, openQuestions.Count == 0,
+                    openQuestions.Count == 0 ? "No open clarification questions." : $"{openQuestions.Count} clarification question(s) still open."),
+                    Group(openQuestions.Select(q => (q, (Gap?)new Gap(BlockerReasons.OpenQuestions))))),
+                AllApproved(ExitCheckKeys.FrsApproved, Labels.FrsApproved, frs, "functional requirements"),
                 // A project may genuinely have no NFRs or business rules: only the existing ones must be approved.
-                AllApproved(Labels.NfrsApproved, Of(ArtifactType.NonFunctionalRequirement), "non-functional requirements", noneRequired: true),
-                AllApproved(Labels.RulesApproved, Of(ArtifactType.BusinessRule), "business rules", noneRequired: true),
-                AllApproved(Labels.StoriesApproved, stories, "user stories"),
-                AllApproved(Labels.CriteriaApproved, criteria, "acceptance criteria"),
-                Ran(Labels.QualityRun, QualityOperation, "Requirement quality analysis"),
-                Ran(Labels.ConflictRun, ConflictOperation, "Conflict detection"),
+                AllApproved(ExitCheckKeys.NfrsApproved, Labels.NfrsApproved, Of(ArtifactType.NonFunctionalRequirement), "non-functional requirements", noneRequired: true),
+                AllApproved(ExitCheckKeys.RulesApproved, Labels.RulesApproved, Of(ArtifactType.BusinessRule), "business rules", noneRequired: true),
+                AllApproved(ExitCheckKeys.StoriesApproved, Labels.StoriesApproved, stories, "user stories"),
+                AllApproved(ExitCheckKeys.CriteriaApproved, Labels.CriteriaApproved, criteria, "acceptance criteria"),
+                Ran(ExitCheckKeys.QualityRun, Labels.QualityRun, QualityOperation, "Requirement quality analysis"),
+                Ran(ExitCheckKeys.ConflictRun, Labels.ConflictRun, ConflictOperation, "Conflict detection"),
                 ConflictsResolved(),
-                Chain("Every functional requirement has a story and acceptance criteria", frs, stories, criteria, designs, tasks, tests, e.Relationships, full: false, canSee)),
+                Chain(ExitCheckKeys.StoryChain, "Every functional requirement has a story and acceptance criteria", frs, stories, criteria, designs, tasks, tests, e.Relationships, full: false, canSee)),
 
             Stage(ProjectStatus.Design,
-                AllApproved(Labels.DesignApproved, designs, "solution designs"),
-                AllApproved(Labels.ApiApproved, Of(ArtifactType.ApiSpecification), "API specifications"),
-                AllApproved(Labels.DatabaseApproved, Of(ArtifactType.DataEntity), "data entities"),
+                AllApproved(ExitCheckKeys.DesignApproved, Labels.DesignApproved, designs, "solution designs"),
+                AllApproved(ExitCheckKeys.ApiApproved, Labels.ApiApproved, Of(ArtifactType.ApiSpecification), "API specifications"),
+                AllApproved(ExitCheckKeys.DatabaseApproved, Labels.DatabaseApproved, Of(ArtifactType.DataEntity), "data entities"),
                 DeveloperReviewed(designSet, e.DeveloperReviewedVersions, canSee),
-                OpenNotices("No open impact notices on design", designSet, e.OpenNoticeArtifactIds, "design artifact(s)", canSee),
+                OpenNotices(ExitCheckKeys.DesignNotices, "No open impact notices on design", designSet, e.OpenNoticeArtifactIds, "design artifact(s)", canSee),
                 BaselineIntact(live, canSee)),
 
             Stage(ProjectStatus.Approved,
-                AllApproved(Labels.TasksApproved, tasks, "implementation tasks"),
-                Every("Every approved functional requirement has a task", approvedFrs, fr => TasksOf(fr).Count > 0, "have no implementation task", "approved functional requirements", canSee)),
+                AllApproved(ExitCheckKeys.TasksApproved, Labels.TasksApproved, tasks, "implementation tasks"),
+                Every(ExitCheckKeys.EveryFrHasTask, "Every approved functional requirement has a task", approvedFrs,
+                    fr => TasksOf(fr).Count > 0 ? null : new Gap(BlockerReasons.NoTask),
+                    "have no implementation task", "approved functional requirements", canSee, BlockerReasons.NoApprovedFrs)),
 
             Stage(ProjectStatus.Implementation,
-                Every("Implementation tasks completed", tasks, t => Is(t.Id, WorkOutcome.TaskCompleted), "are not marked complete by a Developer", "implementation tasks", canSee),
-                Count(Labels.FrsImplemented, approvedFrs, implemented.Count, "implemented")),
+                Every(ExitCheckKeys.TasksCompleted, "Implementation tasks completed", tasks,
+                    t => Is(t.Id, WorkOutcome.TaskCompleted) ? null
+                        // Work can only be recorded on an approved task (ArtifactWorkService).
+                        : !ArtifactStatusTransitions.IsApprovedOrLater(t.Status) ? new Gap(BlockerReasons.NeedsApproval)
+                        : Is(t.Id, WorkOutcome.TaskReopened) ? new Gap(BlockerReasons.TaskReopened)
+                        : new Gap(BlockerReasons.NotCompleted),
+                    "are not marked complete by a Developer", "implementation tasks", canSee),
+                Count(ExitCheckKeys.FrsImplemented, Labels.FrsImplemented, approvedFrs, implemented.Count, "implemented",
+                    fr => implementedIds.Contains(fr.Id) ? null : NotImplementedGap(fr, BlockerReasons.WaitingOnTasks))),
 
             Stage(ProjectStatus.Testing,
-                AllApproved(Labels.TestsApproved, tests, "test cases"),
+                AllApproved(ExitCheckKeys.TestsApproved, Labels.TestsApproved, tests, "test cases"),
                 // Only approved requirements need tests; rejected or not-yet-approved ones are not in scope.
-                Every("Every approved functional requirement has an approved test case", approvedFrs,
-                    fr => TestsOf(fr).Any(t => ArtifactStatusTransitions.IsApprovedOrLater(byId[t].Status)), "have no approved test case", "approved functional requirements", canSee),
-                Every("Test cases passed", tests, t => Is(t.Id, WorkOutcome.TestPassed), "have not passed (no QA outcome, failed or blocked)", "test cases", canSee),
-                Count(Labels.FrsVerified, approvedFrs,
-                    implemented.Count(fr => TestsOf(fr) is { Count: > 0 } linked && linked.All(t => Is(t, WorkOutcome.TestPassed))), "verified"),
-                Chain(Labels.FullyTraced, approvedFrs, stories, criteria, designs, tasks, tests, e.Relationships, full: true, canSee),
-                OpenNotices("No open impact notices", live, e.OpenNoticeArtifactIds, "artifact(s)", canSee),
+                Every(ExitCheckKeys.EveryFrHasApprovedTest, "Every approved functional requirement has an approved test case", approvedFrs,
+                    fr =>
+                    {
+                        var linked = TestsOf(fr);
+                        return linked.Any(t => ArtifactStatusTransitions.IsApprovedOrLater(byId[t].Status)) ? null
+                            : linked.Count == 0 ? new Gap(BlockerReasons.NoTest)
+                            : new Gap(BlockerReasons.TestNeedsApproval, "test awaiting approval:", Artifacts(linked));
+                    },
+                    "have no approved test case", "approved functional requirements", canSee, BlockerReasons.NoApprovedFrs),
+                Every(ExitCheckKeys.TestsPassed, "Test cases passed", tests,
+                    t => Is(t.Id, WorkOutcome.TestPassed) ? null
+                        // A result can only be recorded on an approved test case (ArtifactWorkService).
+                        : !ArtifactStatusTransitions.IsApprovedOrLater(t.Status) ? new Gap(BlockerReasons.NeedsApproval)
+                        : Is(t.Id, WorkOutcome.TestFailed) ? new Gap(BlockerReasons.Failed)
+                        : Is(t.Id, WorkOutcome.TestBlocked) ? new Gap(BlockerReasons.Blocked)
+                        : new Gap(BlockerReasons.NoResult),
+                    "have not passed (no QA outcome, failed or blocked)", "test cases", canSee),
+                Count(ExitCheckKeys.FrsVerified, Labels.FrsVerified, approvedFrs, verifiedIds.Count, "verified",
+                    fr => verifiedIds.Contains(fr.Id) ? null
+                        : !implementedIds.Contains(fr.Id) ? NotImplementedGap(fr, BlockerReasons.NotImplemented)
+                        : TestsOf(fr) is { Count: > 0 } linked
+                            ? new Gap(BlockerReasons.TestsNotPassed, "waiting on", Artifacts(linked.Where(t => !Is(t, WorkOutcome.TestPassed))))
+                            : new Gap(BlockerReasons.NoTest)),
+                Chain(ExitCheckKeys.FullyTraced, Labels.FullyTraced, approvedFrs, stories, criteria, designs, tasks, tests, e.Relationships, full: true, canSee),
+                OpenNotices(ExitCheckKeys.TestingNotices, "No open impact notices", live, e.OpenNoticeArtifactIds, "artifact(s)", canSee),
                 ConflictsResolved()),
 
             Stage(ProjectStatus.Completed),
         ];
     }
+
+    // Why one artifact blocks a check: the reason (BlockerReasons), an optional note and related artifacts.
+    private sealed record Gap(string Reason, string? Note = null, IReadOnlyList<Artifact>? Related = null);
 
     // Labels shared with the legacy SDLC progress view (SdlcProgressService) and its tests.
     internal static class Labels
@@ -295,96 +359,164 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
         public const string FullyTraced = "Every approved functional requirement fully traced";
     }
 
-    private static StageEvidence Stage(ProjectStatus status, params SdlcCheck[] checks)
+    private static StageCheckEvidence Stage(ProjectStatus status, params CheckEvidence[] checks)
     {
         var stage = ProjectLifecyclePolicy.Stage(status);
-        return new StageEvidence(status, stage.Label, stage.OwnerRole, checks);
+        return new StageCheckEvidence(status, stage.Label, stage.OwnerRole, checks);
     }
 
-    private static SdlcCheck AllApproved(string label, IReadOnlyList<Artifact> items, string noun, bool noneRequired = false)
+    // A passed check carries no blockers.
+    private static CheckEvidence Result(string key, SdlcCheck check, params CheckBlocker[] blockers) =>
+        new(check, key, check.Passed ? [] : blockers);
+
+    // One blocker per reason, in BlockerReasons.Order (earlier steps first), artifacts by code.
+    private static CheckBlocker[] Group(IEnumerable<(Artifact Artifact, Gap? Gap)> gaps) =>
+        gaps.Where(g => g.Gap is not null)
+            .GroupBy(g => g.Gap!.Reason)
+            .OrderBy(g => ReasonRank(g.Key))
+            .Select(g => new CheckBlocker(g.Key, g
+                .OrderBy(x => x.Artifact.Code)
+                .Select(x => new BlockerArtifact(x.Artifact, x.Gap!.Note, x.Gap.Related))
+                .ToList()))
+            .ToArray();
+
+    private static int ReasonRank(string reason)
+    {
+        for (var i = 0; i < BlockerReasons.Order.Count; i++)
+        {
+            if (BlockerReasons.Order[i] == reason) return i;
+        }
+
+        return int.MaxValue;
+    }
+
+    private static CheckEvidence AllApproved(string key, string label, IReadOnlyList<Artifact> items, string noun, bool noneRequired = false)
     {
         if (items.Count == 0)
         {
-            return noneRequired ? new(label, true, $"No {noun} recorded; none need approval.") : new(label, false, $"No {noun} yet.");
+            return noneRequired
+                ? Result(key, new(label, true, $"No {noun} recorded; none need approval."))
+                : Result(key, new(label, false, $"No {noun} yet."), CheckBlocker.Of(BlockerReasons.NoneYet));
         }
 
-        var pending = items.Count(a => !ArtifactStatusTransitions.IsApprovedOrLater(a.Status));
-        return pending == 0
-            ? new(label, true, $"All {items.Count} {noun} approved.")
-            : new(label, false, $"{pending} of {items.Count} {noun} still need approval.");
+        var pending = items.Where(a => !ArtifactStatusTransitions.IsApprovedOrLater(a.Status)).ToList();
+        return pending.Count == 0
+            ? Result(key, new(label, true, $"All {items.Count} {noun} approved."))
+            : Result(key, new(label, false, $"{pending.Count} of {items.Count} {noun} still need approval."),
+                Group(pending.Select(a => (a, (Gap?)new Gap(BlockerReasons.NeedsApproval, a.ApprovedVersion is null ? null : "edited since approval")))));
     }
 
-    private static SdlcCheck Every(string label, IReadOnlyList<Artifact> items, Func<Artifact, bool> ok, string failure, string noun, Func<Artifact, bool> canSee)
+    // `gap` returns null for an artifact that satisfies the check, else why it does not.
+    private static CheckEvidence Every(string key, string label, IReadOnlyList<Artifact> items, Func<Artifact, Gap?> gap, string failure, string noun,
+        Func<Artifact, bool> canSee, string emptyReason = BlockerReasons.NoneYet)
     {
         if (items.Count == 0)
         {
-            return new(label, false, $"No {noun} yet.");
+            return Result(key, new(label, false, $"No {noun} yet."), CheckBlocker.Of(emptyReason));
         }
 
-        var bad = items.Where(a => !ok(a)).ToList();
+        var gaps = items.Select(a => (Artifact: a, Gap: gap(a))).Where(x => x.Gap is not null).ToList();
+        var bad = gaps.Select(x => x.Artifact).ToList();
         return bad.Count == 0
-            ? new(label, true, $"All {items.Count} {noun} satisfy this.")
-            : new(label, false, $"{bad.Count} of {items.Count} {failure}{Listing(bad, canSee)}.");
+            ? Result(key, new(label, true, $"All {items.Count} {noun} satisfy this."))
+            : Result(key, new(label, false, $"{bad.Count} of {items.Count} {failure}{Listing(bad, canSee)}."), Group(gaps));
     }
 
-    private static SdlcCheck Count(string label, IReadOnlyList<Artifact> frs, int reached, string word)
+    private static CheckEvidence Count(string key, string label, IReadOnlyList<Artifact> frs, int reached, string word, Func<Artifact, Gap?> gap)
     {
         if (frs.Count == 0)
         {
-            return new(label, false, "No approved functional requirements yet.");
+            return Result(key, new(label, false, "No approved functional requirements yet."), CheckBlocker.Of(BlockerReasons.NoApprovedFrs));
         }
 
         return reached == frs.Count
-            ? new(label, true, $"All {frs.Count} functional requirements {word}.")
-            : new(label, false, $"{reached} of {frs.Count} functional requirements {word}.");
+            ? Result(key, new(label, true, $"All {frs.Count} functional requirements {word}."))
+            : Result(key, new(label, false, $"{reached} of {frs.Count} functional requirements {word}."), Group(frs.Select(f => (f, gap(f)))));
     }
 
     // §17 — distinct from approval: a review recorded under the Developer role on the artifact's
     // current version. Editing the artifact creates a new version, which needs a new review.
-    private static SdlcCheck DeveloperReviewed(IReadOnlyList<Artifact> designSet, HashSet<(Guid, int)> reviewed, Func<Artifact, bool> canSee)
+    private static CheckEvidence DeveloperReviewed(IReadOnlyList<Artifact> designSet, HashSet<(Guid, int)> reviewed, Func<Artifact, bool> canSee)
     {
         const string label = "Developer review of the current design";
         if (designSet.Count == 0)
         {
-            return new(label, false, "No design artifacts yet.");
+            return Result(ExitCheckKeys.DeveloperReview, new(label, false, "No design artifacts yet."), CheckBlocker.Of(BlockerReasons.NoneYet));
         }
 
+        var reviewedIds = reviewed.Select(r => r.Item1).ToHashSet();
         var missing = designSet.Where(a => !reviewed.Contains((a.Id, a.CurrentVersion))).ToList();
         return missing.Count == 0
-            ? new(label, true, $"A Developer has reviewed the current version of all {designSet.Count} design artifacts.")
-            : new(label, false, $"{missing.Count} of {designSet.Count} design artifacts have no Developer review of their current version{Listing(missing, canSee)}.");
+            ? Result(ExitCheckKeys.DeveloperReview, new(label, true, $"A Developer has reviewed the current version of all {designSet.Count} design artifacts."))
+            : Result(ExitCheckKeys.DeveloperReview,
+                new(label, false, $"{missing.Count} of {designSet.Count} design artifacts have no Developer review of their current version{Listing(missing, canSee)}."),
+                Group(missing.Select(a => (a, (Gap?)new Gap(BlockerReasons.NeedsDeveloperReview,
+                    reviewedIds.Contains(a.Id) ? "edited since the last Developer review" : null)))));
     }
 
-    private static SdlcCheck OpenNotices(string label, IReadOnlyList<Artifact> scope, HashSet<Guid> open, string noun, Func<Artifact, bool> canSee)
+    private static CheckEvidence OpenNotices(string key, string label, IReadOnlyList<Artifact> scope, HashSet<Guid> open, string noun, Func<Artifact, bool> canSee)
     {
         var flagged = scope.Where(a => open.Contains(a.Id)).ToList();
         return flagged.Count == 0
-            ? new(label, true, "No unacknowledged impact notices.")
-            : new(label, false, $"{flagged.Count} {noun} have unacknowledged impact notices{Listing(flagged, canSee)}.");
+            ? Result(key, new(label, true, "No unacknowledged impact notices."))
+            : Result(key, new(label, false, $"{flagged.Count} {noun} have unacknowledged impact notices{Listing(flagged, canSee)}."),
+                Group(flagged.Select(a => (a, (Gap?)new Gap(BlockerReasons.OpenNotice)))));
     }
 
     // The requirements approved during Analysis must not have been reopened (edited back into review).
-    private static SdlcCheck BaselineIntact(IReadOnlyList<Artifact> live, Func<Artifact, bool> canSee)
+    private static CheckEvidence BaselineIntact(IReadOnlyList<Artifact> live, Func<Artifact, bool> canSee)
     {
         const string label = "Requirements baseline still approved";
         var reopened = live
             .Where(a => RequirementTypes.Contains(a.ArtifactType) && !ArtifactStatusTransitions.IsApprovedOrLater(a.Status))
             .ToList();
         return reopened.Count == 0
-            ? new(label, true, "Every requirement, rule, story and acceptance criterion is still approved.")
-            : new(label, false, $"{reopened.Count} requirement artifact(s) are not approved{Listing(reopened, canSee)}.");
+            ? Result(ExitCheckKeys.Baseline, new(label, true, "Every requirement, rule, story and acceptance criterion is still approved."))
+            : Result(ExitCheckKeys.Baseline, new(label, false, $"{reopened.Count} requirement artifact(s) are not approved{Listing(reopened, canSee)}."),
+                // Never approved (e.g. added after Analysis) vs. approved, then edited back into review.
+                Group(reopened.Select(a => (a, (Gap?)(a.ApprovedVersion is null
+                    ? new Gap(BlockerReasons.NeedsApproval)
+                    : new Gap(BlockerReasons.Reopened, "edited since approval"))))));
+    }
+
+    // Both sides of every unresolved conflict/duplicate pair, each noting the other side(s).
+    private static CheckBlocker ConflictBlocker(List<ArtifactRelationship> pairs, Dictionary<Guid, Artifact> byId)
+    {
+        var entries = new Dictionary<Guid, (Artifact Artifact, string Note, List<Artifact> Related)>();
+        void Add(Artifact artifact, Artifact other, string note)
+        {
+            if (!entries.TryGetValue(artifact.Id, out var entry))
+            {
+                entries[artifact.Id] = entry = (artifact, note, []);
+            }
+
+            entry.Related.Add(other);
+        }
+
+        foreach (var pair in pairs)
+        {
+            var note = pair.RelationshipType == RelationshipType.DuplicateOf ? "possible duplicate of" : "conflicts with";
+            Add(byId[pair.SourceArtifactId], byId[pair.TargetArtifactId], note);
+            Add(byId[pair.TargetArtifactId], byId[pair.SourceArtifactId], note);
+        }
+
+        return new CheckBlocker(BlockerReasons.Unresolved, entries.Values
+            .OrderBy(x => x.Artifact.Code)
+            .Select(x => new BlockerArtifact(x.Artifact, x.Note, x.Related))
+            .ToList());
     }
 
     // §21 — every functional requirement traced to a story and acceptance criteria (and, when `full`,
     // on to design, task and test). Same links as TraceabilityService.GetMatrixAsync, including its
     // source-level fallback for design artifacts.
-    private static SdlcCheck Chain(
-        string label, List<Artifact> frs, List<Artifact> stories, List<Artifact> criteria, List<Artifact> designs,
+    private static CheckEvidence Chain(
+        string key, string label, List<Artifact> frs, List<Artifact> stories, List<Artifact> criteria, List<Artifact> designs,
         List<Artifact> tasks, List<Artifact> tests, List<ArtifactRelationship> relationships, bool full, Func<Artifact, bool> canSee)
     {
         if (frs.Count == 0)
         {
-            return new(label, false, "No functional requirements yet.");
+            return Result(key, new(label, false, "No functional requirements yet."),
+                CheckBlocker.Of(full ? BlockerReasons.NoApprovedFrs : BlockerReasons.NoneYet));
         }
 
         var storyIds = stories.Select(a => a.Id).ToHashSet();
@@ -392,7 +524,7 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
         var taskIds = tasks.Select(a => a.Id).ToHashSet();
         var testIds = tests.Select(a => a.Id).ToHashSet();
 
-        var gaps = new List<(Artifact Fr, string Text)>();
+        var gaps = new List<(Artifact Fr, string Text, List<string> Missing)>();
         foreach (var fr in frs.OrderBy(f => f.Code))
         {
             var frStories = relationships
@@ -415,27 +547,31 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
 
             if (missing.Count > 0)
             {
-                gaps.Add((fr, $"{fr.Code} (no {string.Join(", ", missing)})"));
+                gaps.Add((fr, $"{fr.Code} (no {string.Join(", ", missing)})", missing));
             }
         }
 
         if (gaps.Count == 0)
         {
-            return new(label, true, full
+            return Result(key, new(label, true, full
                 ? $"All {frs.Count} functional requirements are traced end to end."
-                : $"All {frs.Count} functional requirements have a story with acceptance criteria.");
+                : $"All {frs.Count} functional requirements have a story with acceptance criteria."));
         }
+
+        var blockers = Group(gaps.Select(g => (g.Fr, (Gap?)(full
+            ? new Gap(BlockerReasons.TraceGaps, $"no {string.Join(", ", g.Missing)}")
+            : new Gap(g.Missing.Contains("user story") ? BlockerReasons.NoStory : BlockerReasons.NoCriteria)))));
 
         // Gaps on requirements the caller may not see are counted, never named.
         var visible = gaps.Where(g => canSee(g.Fr)).Select(g => g.Text).ToList();
         if (visible.Count == 0)
         {
-            return new(label, false, $"{gaps.Count} of {frs.Count} have gaps (not listed until approved).");
+            return Result(key, new(label, false, $"{gaps.Count} of {frs.Count} have gaps (not listed until approved)."), blockers);
         }
 
         var rest = gaps.Count - Math.Min(visible.Count, 3);
         var shown = string.Join("; ", visible.Take(3)) + (rest > 0 ? $"; and {rest} more" : "");
-        return new(label, false, $"{gaps.Count} of {frs.Count} have gaps: {shown}.");
+        return Result(key, new(label, false, $"{gaps.Count} of {frs.Count} have gaps: {shown}."), blockers);
     }
 
     // ": CODE, CODE and N more" naming only the artifacts the caller may see (ArtifactVisibility);

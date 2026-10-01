@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import type { LifecycleStagePolicy } from '../api/types';
-import { isGatedStage, LIFECYCLE_STAGES, roleLabel, STAGE_STATE_LABEL, stageState } from '../lib/lifecycle';
+import { isGatedStage, LAST_STAGE, LIFECYCLE_STAGES, roleLabel, STAGE_STATE_LABEL, stageState } from '../lib/lifecycle';
 import { IconAlert, IconCheck, IconLock } from './icons';
 
 /**
@@ -34,7 +34,9 @@ export function LifecycleStepper({
   return (
     <ol className={`sdlc-stepper lifecycle-stepper${compact ? ' compact' : ''}`} aria-label="Project lifecycle">
       {LIFECYCLE_STAGES.map((s) => {
-        const state = stageState(s.status, status);
+        // Reaching the final stage finishes the lifecycle: show it as done, not as an open current stage.
+        const reached = stageState(s.status, status);
+        const state = reached === 'current' && s.status === LAST_STAGE ? 'completed' : reached;
         const gap = gaps?.includes(s.status);
         const awaiting = pending && state === 'current';
         const owner = policy?.find((p) => p.status === s.status)?.ownerRole;
@@ -54,7 +56,7 @@ export function LifecycleStepper({
         const cls = `sdlc-step ${state}${awaiting ? ' awaiting' : ''}${gap ? ' gap' : ''}${highlight?.includes(s.status) ? ' viewing' : ''}${isGatedStage(s.status) ? ' gated' : ''}`;
         const label = `Stage ${s.status + 1} of ${LIFECYCLE_STAGES.length}, ${s.label}: ${stateText}${isGatedStage(s.status) ? '. Leaving it needs Reviewer approval' : ''}`;
         return (
-          <li key={s.status} className={cls} aria-current={state === 'current' ? 'step' : undefined}>
+          <li key={s.status} className={cls} aria-current={reached === 'current' ? 'step' : undefined}>
             {to ? (
               <Link to={to} className="sdlc-link" aria-label={label} title={s.description}>
                 {inner}
@@ -81,7 +83,9 @@ export function LifecycleDots({ status, pending }: { status: number; pending?: b
   return (
     <ul className="sdlc-dots" aria-hidden="true">
       {LIFECYCLE_STAGES.map((s) => {
-        const state = stageState(s.status, status);
+        // As in the stepper: the final stage, once reached, is finished rather than current.
+        const reached = stageState(s.status, status);
+        const state = reached === 'current' && s.status === LAST_STAGE ? 'completed' : reached;
         return <li key={s.status} className={`${state}${pending && state === 'current' ? ' awaiting' : ''}`} title={`${s.label}: ${STAGE_STATE_LABEL[state]}`} />;
       })}
     </ul>

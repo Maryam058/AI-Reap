@@ -6,12 +6,15 @@ export function MetricCard({
   value,
   label,
   trend,
+  hint,
 }: {
   icon: ReactNode;
   tone: 'primary' | 'success' | 'warning' | 'ai';
   value: ReactNode;
   label: string;
   trend?: string;
+  /** Supporting line (or small visual) under the label. */
+  hint?: ReactNode;
 }) {
   return (
     <div className={`metric-card accent-${tone}`}>
@@ -21,6 +24,7 @@ export function MetricCard({
       </div>
       <div className="metric-value">{value}</div>
       <div className="metric-label">{label}</div>
+      {hint && <div className="metric-hint">{hint}</div>}
     </div>
   );
 }

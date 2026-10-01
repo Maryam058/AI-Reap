@@ -139,6 +139,10 @@ export interface ProjectMember {
   displayName: string;
   addedByUserId: string;
   addedAt: string;
+  /** The account's role (Administrator, BusinessAnalyst, …); null for a deleted account. */
+  role: string | null;
+  /** False when an Administrator has deactivated the account (or it was deleted). */
+  isActive: boolean;
 }
 
 export interface AddProjectMemberRequest {
@@ -544,6 +548,65 @@ export interface LifecycleCheck {
   label: string;
   passed: boolean;
   detail: string;
+  /** "How to meet this" for a failing check, for the current viewer (absent on passed checks and in history). */
+  guidance?: CheckGuidance | null;
+}
+
+/** CheckKinds: what meets a check or a blocker group. */
+export type CheckKind = 'action' | 'approval' | 'signoff' | 'automatic';
+
+/** CheckAreas: where in the app the work is done. */
+export type CheckArea =
+  | 'context'
+  | 'members'
+  | 'stakeholders'
+  | 'sources'
+  | 'analysis'
+  | 'validation'
+  | 'design'
+  | 'development'
+  | 'testing'
+  | 'traceability'
+  | 'lifecycle';
+
+// ExitCheckGuidanceService (Application/Lifecycle). Advisory: the backend still enforces every rule.
+export interface CheckGuidance {
+  key: string;
+  kind: CheckKind;
+  howTo: string;
+  /** For an automatic check: the keys of the checks it follows from. */
+  dependsOn: string[];
+  blockers: BlockerGroup[];
+}
+
+export interface BlockerGroup {
+  reason: string;
+  kind: CheckKind;
+  title: string;
+  instruction: string;
+  /** Roles whose action counts as lifecycle evidence for this group. */
+  fixRoles: string[];
+  /** The current user holds one of fixRoles. */
+  callerCanFix: boolean;
+  callerNote?: string | null;
+  /** User ids of project members holding one of fixRoles. */
+  assignees: string[];
+  destination: { area: CheckArea | string; section?: string | null };
+  /** Blocking artifacts the viewer may see (at most 200). */
+  items: BlockingItem[];
+  totalCount: number;
+  /** Blocking artifacts the viewer may not see: counted, never identified. */
+  hiddenCount: number;
+}
+
+export interface BlockingItem {
+  artifactId: string;
+  code: string;
+  title: string;
+  artifactType: number;
+  status: number;
+  requirementSourceId?: string | null;
+  note?: string | null;
 }
 
 export interface StageEvidence {

@@ -1,4 +1,4 @@
-import { ROLE_LABELS, TRANSITION_STATE, type StageTransition } from '../api/types';
+import { ROLE_LABELS, TRANSITION_STATE, type StageTransition } from '../api/types.ts';
 
 /**
  * The project lifecycle (§5): eight stages, in order. `Project.status` is the stage the project is

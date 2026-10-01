@@ -10,7 +10,13 @@ import { formatRelativeTime } from '../lib/format';
 import { useToast } from '../context/ToastContext';
 import { Dialog } from './ui/Dialog';
 import { LifecycleStepper } from './LifecycleStepper';
-import { IconAlert, IconArrowRight, IconCheck, IconLock, IconRotateCcw, IconX } from './icons';
+import { CheckGuidance } from './CheckGuidance';
+import { RoleRequiredActions } from './RoleRequiredAlert';
+import { roleGuard } from '../lib/roleGuard';
+import { IconAlert, IconArrowRight, IconCheck, IconChevronDown, IconLock, IconRotateCcw, IconX } from './icons';
+
+// Mirrors ProjectLifecyclePolicy.GateApproverRole.
+const ProjectGateApprover = 'Reviewer';
 
 type DialogMode = 'advance' | 'submit' | 'approve' | 'reject' | 'withdraw' | 'rollback';
 
@@ -21,7 +27,7 @@ type DialogMode = 'advance' | 'submit' | 'approve' | 'reject' | 'withdraw' | 'ro
  * backend's; this panel shows the backend's answers and offers only the actions it allows.
  */
 export function LifecyclePanel({ project, version, onProjectChanged }: { project: Project; version?: unknown; onProjectChanged: () => Promise<void> | void }) {
-  const { token, userId } = useAuth();
+  const { token, userId, roles } = useAuth();
   const { toast } = useToast();
   const policy = useLifecyclePolicy();
   const names = useMemberNames(project.id);
@@ -106,6 +112,17 @@ export function LifecyclePanel({ project, version, onProjectChanged }: { project
           </span>
         </div>
       )}
+      {state.evidenceGaps.length > 0 && (
+        <details className="lc-gaps">
+          <summary>Show what's missing in earlier stages</summary>
+          {state.evidenceGaps.map((g) => (
+            <div key={g.stage} className="lc-gap-stage">
+              <h4>{g.label}</h4>
+              <CheckList checks={g.checks.filter((c) => !c.passed)} projectId={project.id} canOverride={actions.canOverride} expandFirst={false} />
+            </div>
+          ))}
+        </details>
+      )}
 
       <div className="lc-stepper-wrap">
         <LifecycleStepper status={state.status} pending={!!pending} gaps={state.evidenceGaps.map((g) => g.stage)} policy={policy} />
@@ -139,7 +156,7 @@ export function LifecyclePanel({ project, version, onProjectChanged }: { project
                 {passed}/{state.exitChecks.length} met
               </span>
             </div>
-            <CheckList checks={state.exitChecks} />
+            <CheckList checks={state.exitChecks} projectId={project.id} canOverride={actions.canOverride} />
 
             {rejection && <RejectionNote transition={rejection} mine={rejection.requestedByUserId === userId} by={personLabel(rejection.decidedByUserId, rejection.decidedByRole, names, userId)} />}
 
@@ -164,9 +181,18 @@ export function LifecyclePanel({ project, version, onProjectChanged }: { project
                     {!state.readyToAdvance && !actions.canOverride && <span className="muted">Available once every exit check passes.</span>}
                   </>
                 ) : (
-                  <span className="muted">
-                    Waiting for <strong>{roleLabel(state.ownerRole)}</strong> to {state.nextIsGated ? 'submit this stage for approval' : 'move the project on'}.
-                  </span>
+                  <>
+                    {/* Neither the stage owner nor an Administrator (who gets the labelled override above): explain who moves it. */}
+                    {roleGuard(state.ownerRole, roles).kind === 'blocked' && (
+                      <RoleRequiredActions
+                        requiredRole={state.ownerRole}
+                        actions={[{ label: state.nextIsGated ? 'Submit for Reviewer approval' : `Move to ${stageLabel(next)}`, className: 'btn btn-secondary' }]}
+                      />
+                    )}
+                    <span className="muted">
+                      Waiting for <strong>{roleLabel(state.ownerRole)}</strong> to {state.nextIsGated ? 'submit this stage for approval' : 'move the project on'}.
+                    </span>
+                  </>
                 )}
               </div>
             )}
@@ -199,23 +225,67 @@ export function LifecyclePanel({ project, version, onProjectChanged }: { project
   );
 }
 
-function CheckList({ checks }: { checks: LifecycleCheck[] }) {
+function CheckList({
+  checks,
+  projectId,
+  canOverride = false,
+  expandFirst = true,
+}: {
+  checks: LifecycleCheck[];
+  projectId: string;
+  canOverride?: boolean;
+  /** Open the first failing check's guidance by default. */
+  expandFirst?: boolean;
+}) {
   if (checks.length === 0) return <p className="muted">This stage has no exit checks.</p>;
   // Failing checks first: they are what the owner has to act on.
   const ordered = [...checks].sort((a, b) => Number(a.passed) - Number(b.passed));
+  const firstWithGuidance = expandFirst ? ordered.find((c) => !c.passed && c.guidance)?.label : undefined;
+  // A check this one follows from is named only while it is failing too (then it carries its key).
+  const labelFor = (key: string) => checks.find((c) => c.guidance?.key === key)?.label;
   return (
     <ul className="health-list lc-checks">
       {ordered.map((c) => (
-        <li key={c.label}>
-          <span className={`health-dot ${c.passed ? 'good' : 'bad'}`} aria-hidden="true" />
-          <span className="health-label">
-            <strong>{c.label}</strong>
-            <small>{c.detail}</small>
-          </span>
-          <span className="sr-only">{c.passed ? 'Met' : 'Not met'}</span>
-        </li>
+        <CheckRow key={c.label} check={c} projectId={projectId} canOverride={canOverride} defaultOpen={c.label === firstWithGuidance} labelFor={labelFor} />
       ))}
     </ul>
+  );
+}
+
+// One check. A failing check with guidance expands into "how to meet this"; anything else - a
+// passed check, or a check the backend sends without guidance (e.g. a key this client does not
+// know) - shows its label and detail exactly as before.
+function CheckRow({
+  check,
+  projectId,
+  canOverride,
+  defaultOpen,
+  labelFor,
+}: {
+  check: LifecycleCheck;
+  projectId: string;
+  canOverride: boolean;
+  defaultOpen: boolean;
+  labelFor: (key: string) => string | undefined;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const guidance = !check.passed && check.guidance && Array.isArray(check.guidance.blockers) ? check.guidance : null;
+  return (
+    <li className={guidance ? 'lc-check has-guidance' : 'lc-check'}>
+      <span className={`health-dot ${check.passed ? 'good' : 'bad'}`} aria-hidden="true" />
+      <span className="health-label">
+        <strong>{check.label}</strong>
+        <small>{check.detail}</small>
+        {guidance && (
+          <button type="button" className="lc-howto-toggle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+            {open ? 'Hide how to meet this' : 'How to meet this'}
+            <IconChevronDown width={12} height={12} className={open ? 'is-open' : undefined} />
+          </button>
+        )}
+        {guidance && open && <CheckGuidance projectId={projectId} guidance={guidance} canOverride={canOverride} labelFor={labelFor} />}
+      </span>
+      <span className="sr-only">{check.passed ? 'Met' : 'Not met'}</span>
+    </li>
   );
 }
 
@@ -245,7 +315,7 @@ function PendingRequest({
   onDecide: (mode: DialogMode) => void;
   onChanged: () => void;
 }) {
-  const { token, userId } = useAuth();
+  const { token, userId, roles } = useAuth();
   const { toast } = useToast();
   const [comment, setComment] = useState('');
   const [busy, setBusy] = useState(false);
@@ -317,6 +387,18 @@ function PendingRequest({
               Withdraw request
             </button>
           )}
+        </div>
+      )}
+      {/* Neither a Reviewer nor an Administrator (who decides by labelled override): explain who decides. */}
+      {!state.actions.canDecide && !mine && roleGuard(ProjectGateApprover, roles).kind === 'blocked' && (
+        <div className="lc-actions">
+          <RoleRequiredActions
+            requiredRole={ProjectGateApprover}
+            actions={[
+              { label: 'Approve', className: 'btn btn-secondary' },
+              { label: 'Reject…', className: 'btn btn-secondary' },
+            ]}
+          />
         </div>
       )}
       {!state.actions.canDecide && !mine && <p className="muted">Waiting for a Reviewer's decision.</p>}
@@ -550,7 +632,7 @@ function TransitionDialog({
       )}
 
       {error && <p className="field-error-text">{error}</p>}
-      {failing.length > 0 && <CheckList checks={failing} />}
+      {failing.length > 0 && <CheckList checks={failing} projectId={projectId} canOverride={state.actions.canOverride} />}
     </Dialog>
   );
 }
