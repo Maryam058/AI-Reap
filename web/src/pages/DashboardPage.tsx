@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { artifactsApi } from '../api/artifacts';
@@ -22,6 +22,7 @@ import {
   IconArrowRight,
   IconCheck,
   IconCheckCircle,
+  IconChevronDown,
   IconClock,
   IconCode,
   IconDocument,
@@ -203,30 +204,35 @@ export function DashboardPage() {
     };
   }, [token, attempt]);
 
-  // Report scope: all projects, or one project picked in the filter (kept in ?project= so the view can be shared).
+  // Report scope: all projects, or the ones ticked in the filter (kept as ?project=…&project=… so the view can be
+  // shared). Exactly one ticked project shows that project's own report.
   const [params, setParams] = useSearchParams();
-  const requested = params.get('project');
-  const scopeProject = (requested && projects?.find((p) => p.id === requested)) || null;
-  const setScope = (id: string) => setParams(id ? { project: id } : {}, { replace: true });
+  const requestedKey = params.getAll('project').join(',');
+  const selected = useMemo(() => {
+    const ids = new Set(requestedKey.split(',').filter(Boolean));
+    return projects ? projects.filter((p) => ids.has(p.id)) : [];
+  }, [projects, requestedKey]);
+  const scopeProject = selected.length === 1 ? selected[0] : null;
+  const setScope = (ids: string[]) => setParams(ids.map((id): [string, string] => ['project', id]), { replace: true });
 
-  // A project outside the sampled set is loaded on demand when it is picked.
+  // Projects outside the sampled set are loaded on demand when they are picked.
   const [extra, setExtra] = useState<Record<string, ProjectData>>({});
-  const needsLoad = scopeProject && data && !data.some((r) => r.project.id === scopeProject.id) && !extra[scopeProject.id] ? scopeProject : null;
+  const missing = useMemo(() => (data ? selected.filter((p) => !data.some((r) => r.project.id === p.id) && !extra[p.id]) : []), [data, selected, extra]);
+  const requestedLoads = useRef(new Set<string>());
   useEffect(() => {
-    if (!needsLoad) return;
-    let cancelled = false;
-    loadProjectData(needsLoad, token).then((row) => !cancelled && setExtra((e) => ({ ...e, [row.project.id]: row })));
-    return () => {
-      cancelled = true;
-    };
-  }, [needsLoad, token]);
+    for (const p of missing) {
+      if (requestedLoads.current.has(p.id)) continue;
+      requestedLoads.current.add(p.id);
+      loadProjectData(p, token).then((row) => setExtra((e) => ({ ...e, [row.project.id]: row })));
+    }
+  }, [missing, token]);
 
-  const scopedProjects = useMemo(() => (projects && scopeProject ? [scopeProject] : projects), [projects, scopeProject]);
+  const scopedProjects = useMemo(() => (projects && selected.length > 0 ? selected : projects), [projects, selected]);
   const scopedData = useMemo(() => {
-    if (!data || !scopeProject) return data;
-    const row = data.find((r) => r.project.id === scopeProject.id) ?? extra[scopeProject.id];
-    return row ? [row] : null;
-  }, [data, scopeProject, extra]);
+    if (!data || selected.length === 0) return data;
+    const rows = selected.map((p) => data.find((r) => r.project.id === p.id) ?? extra[p.id]);
+    return rows.every(Boolean) ? (rows as ProjectData[]) : null;
+  }, [data, selected, extra]);
   const stats = useMemo(() => (scopedProjects ? buildStats(scopedProjects, scopedData) : null), [scopedProjects, scopedData]);
 
   if (failed) return <ErrorState title="Unable to load the dashboard" description="We couldn't load your workspace right now." onRetry={() => setAttempt((n) => n + 1)} />;
@@ -237,28 +243,19 @@ export function DashboardPage() {
     </Link>
   );
 
-  const filter = projects && projects.length > 0 && (
-    <label className="dash-filter">
-      <IconFilter width={15} height={15} aria-hidden="true" />
-      <span className="sr-only">Report scope</span>
-      <select value={scopeProject?.id ?? ''} onChange={(e) => setScope(e.target.value)} aria-label="Show the report for">
-        <option value="">All projects ({projects.length})</option>
-        {[...projects]
-          .sort((a, b) => a.name.localeCompare(b.name))
-          .map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name} · {stageLabel(p.status)}
-            </option>
-          ))}
-      </select>
-    </label>
-  );
+  const filter = projects && projects.length > 0 && <ProjectFilter projects={projects} selected={selected} onChange={setScope} />;
 
   const header = (
     <PageHeader
       eyebrow={scopeProject ? 'Project progress report' : 'Portfolio overview'}
       title={`${greeting()}, ${firstName(displayName)}`}
-      subtitle={scopeProject ? `${formatFullDate(new Date())} · Showing ${scopeProject.name}` : `${formatFullDate(new Date())} · Project portfolio & lifecycle progress`}
+      subtitle={
+        scopeProject
+          ? `${formatFullDate(new Date())} · Showing ${scopeProject.name}`
+          : selected.length > 1
+            ? `${formatFullDate(new Date())} · Showing ${selected.length} of ${projects?.length ?? 0} projects`
+            : `${formatFullDate(new Date())} · Project portfolio & lifecycle progress`
+      }
       actions={
         projects && projects.length > 0 ? (
           <>
@@ -315,7 +312,7 @@ export function DashboardPage() {
 
   const list = scopedProjects;
   const single = scopeProject;
-  const sampled = !single && projects.length > SAMPLE_SIZE;
+  const sampled = selected.length === 0 && projects.length > SAMPLE_SIZE;
   const dataReady = scopedData !== null;
   const loadingValue = (n: number) => (dataReady ? n : '…');
   const stageSlices: Slice[] = stats.byStage.map((b) => ({ key: String(b.stage.status), label: b.stage.label, value: b.count, color: STAGE_COLORS[b.stage.status] }));
@@ -576,7 +573,7 @@ export function DashboardPage() {
                         </td>
                         <td className="num dash-cell-time">{formatRelativeTime(p.updatedAt)}</td>
                         <td className="num">
-                          <button type="button" className="btn btn-ghost btn-sm dash-row-action" onClick={() => setScope(p.id)} aria-label={`View progress report for ${p.name}`}>
+                          <button type="button" className="btn btn-ghost btn-sm dash-row-action" onClick={() => setScope([p.id])} aria-label={`View progress report for ${p.name}`}>
                             View report
                           </button>
                         </td>
@@ -988,6 +985,85 @@ function Signal({ icon, tone, value, label, meta }: { icon: ReactNode; tone: 'pr
         <span>{label}</span>
         {meta && <small>{meta}</small>}
       </span>
+    </div>
+  );
+}
+
+/**
+ * Report-scope filter: a checkbox list of projects. Nothing ticked means every project (and then every box shows
+ * ticked); unticking one from "all" keeps the rest, and ticking the last one back returns to "all".
+ */
+function ProjectFilter({ projects, selected, onChange }: { projects: Project[]; selected: Project[]; onChange: (ids: string[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+  const id = useId();
+  const sorted = useMemo(() => [...projects].sort((a, b) => a.name.localeCompare(b.name)), [projects]);
+  const all = selected.length === 0;
+  const ticked = new Set(all ? projects.map((p) => p.id) : selected.map((p) => p.id));
+  const label = all ? `All projects (${projects.length})` : selected.length === 1 ? selected[0].name : `${selected.length} of ${projects.length} projects`;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => !wrap.current?.contains(e.target as Node) && setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      wrap.current?.querySelector<HTMLElement>('[aria-haspopup]')?.focus();
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    wrap.current?.querySelector<HTMLElement>('input[type="checkbox"]')?.focus();
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const toggle = (projectId: string) => {
+    const next = new Set(ticked);
+    if (next.has(projectId)) next.delete(projectId);
+    else next.add(projectId);
+    onChange(next.size === 0 || next.size === projects.length ? [] : sorted.filter((p) => next.has(p.id)).map((p) => p.id));
+  };
+
+  return (
+    <div className="dash-filter" ref={wrap}>
+      <button
+        type="button"
+        className="dash-filter-btn"
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-controls={open ? id : undefined}
+        aria-label={`Show the report for: ${label}`}
+        title={label}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <IconFilter width={15} height={15} aria-hidden="true" />
+        <span className="dash-filter-label">{label}</span>
+        <IconChevronDown width={14} height={14} aria-hidden="true" className={`dash-filter-chevron${open ? ' open' : ''}`} />
+      </button>
+      {open && (
+        <div className="dash-filter-pop" id={id} role="group" aria-label="Projects in the report">
+          <label className="dash-filter-opt dash-filter-all">
+            <input
+              type="checkbox"
+              checked={all}
+              ref={(el) => {
+                if (el) el.indeterminate = !all;
+              }}
+              onChange={() => onChange([])}
+            />
+            <span className="dash-filter-name">All projects ({projects.length})</span>
+          </label>
+          {sorted.map((p) => (
+            <label key={p.id} className="dash-filter-opt">
+              <input type="checkbox" checked={ticked.has(p.id)} onChange={() => toggle(p.id)} />
+              <span className="dash-filter-name">{p.name}</span>
+              <span className="dash-filter-stage">{stageLabel(p.status)}</span>
+            </label>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

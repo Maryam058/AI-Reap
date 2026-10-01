@@ -74,8 +74,8 @@
   --brand-gradient: linear-gradient(135deg, #2452c7 0%, #16bfa5 100%);
   --brand-gradient-soft: linear-gradient(135deg, rgba(36, 82, 199, 0.1) 0%, rgba(22, 191, 165, 0.1) 100%);
 
-  --sidebar-width: 248px;
-  --sidebar-width-collapsed: 60px;
+  --sidebar-width: 264px;
+  --sidebar-width-collapsed: 68px;
   --header-height: 66px;
   --motion-fast: 150ms ease;
   --motion-base: 200ms ease;
@@ -1823,21 +1823,6 @@ main [id] {
     width: var(--sidebar-width);
     padding: 0 0.75rem 1rem;
     align-items: stretch;
-  }
-
-  .sidebar.collapsed .nav-link {
-    flex: 1;
-    justify-content: flex-start;
-    width: auto;
-    padding: 0.5rem 0.6rem;
-  }
-
-  .sidebar.collapsed .nav-modules {
-    align-items: stretch;
-  }
-
-  .sidebar.collapsed .nav-link.active::before {
-    left: -0.75rem;
   }
 
   .sidebar-mobile-close {
