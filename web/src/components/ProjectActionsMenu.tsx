@@ -7,10 +7,10 @@ import { apiErrorText } from '../lib/errors';
 import { useToast } from '../context/ToastContext';
 import { ConfirmDialog } from './ui/Dialog';
 import { Menu, type MenuItem } from './ui/Menu';
-import { IconArrowRight, IconEdit, IconFolder, IconTrash } from './icons';
+import { IconArrowRight, IconCheckCircle, IconEdit, IconFolder, IconTrash } from './icons';
 
 /**
- * The "⋯" action menu for a project: Open, Edit, the project's lifecycle, and (Administrator only)
+ * The "⋯" action menu for a project: Open, Edit, the project's lifecycle, the SDLC Review, and (Administrator only)
  * Delete. Stage changes are not made from here: they happen in the lifecycle panel on the overview,
  * where the backend's exit checks, stage ownership and Reviewer gates are shown.
  */
@@ -42,6 +42,7 @@ export function ProjectActionsMenu({
   if (showOpen) items.push({ key: 'open', label: 'Open project', icon: <IconFolder width={15} height={15} />, to: `/projects/${project.id}` });
   if (canEdit) items.push({ key: 'edit', label: 'Edit project', icon: <IconEdit width={15} height={15} />, to: `/projects/${project.id}/edit` });
   items.push({ key: 'lifecycle', label: 'Lifecycle stage & approvals', icon: <IconArrowRight width={15} height={15} />, to: `/projects/${project.id}#lifecycle` });
+  items.push({ key: 'review', label: 'SDLC Review', icon: <IconCheckCircle width={15} height={15} />, to: `/projects/${project.id}/review` });
   if (canDelete) {
     items.push({
       key: 'delete',

@@ -63,14 +63,16 @@ interface Props {
   onNoticeAcknowledged?: () => void;
   // Changes when a review is recorded or the artifact's status/version changes, so an open panel reloads.
   refreshKey?: string;
+  // Starts expanded (e.g. inside the lifecycle review's artifact dialog).
+  defaultOpen?: boolean;
 }
 
 // §21/§22/§23/§24 — impact notices, version history (with a two-version diff view), review
 // history, traceability links and change-impact analysis, collapsed behind one toggle so
 // ArtifactCard doesn't get noisy.
-export function ArtifactDetails({ artifactId, artifactType, projectId, openImpactNoticeCount = 0, onNoticeAcknowledged, refreshKey }: Props) {
+export function ArtifactDetails({ artifactId, artifactType, projectId, openImpactNoticeCount = 0, onNoticeAcknowledged, refreshKey, defaultOpen = false }: Props) {
   const { token, hasRole } = useAuth();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const [versions, setVersions] = useState<ArtifactVersion[] | null>(null);
   const [reviews, setReviews] = useState<ArtifactReview[] | null>(null);
   const [notices, setNotices] = useState<ImpactNotice[] | null>(null);

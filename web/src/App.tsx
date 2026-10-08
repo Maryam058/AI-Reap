@@ -13,6 +13,7 @@ import { ProjectGate } from './pages/ProjectGate';
 import { ProjectOverviewPage } from './pages/ProjectOverviewPage';
 import { EditProjectPage, NewProjectPage } from './pages/ProjectFormPages';
 import { AnalysisPage, CopilotPage, DesignPage, DevelopmentPage, GatheringPage, TestingPage, TraceabilityPage, ValidationPage } from './pages/PhasePages';
+import { LifecycleReviewPage } from './pages/LifecycleReviewPage';
 import { UsersPage } from './pages/UsersPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { RolesPage } from './pages/RolesPage';
@@ -54,6 +55,7 @@ function App() {
                   <Route path="testing" element={<TestingPage />} />
                   <Route path="traceability" element={<TraceabilityPage />} />
                   <Route path="copilot" element={<CopilotPage />} />
+                  <Route path="review" element={<LifecycleReviewPage />} />
                   <Route path="*" element={<Navigate to=".." replace />} />
                 </Route>
                 <Route

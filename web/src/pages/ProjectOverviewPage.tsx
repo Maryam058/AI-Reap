@@ -14,7 +14,7 @@ import { Avatar } from '../components/ui/Avatar';
 import { ProjectActionsMenu } from '../components/ProjectActionsMenu';
 import { LifecyclePanel } from '../components/LifecyclePanel';
 import { AgentActivitySummary } from '../components/AgentActivitySummary';
-import { IconArrowRight, IconDocument, IconEdit, IconInbox, IconSparkles, IconUsers } from '../components/icons';
+import { IconArrowRight, IconCheckCircle, IconDocument, IconEdit, IconInbox, IconSparkles, IconUsers } from '../components/icons';
 
 export function ProjectOverviewPage() {
   const { hasRole, token } = useAuth();
@@ -54,10 +54,10 @@ export function ProjectOverviewPage() {
         title: 'This project has completed its lifecycle',
         text:
           leftover > 0
-            ? `Review end-to-end coverage in the traceability matrix. ${leftover} artifact ${leftover === 1 ? 'item still requires' : 'items still require'} review; ${leftover === 1 ? 'it is' : 'they are'} not needed for the completed lifecycle.`
-            : 'Review end-to-end coverage in the traceability matrix.',
-        to: phasePath(project.id, 'traceability'),
-        cta: 'Open Traceability',
+            ? `Review what each stage produced, who approved it and how it is traced. ${leftover} artifact ${leftover === 1 ? 'item still requires' : 'items still require'} review; ${leftover === 1 ? 'it is' : 'they are'} not needed for the completed lifecycle.`
+            : 'Review what each stage produced, who approved it and how it is traced.',
+        to: phasePath(project.id, 'review'),
+        cta: 'Open SDLC Review',
       };
     }
     if (requirements && requirements.length === 0)
@@ -84,6 +84,9 @@ export function ProjectOverviewPage() {
         badge={<span className={`status-pill tone-${statusVariant(project.status)}`}>{statusLabel(project.status)}</span>}
         actions={
           <>
+            <Link to={phasePath(project.id, 'review')} className={`btn ${progress.finished ? 'btn-primary' : 'btn-secondary'}`}>
+              <IconCheckCircle width={15} height={15} /> SDLC Review
+            </Link>
             {canEdit && (
               <Link to={`/projects/${project.id}/edit`} className="btn btn-secondary">
                 <IconEdit width={15} height={15} /> Edit Project

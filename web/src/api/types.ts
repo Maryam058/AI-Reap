@@ -900,3 +900,171 @@ export interface SystemSettings {
   };
   credentialsNote: string;
 }
+
+// ---- Lifecycle review (GET /api/projects/{id}/lifecycle-review) ---------------------------------
+// A read-only, historical projection: what each lifecycle stage produced, by whom and from what.
+// A null stage means the backend could not determine it from recorded history.
+
+export interface ArtifactTypeCount {
+  artifactType: number;
+  count: number;
+  aiGenerated: number;
+  manual: number;
+}
+
+export interface StageVisit {
+  enteredAt: string;
+  leftAt?: string | null;
+  enteredBy: number;
+  enteredByUserId?: string | null;
+  enteredByRole?: string | null;
+  leftBy?: number | null;
+}
+
+/** StageReviewState on the server. */
+export const STAGE_REVIEW_STATE = { Completed: 0, Current: 1, NotReached: 2 } as const;
+
+export interface StageActivity {
+  artifactsCreated: number;
+  aiGenerated: number;
+  manual: number;
+  artifactsEdited: number;
+  versionsRecorded: number;
+  approvals: number;
+  rejections: number;
+  comments: number;
+  aiOperations: number;
+  agentStepsRun: number;
+  tasksCompleted: number;
+  testsPassed: number;
+  testsFailed: number;
+  testsBlocked: number;
+  requirementSourcesAdded: number;
+  touchedArtifactIds: string[];
+}
+
+export interface StageReviewSummary {
+  stage: number;
+  label: string;
+  ownerRole: string;
+  state: number;
+  visits: StageVisit[];
+  firstEnteredAt?: string | null;
+  completedAt?: string | null;
+  historyUnavailable: boolean;
+  createdArtifactIds: string[];
+  createdByType: ArtifactTypeCount[];
+  activity: StageActivity;
+  transitions: StageTransition[];
+}
+
+export interface ArtifactAiProvenance {
+  executionId: string;
+  operationType: string;
+  model: string;
+  promptTemplateVersion?: string | null;
+  userId: string;
+  timestamp: string;
+  accepted?: boolean | null;
+  agentRunId?: string | null;
+  agent?: number | null;
+}
+
+export interface ReviewedArtifact {
+  id: string;
+  code: string;
+  title: string;
+  artifactType: number;
+  status: number;
+  origin: number;
+  currentVersion: number;
+  approvedVersion?: number | null;
+  versionCount: number;
+  createdByUserId: string;
+  createdAt: string;
+  updatedByUserId?: string | null;
+  updatedAt: string;
+  createdInStage?: number | null;
+  servesStage: number;
+  requirementSourceId?: string | null;
+  ai?: ArtifactAiProvenance | null;
+  latestReview?: { reviewerUserId: string; reviewerRole?: string | null; decision: number; versionNumber?: number | null; comment?: string | null; reviewedAt: string } | null;
+  reviewCount: number;
+  latestWork?: { outcome: number; versionNumber: number; recordedByUserId: string; recordedByRole?: string | null; recordedAt: string; note?: string | null } | null;
+  links: { relatedArtifactId: string; code: string; artifactType: number; relationshipType: number; isOutgoing: boolean }[];
+}
+
+export interface ReviewedRequirementSource {
+  id: string;
+  sourceType: number;
+  fileName?: string | null;
+  createdByUserId: string;
+  createdAt: string;
+  createdInStage?: number | null;
+}
+
+/** TimelineEventKind on the server. */
+export const TIMELINE_EVENT_KIND = {
+  ProjectCreated: 0,
+  StageTransition: 1,
+  RequirementSourceAdded: 2,
+  AiGeneration: 3,
+  AgentStep: 4,
+  ArtifactsCreated: 5,
+  ArtifactsEdited: 6,
+  ArtifactsReviewed: 7,
+  WorkRecorded: 8,
+} as const;
+
+export interface ReviewTimelineEvent {
+  at: string;
+  kind: number;
+  title: string;
+  detail?: string | null;
+  actorUserId?: string | null;
+  actorRole?: string | null;
+  stage?: number | null;
+  count: number;
+  artifactIds: string[];
+}
+
+export interface LifecycleReview {
+  projectId: string;
+  projectName: string;
+  currentStatus: number;
+  isCompleted: boolean;
+  completedAt?: string | null;
+  historyComplete: boolean;
+  definition: {
+    description?: string | null;
+    businessProblem?: string | null;
+    objectives?: string | null;
+    scope?: string | null;
+    createdByUserId: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+  totals: {
+    totalArtifacts: number;
+    aiGenerated: number;
+    manual: number;
+    unattributedArtifacts: number;
+    byType: ArtifactTypeCount[];
+    versions: number;
+    reviews: number;
+    aiOperations: number;
+    agentRuns: number;
+    tasksCompleted: number;
+    testsPassed: number;
+    testsFailed: number;
+    testsBlocked: number;
+    functionalRequirements: number;
+    fullyTracedFunctionalRequirements: number;
+    traceabilityCoveragePercent?: number | null;
+  };
+  stages: StageReviewSummary[];
+  artifacts: ReviewedArtifact[];
+  requirementSources: ReviewedRequirementSource[];
+  timeline: ReviewTimelineEvent[];
+  traceability: TraceabilityRow[];
+}

@@ -15,6 +15,9 @@ namespace AiReap.Application.Knowledge;
 
 public partial class CopilotService : ICopilotService
 {
+    // AIExecution.OperationType of a copilot question: AI activity that produces no artifact.
+    public const string OperationType = "ProjectCopilotQuery";
+
     private const int TopKChunks = 5;
     private const string PromptTemplateVersion = "ProjectCopilotQuery-v2";
 
@@ -86,7 +89,7 @@ public partial class CopilotService : ICopilotService
             $"RECENT CHANGES:\n{changesBlock}\n\nDOCUMENT EXCERPTS:\n{chunksBlock}\n\nQUESTION:\n{question}";
 
         var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<CopilotAiResponse>(
-            _chatClient, _logger, "ProjectCopilotQuery", Snippet(question, 200), SystemPrompt, userPrompt, cancellationToken,
+            _chatClient, _logger, OperationType, Snippet(question, 200), SystemPrompt, userPrompt, cancellationToken,
             knownArtifactCodes: artifacts.Select(a => a.Code));
 
         var citations = parsed.CitedChunkRefs
@@ -96,7 +99,7 @@ public partial class CopilotService : ICopilotService
             .ToList();
 
         GenerationSupport.AddExecutions(
-            _db, projectId, "ProjectCopilotQuery", PromptTemplateVersion, _currentUser.UserId,
+            _db, projectId, OperationType, PromptTemplateVersion, _currentUser.UserId,
             _chatClient.ModelName, Snippet(question, 200), rawResponse, DateTime.UtcNow, Array.Empty<Guid>());
 
         await _db.SaveChangesAsync(cancellationToken);

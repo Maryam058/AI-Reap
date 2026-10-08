@@ -31,6 +31,7 @@ function useCrumbs(pathname: string, projectName: string | undefined): Crumb[] {
     if (!segment) return [...base, { label: projectName ?? 'Project' }];
     const project: Crumb = { label: projectName ?? 'Project', to: `/projects/${id}` };
     if (segment === 'edit') return [...base, project, { label: 'Edit' }];
+    if (segment === 'review') return [...base, project, { label: 'SDLC Review' }];
     const phase = WORK_AREAS.find((p) => p.segment === segment);
     const label = phase ? phase.navLabel.replace(/^Requirements /, '') : segment === 'copilot' ? 'AI Assistant' : segment;
     return [...base, project, { label: SEGMENT_GROUP[segment] ?? 'Project' }, { label }];
