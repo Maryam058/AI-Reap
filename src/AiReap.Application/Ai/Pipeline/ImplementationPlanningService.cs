@@ -11,7 +11,7 @@ namespace AiReap.Application.Ai.Pipeline;
 
 public class ImplementationPlanningService : IImplementationPlanningService
 {
-    private const string PromptTemplateVersion = "ImplementationPlanning-v1";
+    private const string PromptTemplateVersion = "ImplementationPlanning-v2";
 
     private const string SystemPrompt = """
         You are a delivery lead (§19 of an SDLC automation spec). Given a raw requirement, its
@@ -26,7 +26,7 @@ public class ImplementationPlanningService : IImplementationPlanningService
         {
           "tasks": [
             {"title": "string", "description": "string",
-             "taskType": "Backend|Frontend|Database|Infrastructure|Testing",
+             "taskType": "Backend|Frontend|Database|Infrastructure|Testing|Documentation",
              "priority": "Low|Medium|High|Critical", "dependencies": ["string"],
              "suggestedRole": "string or null", "estimate": "string or null",
              "relatedRequirementCodes": ["FR-001"]}

@@ -55,7 +55,7 @@ public class FallbackAiChatClientTests
     [Fact]
     public async Task Gemini_success_is_returned_and_groq_is_never_called()
     {
-        var gemini = new ScriptedClient("gemini-3.6-flash", Returns("{\"from\":\"gemini\"}"));
+        var gemini = new ScriptedClient("gemini-3.8-flash", Returns("{\"from\":\"gemini\"}"));
         var groq = new ScriptedClient("groq:openai/gpt-oss-120b", Returns("{\"from\":\"groq\"}"));
         var (client, _) = Build(gemini, groq);
 
@@ -63,7 +63,7 @@ public class FallbackAiChatClientTests
 
         Assert.Equal("{\"from\":\"gemini\"}", result);
         Assert.Equal(0, groq.Calls);
-        Assert.Equal("gemini-3.6-flash", client.ModelName); // what the AI audit trail records
+        Assert.Equal("gemini-3.8-flash", client.ModelName); // what the AI audit trail records
     }
 
     // 2. Gemini quota failure -> Groq
@@ -72,7 +72,7 @@ public class FallbackAiChatClientTests
     [InlineData(true)]  // daily / zero-limit quota
     public async Task Gemini_rate_limit_or_quota_falls_back_to_groq_and_the_audit_model_is_groq(bool quotaExhausted)
     {
-        var gemini = new ScriptedClient("gemini-3.6-flash", Throws(GeminiFailure(AiFailureKind.RateLimited, HttpStatusCode.TooManyRequests, quotaExhausted: quotaExhausted)));
+        var gemini = new ScriptedClient("gemini-3.8-flash", Throws(GeminiFailure(AiFailureKind.RateLimited, HttpStatusCode.TooManyRequests, quotaExhausted: quotaExhausted)));
         var groq = new ScriptedClient("groq:openai/gpt-oss-120b", Returns("{\"from\":\"groq\"}"));
         var (client, log) = Build(gemini, groq);
 
@@ -90,7 +90,7 @@ public class FallbackAiChatClientTests
     [Fact]
     public async Task Model_name_follows_the_provider_that_served_each_call()
     {
-        var gemini = new ScriptedClient("gemini-3.6-flash",
+        var gemini = new ScriptedClient("gemini-3.8-flash",
             Throws(GeminiFailure(AiFailureKind.Unavailable, HttpStatusCode.ServiceUnavailable)), Returns("{}"));
         var groq = new ScriptedClient("groq:openai/gpt-oss-120b", Returns("{}"));
         var (client, _) = Build(gemini, groq);
@@ -99,7 +99,7 @@ public class FallbackAiChatClientTests
         Assert.Equal("groq:openai/gpt-oss-120b", client.ModelName);
 
         await client.CompleteAsync("s", "u");
-        Assert.Equal("gemini-3.6-flash", client.ModelName);
+        Assert.Equal("gemini-3.8-flash", client.ModelName);
     }
 
     // 3. Gemini transient failure -> Groq
@@ -108,7 +108,7 @@ public class FallbackAiChatClientTests
     [InlineData(AiFailureKind.Timeout)]
     public async Task Gemini_transient_outage_or_timeout_falls_back_to_groq(AiFailureKind kind)
     {
-        var gemini = new ScriptedClient("gemini-3.6-flash", Throws(GeminiFailure(kind, HttpStatusCode.ServiceUnavailable)));
+        var gemini = new ScriptedClient("gemini-3.8-flash", Throws(GeminiFailure(kind, HttpStatusCode.ServiceUnavailable)));
         var groq = new ScriptedClient("groq:openai/gpt-oss-120b", Returns("{\"from\":\"groq\"}"));
         var (client, _) = Build(gemini, groq);
 
@@ -124,7 +124,7 @@ public class FallbackAiChatClientTests
     public async Task Configuration_request_and_content_errors_do_not_fall_back(AiFailureKind kind)
     {
         var failure = GeminiFailure(kind, HttpStatusCode.BadRequest);
-        var gemini = new ScriptedClient("gemini-3.6-flash", Throws(failure));
+        var gemini = new ScriptedClient("gemini-3.8-flash", Throws(failure));
         var groq = new ScriptedClient("groq:openai/gpt-oss-120b", Returns("{}"));
         var (client, _) = Build(gemini, groq);
 
@@ -155,7 +155,7 @@ public class FallbackAiChatClientTests
     [Fact]
     public async Task Both_rate_limited_returns_a_rate_limit_error_naming_both_providers()
     {
-        var gemini = new ScriptedClient("gemini-3.6-flash",
+        var gemini = new ScriptedClient("gemini-3.8-flash",
             Throws(GeminiFailure(AiFailureKind.RateLimited, HttpStatusCode.TooManyRequests, TimeSpan.FromSeconds(40))));
         var groqFailure = new AiProviderException(AiFailureKind.RateLimited, "Groq", "Groq rate limit reached.",
             HttpStatusCode.TooManyRequests, "TPM", TimeSpan.FromSeconds(7));
@@ -177,7 +177,7 @@ public class FallbackAiChatClientTests
     [Fact]
     public async Task Gemini_down_and_groq_rejecting_its_key_reports_the_groq_authentication_failure()
     {
-        var gemini = new ScriptedClient("gemini-3.6-flash", Throws(GeminiFailure(AiFailureKind.Unavailable, HttpStatusCode.ServiceUnavailable)));
+        var gemini = new ScriptedClient("gemini-3.8-flash", Throws(GeminiFailure(AiFailureKind.Unavailable, HttpStatusCode.ServiceUnavailable)));
         var groq = new ScriptedClient("groq:openai/gpt-oss-120b",
             Throws(new AiProviderException(AiFailureKind.Authentication, "Groq", "Groq rejected the configured API key.", HttpStatusCode.Unauthorized)));
         var (client, _) = Build(gemini, groq);
@@ -193,7 +193,7 @@ public class FallbackAiChatClientTests
     {
         var now = DateTimeOffset.Parse("2026-09-25T10:00:00Z");
         var cooldown = new AiProviderCooldown();
-        var gemini = new ScriptedClient("gemini-3.6-flash",
+        var gemini = new ScriptedClient("gemini-3.8-flash",
             Throws(GeminiFailure(AiFailureKind.RateLimited, HttpStatusCode.TooManyRequests, TimeSpan.FromSeconds(30))), Returns("{\"from\":\"gemini\"}"));
         var groq = new ScriptedClient("groq:openai/gpt-oss-120b", Returns("{\"from\":\"groq\"}"));
         var (client, log) = Build(gemini, groq, cooldown, () => now);
@@ -212,7 +212,7 @@ public class FallbackAiChatClientTests
     [Fact]
     public async Task Per_minute_429_without_a_retry_hint_does_not_start_a_cool_down()
     {
-        var gemini = new ScriptedClient("gemini-3.6-flash",
+        var gemini = new ScriptedClient("gemini-3.8-flash",
             Throws(GeminiFailure(AiFailureKind.RateLimited, HttpStatusCode.TooManyRequests)), Returns("{}"));
         var groq = new ScriptedClient("groq:openai/gpt-oss-120b", Returns("{}"));
         var (client, _) = Build(gemini, groq);

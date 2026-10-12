@@ -196,13 +196,14 @@ public static class DependencyInjection
     // retry reuses it. Gemini gets no budget: its requests are sent exactly as built.
     private static IAiChatClient Wrap(IServiceProvider sp, IAiChatClient client, string name, AiResilienceOptions? resilience = null)
     {
-        var resilient = Resilient(sp, client, name, resilience);
         if (name != AiOptions.Groq)
         {
-            return resilient;
+            return Resilient(sp, client, name, resilience);
         }
 
         var groq = sp.GetRequiredService<IOptions<GroqOptions>>().Value;
+        var resilient = Resilient(sp, client, name,
+            (resilience ?? sp.GetRequiredService<IOptions<AiResilienceOptions>>().Value).WithRateLimitAttempts(groq.MaxRateLimitAttempts));
         return new RequestBudgetAiChatClient(
             resilient, name, $"{GroqOptions.SectionName}:{nameof(GroqOptions.MaxRequestTokens)}",
             groq.MaxRequestTokens, groq.ReservedOutputTokens,

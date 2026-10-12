@@ -10,7 +10,7 @@ public class GeminiOptions
     public string ApiKey { get; set; } = string.Empty;
 
     // A model available on the Gemini API free tier; change it here or via Ai__Gemini__Model.
-    public string Model { get; set; } = "gemini-3.6-flash";
+    public string Model { get; set; } = "gemini-3.8-flash";
 
     public string BaseUrl { get; set; } = "https://generativelanguage.googleapis.com/";
 

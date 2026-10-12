@@ -214,7 +214,7 @@ public class AiChatClientSelectionTests
 
         var resilient = Assert.IsType<ResilientAiChatClient>(client);
         Assert.IsType<GeminiAiChatClient>(resilient.Inner);
-        Assert.Equal("gemini-3.6-flash", client.ModelName);
+        Assert.Equal("gemini-3.8-flash", client.ModelName);
     }
 
     [Fact]
@@ -233,7 +233,7 @@ public class AiChatClientSelectionTests
         var gemini = configuration.GetSection(GeminiOptions.SectionName).Get<GeminiOptions>()!;
 
         Assert.Equal("Gemini", configuration["Ai:Provider"]);
-        Assert.Equal("gemini-3.6-flash", gemini.Model);
+        Assert.Equal("gemini-3.8-flash", gemini.Model);
         Assert.Equal("low", gemini.ThinkingLevel);
         // Gemini 3 rejects thinkingLevel + thinkingBudget together, and advises against low temperatures.
         Assert.Null(gemini.ThinkingBudget);
@@ -302,8 +302,8 @@ public class AiChatClientSelectionTests
         // Groq alone carries the request budget (Ai:Groq:MaxRequestTokens); Gemini is never budgeted.
         var budgeted = Assert.IsType<RequestBudgetAiChatClient>(client.Fallback);
         Assert.IsType<GroqAiChatClient>(Assert.IsType<ResilientAiChatClient>(budgeted.Inner).Inner);
-        Assert.Equal(8000 - 2000, budgeted.InputBudget);
-        Assert.Equal("gemini-3.6-flash", client.ModelName); // before any call, the primary
+        Assert.Equal(8000 - 4000, budgeted.InputBudget);
+        Assert.Equal("gemini-3.8-flash", client.ModelName); // before any call, the primary
     }
 
     [Fact]

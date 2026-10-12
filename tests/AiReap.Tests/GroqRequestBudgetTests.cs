@@ -20,7 +20,7 @@ public class GroqRequestBudgetTests
     private const string GeminiKey = "AIzaSyTESTTESTTESTTESTTESTTESTTESTTEST12";
     private const string GroqKey = "gsk_TESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTEST";
     private const int MaxRequestTokens = 8000;
-    private const int ReservedOutputTokens = 2000;
+    private const int ReservedOutputTokens = 4000;
     private const int InputBudget = MaxRequestTokens - ReservedOutputTokens;
 
     private const string SystemPrompt = """
@@ -158,7 +158,7 @@ public class GroqRequestBudgetTests
         var sentText = JsonNode.Parse(Assert.Single(geminiHttp.Bodies))!["contents"]![0]!["parts"]![0]!["text"]!.GetValue<string>();
         Assert.Equal(source, sentText);
         Assert.Empty(groqHttp.Requests);
-        Assert.Equal("gemini-3.6-flash", client.ModelName);
+        Assert.Equal("gemini-3.8-flash", client.ModelName);
     }
 
     // 2. Gemini quota -> Groq; a request inside the budget reaches Groq byte-for-byte.

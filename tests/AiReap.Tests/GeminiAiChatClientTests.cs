@@ -47,7 +47,7 @@ public class GeminiAiChatClientTests
         var handler = new FakeHandler(respond);
         var options = Options.Create(new GeminiOptions
         {
-            ApiKey = apiKey, Model = "gemini-3.6-flash", MaxOutputTokens = 4096,
+            ApiKey = apiKey, Model = "gemini-3.8-flash", MaxOutputTokens = 4096,
             ThinkingLevel = thinkingLevel, ThinkingBudget = thinkingBudget, Temperature = temperature
         });
         return (new GeminiAiChatClient(new HttpClient(handler), options), handler);
@@ -63,7 +63,7 @@ public class GeminiAiChatClientTests
         Assert.Equal("{\"actors\":[]}", result);
         var request = Assert.Single(handler.Requests);
         Assert.Equal(HttpMethod.Post, request.Method);
-        Assert.Equal("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent", request.RequestUri!.ToString());
+        Assert.Equal("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", request.RequestUri!.ToString());
         Assert.DoesNotContain(FakeKey, request.RequestUri.ToString());
         Assert.Equal(FakeKey, request.Headers.GetValues("x-goog-api-key").Single());
 
@@ -275,8 +275,8 @@ public class GeminiAiChatClientTests
     }
 
     [Theory]
-    [InlineData("Quota exceeded for metric: generate_content_free_tier_requests, limit: 0, model: gemini-3.6-flash", true)]
-    [InlineData("Quota exceeded for metric: generate_content_free_tier_requests, limit: 50, model: gemini-3.6-flash", false)]
+    [InlineData("Quota exceeded for metric: generate_content_free_tier_requests, limit: 0, model: gemini-3.8-flash", true)]
+    [InlineData("Quota exceeded for metric: generate_content_free_tier_requests, limit: 50, model: gemini-3.8-flash", false)]
     public async Task A_zero_limit_quota_is_flagged_as_exhausted(string message, bool exhausted)
     {
         var (client, _) = Build(_ => RateLimited("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", null, message));
@@ -552,6 +552,26 @@ public class ResilientAiChatClientTests
         Assert.Equal(AiFailureKind.RateLimited, ex.Kind);
         Assert.Equal(2, inner.Calls);
         Assert.Single(delays);
+    }
+
+    [Fact]
+    public async Task Sub_second_rate_limit_hints_wait_at_least_the_growing_backoff()
+    {
+        // Groq's TPM 429s hint e.g. "try again in 862.5ms"; retrying that soon hits the same window.
+        var hint = TimeSpan.FromMilliseconds(10);
+        var inner = new ScriptedClient(
+            Fail(AiFailureKind.RateLimited, hint), Fail(AiFailureKind.RateLimited, hint), Fail(AiFailureKind.RateLimited, hint), Ok());
+        var delays = new List<TimeSpan>();
+        var options = new AiResilienceOptions { BaseDelayMilliseconds = 100, MaxDelaySeconds = 5, MaxRetryAfterSeconds = 30 }
+            .WithRateLimitAttempts(4);
+        var client = new ResilientAiChatClient(inner, "Test", options, NullLogger.Instance,
+            (delay, _) => { delays.Add(delay); return Task.CompletedTask; });
+
+        Assert.Equal("{\"ok\":true}", await client.CompleteAsync("s", "u"));
+
+        Assert.Equal(4, inner.Calls);
+        Assert.Equal(3, delays.Count);
+        Assert.All(delays.Select((d, i) => (d, i)), x => Assert.True(x.d >= TimeSpan.FromMilliseconds(100 * Math.Pow(2, x.i))));
     }
 
     [Fact]

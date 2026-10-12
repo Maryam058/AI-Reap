@@ -20,7 +20,7 @@ namespace AiReap.Tests;
 public class ChunkedAnalysisTests
 {
     private const int MaxRequestTokens = 8000;
-    private const int ReservedOutputTokens = 2000;
+    private const int ReservedOutputTokens = 4000;
     private const int InputBudget = MaxRequestTokens - ReservedOutputTokens;
 
     private const string SystemPrompt = """
@@ -183,7 +183,7 @@ public class ChunkedAnalysisTests
 
         var part = Assert.Single(parts);
         Assert.Equal((1, 1), (part.Number, part.Count));
-        Assert.Equal("gemini-3.6-flash", part.Model);
+        Assert.Equal("gemini-3.8-flash", part.Model);
         var sent = JsonNode.Parse(Assert.Single(geminiHttp.Bodies))!["contents"]![0]!["parts"]![0]!["text"]!.GetValue<string>();
         Assert.Equal(source, sent);
         Assert.Empty(groqHttp.Requests);
@@ -217,7 +217,7 @@ public class ChunkedAnalysisTests
         var sent = JsonNode.Parse(Assert.Single(geminiHttp.Bodies))!["contents"]![0]!["parts"]![0]!["text"]!.GetValue<string>();
         Assert.Equal(source, sent);
         Assert.Empty(groqHttp.Requests);
-        Assert.Equal("gemini-3.6-flash", client.ModelName);
+        Assert.Equal("gemini-3.8-flash", client.ModelName);
     }
 
     // The reported failure: "needs about 23,580" tokens, Gemini quota used up, Groq fallback.
@@ -230,7 +230,7 @@ public class ChunkedAnalysisTests
 
         var parts = await Chunked(client, source);
 
-        Assert.InRange(parts.Count, 4, 8);
+        Assert.InRange(parts.Count, 4, 12);
         Assert.Equal(Enumerable.Range(1, parts.Count), parts.Select(p => p.Number));
         Assert.All(parts, p => Assert.Equal("groq:openai/gpt-oss-120b", p.Model));
 
@@ -469,7 +469,7 @@ public class ChunkedAnalysisTests
         Assert.Empty(groqHttp.Requests);
         var (_, audit) = await ba.GetAsync($"/api/projects/{projectId}/ai-executions");
         var row = audit!.AsArray().First(e => e!["operationType"]!.GetValue<string>() == "RequirementAnalysis");
-        Assert.Equal("gemini-3.6-flash", row!["model"]!.GetValue<string>());
+        Assert.Equal("gemini-3.8-flash", row!["model"]!.GetValue<string>());
         Assert.Equal(geminiAnalysis, row["outputJson"]!.GetValue<string>()); // raw response, as before
     }
 

@@ -39,7 +39,7 @@ Generator service ─► GenerationSupport.CallAiAndParseAsync
    | `Ai:Provider` | `Gemini` | Primary provider. `Groq` or `Anthropic` also accepted. |
    | `Ai:FallbackProvider` | `Groq` | Used automatically when the primary is rate-limited/out of quota/unavailable. `None` disables it. |
    | `Ai:PrimaryCooldownSeconds` | `600` | After a Gemini 429, skip Gemini (go straight to Groq) for Google's retry delay, or this long for a daily/zero quota; capped at this value. |
-   | `Ai:Gemini:Model` | `gemini-3.6-flash` | Any `generateContent` model your key can use. Google no longer grants `gemini-2.5-*` to new users. |
+   | `Ai:Gemini:Model` | `gemini-3.8-flash` | Any `generateContent` model your key can use. Google no longer grants `gemini-2.5-*` to new users. |
    | `Ai:Gemini:MaxOutputTokens` | `16384` | Includes thinking tokens. Truncated output is reported as `ai_invalid_output`, never saved. |
    | `Ai:Gemini:ThinkingLevel` | `low` | Gemini 3 thinking effort (`minimal`/`low`/`medium`/`high`; Gemini 3 cannot turn thinking off). Empty uses the model default. |
    | `Ai:Gemini:ThinkingBudget` | _(unset)_ | Legacy Gemini 2.5 setting; ignored while `ThinkingLevel` is set (Gemini rejects both together). |
@@ -82,11 +82,12 @@ Key: `dotnet user-secrets set "Ai:Groq:ApiKey" "<key>" --project src/AiReap.Api`
 | `Ai:Groq:Model` | `openai/gpt-oss-120b` | 131k context, JSON mode, strongest reasoning model on Groq. Free tier: ~8k tokens/min, 1k requests/day. |
 | `Ai:Groq:MaxCompletionTokens` | `16384` | Includes reasoning tokens. Truncation is `ai_invalid_output`, never saved. |
 | `Ai:Groq:MaxRequestTokens` | `8000` | Largest single request Groq accepts (the free tier's tokens-per-minute limit; Groq answers 413 above it). Raise on a paid tier; `0` disables. |
-| `Ai:Groq:ReservedOutputTokens` | `2000` | Part of `MaxRequestTokens` kept for the response. Input budget = `MaxRequestTokens - ReservedOutputTokens` (6,000 by default). |
+| `Ai:Groq:ReservedOutputTokens` | `4000` | Part of `MaxRequestTokens` kept for the response (JSON output + gpt-oss reasoning; 2,000 was too little and truncated responses). Input budget = `MaxRequestTokens - ReservedOutputTokens` (4,000 by default). |
+| `Ai:Groq:MaxRateLimitAttempts` | `4` | Total attempts on a Groq 429 (overrides `Ai:Resilience:MaxRateLimitAttempts` when higher). Each retry waits at least the exponential backoff, since Groq's sub-second hints rarely clear its per-minute token window. |
 | `Ai:Groq:ReasoningEffort` | `low` | gpt-oss `low`/`medium`/`high`; empty omits it (needed for models without this option). |
 | `Ai:Groq:Temperature` | _(unset)_ | Model default. |
 
-The AI audit trail (`AIExecution.Model`) records the model that actually answered: `gemini-3.6-flash`,
+The AI audit trail (`AIExecution.Model`) records the model that actually answered: `gemini-3.8-flash`,
 `groq:openai/gpt-oss-120b`, or `stub-canned-model`. Logs show `AI provider Gemini attempted`,
 `... failed (RateLimited ...); falling back to Groq`, `AI fallback provider Groq succeeded` / `also failed`.
 `GET /api/ai/status` reports the fallback's key/model check under `fallback`.

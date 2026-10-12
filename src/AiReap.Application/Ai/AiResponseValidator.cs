@@ -137,7 +137,7 @@ public static class AiVocabulary
 
     public static readonly string[] AcceptanceCriterionKinds = ["positive", "negative", "boundary"];
     public static readonly string[] TestKinds = ["positive", "negative", "boundary", "permission", "validation"];
-    public static readonly string[] TaskTypes = ["Backend", "Frontend", "Database", "Infrastructure", "Testing"];
+    public static readonly string[] TaskTypes = ["Backend", "Frontend", "Database", "Infrastructure", "Testing", "Documentation"];
     public static readonly string[] HttpMethods = ["GET", "POST", "PUT", "PATCH", "DELETE"];
     public static readonly string[] ConflictTypes = ["ConflictsWith", "DuplicateOf"];
 }

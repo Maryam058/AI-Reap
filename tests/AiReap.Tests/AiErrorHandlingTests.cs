@@ -261,6 +261,27 @@ public class AiErrorHandlingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Documentation_implementation_tasks_are_accepted_without_a_repair_attempt()
+    {
+        // Groq labelled "write the API docs" work as Documentation, which used to fail validation
+        // and cost a repair request against its per-minute token limit.
+        Assert.Equal(200, (await _ba.PostAsync($"/api/requirement-sources/{_sourceId}/generate-requirements")).Status);
+        const string tasks = """
+            {"tasks":[{"title":"Document the leave request API","description":"Write API reference docs.",
+             "taskType":"Documentation","priority":"Medium","dependencies":[],"suggestedRole":"Developer","estimate":null,
+             "relatedRequirementCodes":["FR-001"]}]}
+            """;
+        _host.Ai.RespondOnceWhenPromptContains("taskType", tasks);
+        var promptsBefore = _host.Ai.UserPrompts.Count;
+
+        var (status, body) = await _ba.PostAsync($"/api/requirement-sources/{_sourceId}/generate-tasks");
+
+        Assert.Equal(200, status);
+        Assert.Contains("\"Documentation\"", Assert.Single(body!.AsArray())!["data"]!.ToJsonString());
+        Assert.Equal(promptsBefore + 1, _host.Ai.UserPrompts.Count);
+    }
+
+    [Fact]
     public async Task Titles_longer_than_the_database_column_are_rejected_before_persistence()
     {
         var longTitle = new string('x', 301);

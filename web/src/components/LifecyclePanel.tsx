@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { lifecycleApi } from '../api/lifecycle';
+import { projectsApi } from '../api/projects';
 import { REVIEW_DECISION, TRANSITION_KIND, TRANSITION_STATE, type LifecycleCheck, type Project, type ProjectLifecycleState, type StageTransition } from '../api/types';
 import { useLifecyclePolicy, useProjectLifecycle } from '../hooks/useLifecycle';
 import { personLabel, useMemberNames } from '../hooks/useMemberNames';
@@ -13,12 +15,21 @@ import { LifecycleStepper } from './LifecycleStepper';
 import { CheckGuidance } from './CheckGuidance';
 import { RoleRequiredActions } from './RoleRequiredAlert';
 import { roleGuard } from '../lib/roleGuard';
+import { createHandoffTracker, createMembershipFollowUps, resolveHandoffPopup, stageHandoff, type HandoffPopup } from '../lib/stageHandoff';
+import { phasePath } from '../lib/workAreas';
+import { StageHandoffDialog } from './StageHandoffDialog';
+import { NextRoleMemberDialog } from './NextRoleMemberDialog';
 import { IconAlert, IconArrowRight, IconCheck, IconChevronDown, IconLock, IconRotateCcw, IconX } from './icons';
 
 // Mirrors ProjectLifecyclePolicy.GateApproverRole.
 const ProjectGateApprover = 'Reviewer';
 
 type DialogMode = 'advance' | 'submit' | 'approve' | 'reject' | 'withdraw' | 'rollback';
+
+// Module-level so a move's hand-off shows once, even if the panel re-renders or remounts.
+const handoffs = createHandoffTracker();
+// Moves whose next role had no project member when the user left to manage members; rechecked on return.
+const memberFollowUps = createMembershipFollowUps();
 
 /**
  * The project's lifecycle (§5) on the overview: the eight stages, where the project is, what the
@@ -27,12 +38,56 @@ type DialogMode = 'advance' | 'submit' | 'approve' | 'reject' | 'withdraw' | 'ro
  * backend's; this panel shows the backend's answers and offers only the actions it allows.
  */
 export function LifecyclePanel({ project, version, onProjectChanged }: { project: Project; version?: unknown; onProjectChanged: () => Promise<void> | void }) {
-  const { token, userId, roles } = useAuth();
+  const { token, userId, roles, hasRole } = useAuth();
+  const navigate = useNavigate();
   const { toast } = useToast();
   const policy = useLifecyclePolicy();
   const names = useMemberNames(project.id);
   const { state, failed, reload } = useProjectLifecycle(project.id, `${version ?? ''}|${project.status}|${project.updatedAt}`);
   const [dialog, setDialog] = useState<DialogMode | null>(null);
+  // The popup after a completed move, with the move itself so it can be re-judged later.
+  const [handoff, setHandoff] = useState<{ popup: HandoffPopup; moved: StageTransition } | null>(null);
+  const [checkingMembers, setCheckingMembers] = useState(false);
+
+  // The hand-off for `moved`, judged on lifecycle state and members fetched now; null when there's
+  // nothing to hand off (e.g. the project has moved on since). Lifecycle errors propagate.
+  const judgeHandoff = async (moved: StageTransition) => {
+    const next = stageHandoff(moved, await lifecycleApi.get(project.id, token), roles);
+    return next && { moved, popup: await resolveHandoffPopup(next, () => projectsApi.getMembers(project.id, token)) };
+  };
+
+  const recheckMembers = async (moved: StageTransition, previous: HandoffPopup) => {
+    setCheckingMembers(true);
+    try {
+      setHandoff(await judgeHandoff(moved));
+    } catch {
+      // Couldn't re-fetch the lifecycle: say so rather than claiming anything about members.
+      setHandoff({ moved, popup: { kind: 'membership-error', handoff: previous.handoff } });
+    } finally {
+      setCheckingMembers(false);
+    }
+  };
+
+  // Back from managing members: re-judge the remembered move once, on fresh server data.
+  useEffect(() => {
+    const moved = memberFollowUps.peek(project.id);
+    if (!moved) return;
+    let cancelled = false;
+    judgeHandoff(moved)
+      .then((h) => {
+        if (cancelled) return;
+        memberFollowUps.forget(project.id);
+        setHandoff(h);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        memberFollowUps.forget(project.id);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
 
   if (failed && !state) {
     return (
@@ -64,11 +119,20 @@ export function LifecyclePanel({ project, version, onProjectChanged }: { project
   const mayMove = actions.canAdvance || actions.canSubmitForApproval;
   // Failing checks, or an Administrator acting in the owner's place: either way only an override moves it.
   const moveIsOverride = (!state.readyToAdvance && actions.canOverride) || actions.advanceIsOverride;
-  const done = async (message: string, tone: 'success' | 'info' = 'success') => {
+  // `moved` is the transition the backend completed (never a pending request, rejection or
+  // rollback); only then is the next role shown, judged from the lifecycle state fetched afresh.
+  const done = async (message: string, tone: 'success' | 'info' = 'success', moved?: StageTransition) => {
     toast(message, tone);
     setDialog(null);
     reload();
     await onProjectChanged();
+    if (!moved) return;
+    try {
+      const next = await judgeHandoff(moved);
+      if (next && handoffs.claim(next.popup.handoff.transitionId)) setHandoff(next);
+    } catch {
+      // The move itself succeeded and was reported; the hand-off is guidance only.
+    }
   };
 
   return (
@@ -221,6 +285,25 @@ export function LifecyclePanel({ project, version, onProjectChanged }: { project
           onDone={done}
         />
       )}
+
+      {handoff &&
+        (handoff.popup.kind === 'handoff' ? (
+          <StageHandoffDialog handoff={handoff.popup.handoff} onClose={() => setHandoff(null)} />
+        ) : (
+          <NextRoleMemberDialog
+            handoff={handoff.popup.handoff}
+            problem={handoff.popup.kind === 'missing-member' ? 'missing' : 'error'}
+            canManage={hasRole('Administrator') || hasRole('BusinessAnalyst')}
+            checking={checkingMembers}
+            onRecheck={() => void recheckMembers(handoff.moved, handoff.popup)}
+            onManage={() => {
+              memberFollowUps.remember(handoff.moved);
+              setHandoff(null);
+              navigate(`${phasePath(project.id, 'gathering')}?tab=members`);
+            }}
+            onClose={() => setHandoff(null)}
+          />
+        ))}
     </section>
   );
 }
@@ -485,7 +568,7 @@ function TransitionDialog({
   projectId: string;
   token: string | null;
   onClose: () => void;
-  onDone: (message: string, tone?: 'success' | 'info') => Promise<void>;
+  onDone: (message: string, tone?: 'success' | 'info', moved?: StageTransition) => Promise<void>;
 }) {
   const next = state.nextStatus ?? LAST_STAGE;
   const pending = state.pendingTransition ?? null;
@@ -543,13 +626,14 @@ function TransitionDialog({
           const t = await lifecycleApi.advance(projectId, { targetStatus: next, note: note.trim() || undefined, overrideReason: override ? reason.trim() : undefined }, token);
           await (t.state === TRANSITION_STATE.Pending
             ? onDone(`Request submitted. The project stays in ${state.stageLabel} until a Reviewer approves it.`, 'info')
-            : onDone(`Project moved to ${stageLabel(t.toStatus)}.`));
+            : onDone(`Project moved to ${stageLabel(t.toStatus)}.`, 'success', t));
           break;
         }
-        case 'approve':
-          await lifecycleApi.decide(pending!.id, { approve: true, reason: note.trim() || undefined, overrideReason: override ? reason.trim() : undefined }, token);
-          await onDone(`Approved. The project moved to ${stageLabel(pending!.toStatus)}.`);
+        case 'approve': {
+          const t = await lifecycleApi.decide(pending!.id, { approve: true, reason: note.trim() || undefined, overrideReason: override ? reason.trim() : undefined }, token);
+          await onDone(`Approved. The project moved to ${stageLabel(pending!.toStatus)}.`, 'success', t);
           break;
+        }
         case 'reject':
           await lifecycleApi.decide(pending!.id, { approve: false, reason: reason.trim() }, token);
           await onDone(`Request rejected. The project stays in ${state.stageLabel}.`, 'info');

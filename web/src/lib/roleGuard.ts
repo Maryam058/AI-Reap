@@ -31,7 +31,8 @@ const ROLE_NOUN: Record<string, string> = {
   Reviewer: 'a Reviewer',
 };
 
-const roleName = (role: string) => ROLE_NAME[role] ?? ROLE_LABELS[role] ?? role;
+/** A role's name in running text ("Reviewer", not the "Reviewer / Manager" list label). */
+export const roleName = (role: string) => ROLE_NAME[role] ?? ROLE_LABELS[role] ?? role;
 const roleNoun = (role: string) => ROLE_NOUN[role] ?? `a ${roleName(role)}`;
 
 function joinRoles(roles: readonly string[]): string {

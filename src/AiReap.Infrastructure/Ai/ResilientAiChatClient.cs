@@ -38,6 +38,19 @@ public class AiResilienceOptions
         MaxRetryAfterSeconds = MaxRetryAfterSeconds,
         MaxRateLimitAttempts = 1
     };
+
+    // For a provider whose per-minute token window refills gradually (Groq's free tier): its
+    // Retry-After hints are often sub-second and too optimistic, so more patient 429 retries are
+    // allowed (each waiting at least the exponential backoff - see ResilientAiChatClient).
+    public AiResilienceOptions WithRateLimitAttempts(int attempts) => new()
+    {
+        TimeoutSeconds = TimeoutSeconds,
+        MaxAttempts = Math.Max(MaxAttempts, attempts),
+        BaseDelayMilliseconds = BaseDelayMilliseconds,
+        MaxDelaySeconds = MaxDelaySeconds,
+        MaxRetryAfterSeconds = MaxRetryAfterSeconds,
+        MaxRateLimitAttempts = Math.Max(MaxRateLimitAttempts, attempts)
+    };
 }
 
 // Wraps every real provider client (Gemini, Groq, Anthropic) with the same timeout, retry and
@@ -126,7 +139,12 @@ public sealed class ResilientAiChatClient : IAiChatClient
                 throw failure;
             }
 
-            var wait = failure.RetryAfter ?? BackoffDelay(attempt);
+            // A provider's hint is a minimum, not a promise: a per-minute token window may still be
+            // full after a sub-second hint, so a 429 waits at least the growing backoff as well.
+            var backoff = BackoffDelay(attempt);
+            var wait = failure.RetryAfter is { } hint
+                ? (failure.Kind == AiFailureKind.RateLimited && hint < backoff ? backoff : hint)
+                : backoff;
             _logger.LogWarning(
                 "AI provider {Provider} transient failure ({Kind}, status {Status}) on attempt {Attempt}/{MaxAttempts}; retrying in {DelayMs}ms.",
                 _providerName, failure.Kind, (int?)failure.ProviderStatusCode, attempt, attemptLimit, (int)wait.TotalMilliseconds);

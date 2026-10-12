@@ -27,7 +27,12 @@ public class GroqOptions
 
     // Part of MaxRequestTokens kept free for the response (JSON output + gpt-oss reasoning), which
     // counts against the same per-minute window. Input budget = MaxRequestTokens - ReservedOutputTokens.
-    public int ReservedOutputTokens { get; set; } = 2000;
+    public int ReservedOutputTokens { get; set; } = 4000;
+
+    // Total attempts on a 429 from Groq (overrides Ai:Resilience:MaxRateLimitAttempts when higher).
+    // Requests are sent back to back (a repair attempt, chunked parts) against an 8,000 TPM window,
+    // and Groq's sub-second retry hints rarely clear it, so a few backed-off retries are allowed.
+    public int MaxRateLimitAttempts { get; set; } = 4;
 
     // Null sends no temperature, so the model default applies.
     public double? Temperature { get; set; }
