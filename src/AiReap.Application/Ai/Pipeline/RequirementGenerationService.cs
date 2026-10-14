@@ -78,7 +78,7 @@ public class RequirementGenerationService : IRequirementGenerationService
             ?? throw new KeyNotFoundException($"RequirementSource {requirementSourceId} not found.");
         await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
 
-        var context = await ClarificationContextBuilder.BuildAsync(_db, requirementSourceId, cancellationToken);
+        var clarifications = await ClarificationContextBuilder.BuildItemsAsync(_db, requirementSourceId, cancellationToken);
 
         // §21 — objectives come from the project record, so FRs can be traced back to them.
         var project = await _db.Projects.FirstAsync(p => p.Id == source.ProjectId, cancellationToken);
@@ -91,12 +91,19 @@ public class RequirementGenerationService : IRequirementGenerationService
             ? string.Empty
             : $"\n\nProject document excerpts (label in brackets):\n{KnowledgeRetriever.FormatExcerpts(retrieval.Chunks)}";
 
-        var userPrompt = source.RawText + context + objectiveContext + documentContext;
-
-        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<GenerationAiResponse>(
-            _chatClient, _logger, "RequirementGeneration", source.Id.ToString(), SystemPrompt, userPrompt, cancellationToken,
+        // A source too large for the request budget of the provider serving the call (Groq) is
+        // processed in parts and merged here, never condensed: Gemini gets the whole prompt
+        // (source + clarifications + objectives + excerpts) exactly as before. Each part carries the
+        // objectives and excerpts, and the clarifications relevant to it.
+        var parts = await GenerationSupport.CallAiAndParseChunkedAsync<GenerationAiResponse, GenerationPartAiResponse>(
+            _chatClient, _logger, "RequirementGeneration", source.Id.ToString(), SystemPrompt, source.RawText, cancellationToken,
+            fixedContext: objectiveContext + documentContext,
+            sharedContext: new GenerationSupport.SharedContext(ClarificationContextBuilder.Heading, clarifications),
             knownArtifactCodes: objectives.Select(o => o.Code),
             knownSourceReferences: retrieval.Chunks.Select(c => c.Reference));
+        var (parsed, rawResponse, model) = parts.Count == 1
+            ? (parts[0].Parsed, parts[0].RawResponse, parts[0].Model)
+            : Merge(parts, _logger);
 
         var now = DateTime.UtcNow;
 
@@ -162,7 +169,7 @@ public class RequirementGenerationService : IRequirementGenerationService
 
         GenerationSupport.AddExecutions(
             _db, source.ProjectId, "RequirementGeneration", PromptTemplateVersion, _currentUser.UserId,
-            _chatClient.ModelName, source.Id.ToString(), rawResponse, now,
+            model, source.Id.ToString(), rawResponse, now,
             frArtifacts.Concat(nfrArtifacts).Select(a => a.Id).ToList());
 
         await _db.SaveChangesAsync(cancellationToken);
@@ -210,8 +217,81 @@ public class RequirementGenerationService : IRequirementGenerationService
     private static ArtifactPriority ParsePriority(string? priority) =>
         Enum.TryParse<ArtifactPriority>(priority, ignoreCase: true, out var result) ? result : ArtifactPriority.Medium;
 
-    private class GenerationAiResponse : IValidatableAiResponse
+    // Parts are merged in source order. Neighbouring parts often restate the same requirement: an
+    // FR whose actor, title, preconditions, inputs, processing and expected result all match an
+    // earlier one after normalization (an NFR: category, title, description and target value) is
+    // merged into it - its objective codes, excerpt references and dependencies are added to the
+    // first - and the count is logged. Requirements that differ in any of those fields are all
+    // kept, even with the same title. The audit keeps every part's raw response and the model(s)
+    // that served them.
+    private static (GenerationPartAiResponse Parsed, string RawResponse, string Model) Merge(
+        IReadOnlyList<GenerationSupport.AiPart<GenerationPartAiResponse>> parts, ILogger logger)
     {
+        var merged = new GenerationPartAiResponse();
+        var frByKey = new Dictionary<string, FunctionalRequirementItem>(StringComparer.Ordinal);
+        var nfrKeys = new HashSet<string>(StringComparer.Ordinal);
+        var duplicates = 0;
+
+        foreach (var item in parts.SelectMany(p => p.Parsed.FunctionalRequirements))
+        {
+            var key = ContentKey(item.Actor, item.Title, item.Preconditions, item.Inputs, item.Processing, item.ExpectedResult);
+            if (frByKey.TryGetValue(key, out var first))
+            {
+                first.BusinessObjectiveCodes = Union(first.BusinessObjectiveCodes, item.BusinessObjectiveCodes);
+                first.SourceReferences = Union(first.SourceReferences, item.SourceReferences);
+                first.Dependencies = Union(first.Dependencies, item.Dependencies);
+                duplicates++;
+                continue;
+            }
+
+            frByKey[key] = item;
+            merged.FunctionalRequirements.Add(item);
+        }
+
+        foreach (var item in parts.SelectMany(p => p.Parsed.NonFunctionalRequirements))
+        {
+            if (nfrKeys.Add(ContentKey(item.Category, item.Title, item.Description, item.TargetValue)))
+            {
+                merged.NonFunctionalRequirements.Add(item);
+            }
+            else
+            {
+                duplicates++;
+            }
+        }
+
+        if (merged.FunctionalRequirements.Count == 0)
+        {
+            const string empty = "No functional requirements were produced from any part of the requirement source.";
+            throw new AiOutputValidationException(empty, [empty], repairable: false);
+        }
+
+        logger.LogInformation(
+            "RequirementGeneration merged {Parts} parts: {Frs} functional and {Nfrs} non-functional requirements; {Duplicates} duplicates merged.",
+            parts.Count, merged.FunctionalRequirements.Count, merged.NonFunctionalRequirements.Count, duplicates);
+
+        var rawResponse = JsonSerializer.Serialize(new
+        {
+            parts = parts.Select(p => new { part = p.Number, of = p.Count, model = p.Model, response = p.RawResponse })
+        });
+        var model = string.Join(" + ", parts.Select(p => p.Model).Distinct());
+        return (merged, rawResponse, model);
+    }
+
+    // Each field normalized on its own (AiResultMerge.Key) and kept apart, so two requirements are
+    // one only when every content field matches - never because their titles do.
+    private static string ContentKey(params string?[] fields) =>
+        string.Join("\u001f", fields.Select(f => AiResultMerge.Key(f ?? string.Empty)));
+
+    private static List<string> Union(List<string> first, List<string> other) =>
+        first.Concat(other).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    // One part of a split source: it may legitimately state no functional requirement (background
+    // prose, a glossary), so "at least one" is judged on the merged result instead (Merge).
+    private class GenerationPartAiResponse : IValidatableAiResponse
+    {
+        protected virtual int MinFunctionalRequirements => 0;
+
         public List<FunctionalRequirementItem> FunctionalRequirements { get; set; } = new();
         public List<NonFunctionalRequirementItem> NonFunctionalRequirements { get; set; } = new();
 
@@ -225,7 +305,7 @@ public class RequirementGenerationService : IRequirementGenerationService
                 v.OneOf(item.Priority, $"{path}.priority", AiVocabulary.Priorities, optional: true);
                 v.CodesExist(item.BusinessObjectiveCodes, $"{path}.businessObjectiveCodes");
                 v.SourceReferencesExist(item.SourceReferences, $"{path}.sourceReferences");
-            }, minItems: 1);
+            }, minItems: MinFunctionalRequirements);
             v.Items(NonFunctionalRequirements, "nonFunctionalRequirements", (item, path) =>
             {
                 v.Required(item.Title, $"{path}.title");
@@ -233,6 +313,12 @@ public class RequirementGenerationService : IRequirementGenerationService
                 v.OneOf(item.Category, $"{path}.category", AiVocabulary.NfrCategories);
             });
         }
+    }
+
+    // A response for the whole source must produce at least one functional requirement.
+    private class GenerationAiResponse : GenerationPartAiResponse
+    {
+        protected override int MinFunctionalRequirements => 1;
     }
 
     private class FunctionalRequirementItem

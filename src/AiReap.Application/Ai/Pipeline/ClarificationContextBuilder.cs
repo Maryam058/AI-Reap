@@ -12,32 +12,39 @@ namespace AiReap.Application.Ai.Pipeline;
 // persisted "analysis result" — there isn't one; only the questions it produced are stored.
 public static class ClarificationContextBuilder
 {
+    public const string Heading = "\n\nClarifications gathered so far:\n";
+
     public static async Task<string> BuildAsync(IAiReapDbContext db, Guid requirementSourceId, CancellationToken cancellationToken)
+    {
+        var items = await BuildItemsAsync(db, requirementSourceId, cancellationToken);
+        return items.Count == 0 ? string.Empty : Heading + string.Concat(items);
+    }
+
+    // BuildAsync's list without its heading - one "- Q: ... / A: ..." entry per question, in code
+    // order - so a stage that splits its source can show each part the clarifications relevant to
+    // it (GenerationSupport.SharedContext) instead of all of them.
+    public static async Task<List<string>> BuildItemsAsync(IAiReapDbContext db, Guid requirementSourceId, CancellationToken cancellationToken)
     {
         var questions = await db.Artifacts
             .Where(a => a.RequirementSourceId == requirementSourceId && a.ArtifactType == ArtifactType.ClarificationQuestion)
             .OrderBy(a => a.Code)
             .ToListAsync(cancellationToken);
 
-        if (questions.Count == 0)
-        {
-            return string.Empty;
-        }
-
         var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-        var sb = new StringBuilder("\n\nClarifications gathered so far:\n");
+        var items = new List<string>(questions.Count);
 
         foreach (var question in questions)
         {
             var payload = JsonSerializer.Deserialize<ClarificationQuestionPayload>(question.DataJson, options)
                 ?? new ClarificationQuestionPayload();
 
-            sb.Append($"- Q: {payload.Question}\n");
+            var sb = new StringBuilder($"- Q: {payload.Question}\n");
             sb.Append(payload.ClarificationStatus == "Open"
                 ? "  A: (not yet answered - treat as still unresolved, propose an assumption if needed and flag it)\n"
                 : $"  A: {payload.Answer}\n");
+            items.Add(sb.ToString());
         }
 
-        return sb.ToString();
+        return items;
     }
 }

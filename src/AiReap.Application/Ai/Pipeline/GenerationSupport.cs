@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.RegularExpressions;
 using AiReap.Application.Artifacts;
 using AiReap.Application.Common;
 using AiReap.Application.Persistence;
@@ -127,27 +128,54 @@ public static class GenerationSupport
 
     public static string PartHeader(int number, int count) => string.Format(PartHeaderTemplate, number, count);
 
+    // A context list that grows with the source - the clarification Q&A a chunked analysis of a
+    // large source produces - and so may not fit next to every part of it. A whole-source request
+    // carries all of it, rendered exactly as the list it replaces (Heading + items); a split
+    // source gives each part the items most relevant to it within a bounded share of the budget,
+    // and every item goes with at least one part (CallAiAndParseChunkedAsync).
+    public sealed record SharedContext(string Heading, IReadOnlyList<string> Items)
+    {
+        public static readonly SharedContext None = new(string.Empty, []);
+
+        public string RenderAll() => Items.Count == 0 ? string.Empty : Heading + string.Concat(Items);
+    }
+
+    // Share of a part's input budget (after its fixed parts) a SharedContext may take when the
+    // whole list does not fit in it; the rest is source text.
+    public const int SharedContextBudgetDivisor = 3;
+
+    private const string SharedContextSubsetNote =
+        "[AI-REAP note: {0} of the {1} entries of this list are shown with this part - those most relevant to it; " +
+        "the others are shown with the other parts.]\n";
+
     // CallAiAndParseAsync for a stage whose whole input is one requirement source, without ever
-    // condensing it. The source (+ fixedContext) is first sent whole and uncondensed. If the
-    // provider serving the call has a per-request budget the prompt does not fit (Groq after a
-    // Gemini fallback; Gemini has none, so its path is unchanged), nothing is sent and the source
-    // is split by SourceChunker into parts sized to that budget minus everything each request must
-    // also carry: the system prompt, request framing, the part header, fixedContext and a repair
-    // reserve. Each part is its own call with its own single repair attempt; the caller merges the
-    // parsed parts (TWhole's validation applies to a whole-source response, TPart's to one part).
-    // No part's content is dropped and no synthesis request is made. A part that fails ends the
-    // whole operation with that part named - nothing is persisted from the parts before it.
+    // condensing it. The source (+ sharedContext + fixedContext) is first sent whole and
+    // uncondensed. If the provider serving the call has a per-request budget the prompt does not
+    // fit (Groq after a Gemini fallback; Gemini has none, so its path is unchanged), nothing is
+    // sent and the source is split by SourceChunker into parts sized to that budget minus
+    // everything each request must also carry: the system prompt, request framing, the part
+    // header, fixedContext, the part's share of sharedContext and a repair reserve. Each part is
+    // its own call with its own single repair attempt; the caller merges the parsed parts
+    // (TWhole's validation applies to a whole-source response, TPart's to one part). No part's
+    // content is dropped and no synthesis request is made. A part that fails ends the whole
+    // operation with that part named - nothing is persisted from the parts before it.
     public static async Task<IReadOnlyList<AiPart<TPart>>> CallAiAndParseChunkedAsync<TWhole, TPart>(
         IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
         string systemPrompt, string sourceText, CancellationToken cancellationToken,
-        string fixedContext = "", Func<TimeSpan, CancellationToken, Task>? delay = null)
+        string fixedContext = "", Func<TimeSpan, CancellationToken, Task>? delay = null,
+        SharedContext? sharedContext = null,
+        IEnumerable<string>? knownArtifactCodes = null, IEnumerable<string>? knownSourceReferences = null)
         where TWhole : class, TPart where TPart : class
     {
+        var shared = sharedContext ?? SharedContext.None;
+        var knownCodes = knownArtifactCodes?.ToList();
+        var knownRefs = knownSourceReferences?.ToList();
+
         AiRequestOverBudgetException overBudget;
         try
         {
             var (raw, parsed) = await CallAndParseAsync<TWhole>(chatClient, logger, operationType, inputReference,
-                systemPrompt, sourceText + fixedContext, uncondensed: true, null, null, cancellationToken);
+                systemPrompt, sourceText + shared.RenderAll() + fixedContext, uncondensed: true, knownCodes, knownRefs, cancellationToken);
             return [new AiPart<TPart>(1, 1, raw, parsed, chatClient.ModelName)];
         }
         catch (AiRequestOverBudgetException ex)
@@ -158,7 +186,15 @@ public static class GenerationSupport
         var reserved = PromptBudgetReducer.EstimateTokens(systemPrompt) + PromptBudgetReducer.RequestOverheadTokens
             + PromptBudgetReducer.EstimateTokens(PartHeader(999, 999)) + PromptBudgetReducer.EstimateTokens(fixedContext)
             + PartRepairReserveTokens;
-        var maxPartTokens = overBudget.InputBudget - reserved;
+
+        // The shared list goes whole with every part while it takes at most its share of what is
+        // left; beyond that, each part carries a bounded, relevance-chosen subset of it.
+        var available = overBudget.InputBudget - reserved;
+        var sharedTokens = shared.Items.Count == 0 ? 0
+            : PromptBudgetReducer.EstimateTokens(shared.Heading) + shared.Items.Sum(PromptBudgetReducer.EstimateTokens);
+        var sharedWhole = sharedTokens <= available / SharedContextBudgetDivisor;
+        var sharedBudget = sharedWhole ? sharedTokens : available / SharedContextBudgetDivisor;
+        var maxPartTokens = available - sharedBudget;
         if (maxPartTokens < MinPartSourceTokens)
         {
             var message =
@@ -175,23 +211,123 @@ public static class GenerationSupport
             "sending {Parts} parts of at most ~{MaxPartTokens} source tokens each.",
             operationType, inputReference, overBudget.EstimatedTokens, overBudget.Provider, overBudget.InputBudget, chunks.Count, maxPartTokens);
 
+        var sharedParts = sharedWhole
+            ? chunks.Select(_ => shared.RenderAll()).ToList()
+            : SplitSharedContext(shared, chunks, sharedBudget, overBudget, logger, operationType, inputReference);
+
         var parts = new List<AiPart<TPart>>(chunks.Count);
         for (var i = 0; i < chunks.Count; i++)
         {
             var number = i + 1;
-            var prompt = PartHeader(number, chunks.Count) + chunks[i] + fixedContext;
-            var (raw, parsed) = await CallPartAsync<TPart>(chatClient, logger, operationType, inputReference,
-                systemPrompt, prompt, number, chunks.Count, delay, cancellationToken);
+            var prompt = PartHeader(number, chunks.Count) + chunks[i] + sharedParts[i] + fixedContext;
+
+            // Safeguard: a single part (only if the provider refused a whole prompt our estimate says
+            // fits) is the whole source, so it is held to TWhole's rules; the caller merges nothing
+            // that could apply them later.
+            var (raw, parsed) = chunks.Count == 1
+                ? await CallPartAsync<TWhole>(chatClient, logger, operationType, inputReference,
+                    systemPrompt, prompt, number, chunks.Count, delay, knownCodes, knownRefs, cancellationToken)
+                : await CallPartAsync<TPart>(chatClient, logger, operationType, inputReference,
+                    systemPrompt, prompt, number, chunks.Count, delay, knownCodes, knownRefs, cancellationToken);
             parts.Add(new AiPart<TPart>(number, chunks.Count, raw, parsed, chatClient.ModelName));
         }
 
         return parts;
     }
 
+    // Each part's rendering of a shared list too large to go whole with every part. First every
+    // item is placed with the part it is most relevant to (terms shared with that part's text) that
+    // still has room, so each item is shown at least once; then each part's remaining room is
+    // filled with other items relevant to it. Items keep their original order within a part. If
+    // some item fits no part, nothing is sent: leaving clarifications out would be silent loss.
+    private static List<string> SplitSharedContext(
+        SharedContext shared, IReadOnlyList<string> chunks, int sharedBudget, AiRequestOverBudgetException overBudget,
+        ILogger logger, string operationType, string inputReference)
+    {
+        var itemBudget = sharedBudget - PromptBudgetReducer.EstimateTokens(shared.Heading)
+            - PromptBudgetReducer.EstimateTokens(string.Format(SharedContextSubsetNote, 99_999, 99_999));
+        var itemTokens = shared.Items.Select(PromptBudgetReducer.EstimateTokens).ToArray();
+
+        // Wording common to most items ("not yet answered - treat as still unresolved ...") says
+        // nothing about which part an item belongs to.
+        var itemTerms = shared.Items.Select(ContextTerms).ToList();
+        HashSet<string> boilerplate = itemTerms.Count < 4 ? [] : itemTerms.SelectMany(t => t)
+            .GroupBy(t => t).Where(g => g.Count() > itemTerms.Count / 2).Select(g => g.Key).ToHashSet();
+        itemTerms.ForEach(t => t.ExceptWith(boilerplate));
+
+        var chunkTerms = chunks.Select(ContextTerms).ToList();
+        var relevance = chunks.Select((_, p) => itemTerms.Select(t => t.Count(chunkTerms[p].Contains)).ToArray()).ToArray();
+        var room = Enumerable.Repeat(itemBudget, chunks.Count).ToArray();
+        var selected = chunks.Select(_ => new SortedSet<int>()).ToArray();
+
+        var unplaced = 0;
+        for (var i = 0; i < shared.Items.Count; i++)
+        {
+            var item = i;
+            var best = Enumerable.Range(0, chunks.Count)
+                .Where(p => itemTokens[item] <= room[p])
+                .OrderByDescending(p => relevance[p][item]).ThenByDescending(p => room[p])
+                .DefaultIfEmpty(-1).First();
+            if (best < 0)
+            {
+                unplaced++;
+                continue;
+            }
+
+            selected[best].Add(item);
+            room[best] -= itemTokens[item];
+        }
+
+        if (unplaced > 0)
+        {
+            var message =
+                $"The requirement source was split into {chunks.Count} parts for {overBudget.Provider}, but {unplaced:N0} of its " +
+                $"{shared.Items.Count:N0} clarifications do not fit in any part's {overBudget.InputBudget:N0}-token input budget, so " +
+                "they could not be shown to the AI. Nothing was sent. Retry when the primary AI provider is available again.";
+            logger.LogWarning(
+                "AI input not sent: {OperationType} input={InputReference} {Unplaced} of {Items} shared context items fit no part.",
+                operationType, inputReference, unplaced, shared.Items.Count);
+            throw new AiProviderException(AiFailureKind.RequestRejected, overBudget.Provider, message,
+                HttpStatusCode.RequestEntityTooLarge, message, inner: overBudget);
+        }
+
+        for (var p = 0; p < chunks.Count; p++)
+        {
+            var part = p;
+            foreach (var item in Enumerable.Range(0, shared.Items.Count)
+                .Where(i => relevance[part][i] > 0 && !selected[part].Contains(i))
+                .OrderByDescending(i => relevance[part][i]).ThenBy(i => i))
+            {
+                if (itemTokens[item] <= room[part])
+                {
+                    selected[part].Add(item);
+                    room[part] -= itemTokens[item];
+                }
+            }
+        }
+
+        logger.LogInformation(
+            "AI shared context split: {OperationType} input={InputReference} {Items} items (~{Tokens} tokens) over {Parts} parts, " +
+            "at most ~{Budget} tokens each; items per part: {PerPart}.",
+            operationType, inputReference, shared.Items.Count, itemTokens.Sum(), chunks.Count, itemBudget,
+            string.Join(",", selected.Select(s => s.Count)));
+
+        return selected.Select(s => s.Count == 0 ? string.Empty
+            : shared.Heading + string.Format(SharedContextSubsetNote, s.Count, shared.Items.Count) + string.Concat(s.Select(i => shared.Items[i])))
+            .ToList();
+    }
+
+    private static readonly Regex ContextWord =
+        new(@"\b[A-Za-z][A-Za-z-]{3,}\b", RegexOptions.Compiled);
+
+    private static HashSet<string> ContextTerms(string text) =>
+        ContextWord.Matches(text).Select(m => m.Value.ToLowerInvariant()).ToHashSet(StringComparer.Ordinal);
+
     private static async Task<(string RawResponse, T Parsed)> CallPartAsync<T>(
         IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
         string systemPrompt, string prompt, int number, int count,
-        Func<TimeSpan, CancellationToken, Task>? delay, CancellationToken cancellationToken) where T : class
+        Func<TimeSpan, CancellationToken, Task>? delay, List<string>? knownCodes, List<string>? knownRefs,
+        CancellationToken cancellationToken) where T : class
     {
         var partReference = $"{inputReference}#part-{number}-of-{count}";
         var label = $"Part {number} of {count} of the requirement source";
@@ -202,7 +338,7 @@ public static class GenerationSupport
                 try
                 {
                     return await CallAndParseAsync<T>(chatClient, logger, operationType, partReference,
-                        systemPrompt, prompt, uncondensed: true, null, null, cancellationToken);
+                        systemPrompt, prompt, uncondensed: true, knownCodes, knownRefs, cancellationToken);
                 }
                 catch (AiProviderException ex) when (attempt == 1
                     && ex is { Kind: AiFailureKind.RateLimited, QuotaExhausted: false, RetryAfter: { } wait }
