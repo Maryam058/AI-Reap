@@ -58,7 +58,7 @@ public class ConflictDetectionService : IConflictDetectionService
             sb.Append($"{artifact.Code}: {artifact.Title}\n{artifact.DataJson}\n\n");
         }
 
-        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<ConflictAiResponse>(
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseLosslessAsync<ConflictAiResponse>(
             _chatClient, _logger, "ConflictDetection", projectId.ToString(), SystemPrompt, sb.ToString(), cancellationToken,
             knownArtifactCodes: candidates.Select(a => a.Code));
 

@@ -238,7 +238,195 @@ public class ChunkedRequirementGenerationTests
         Assert.Empty(groqHttp.Requests);
     }
 
+    // ---- Ai:Groq:MaxChunkedParts: a run too long for Groq's quota is refused up front -----------
+
+    private const int DefaultMaxChunkedParts = 8; // GroqOptions / appsettings.json default
+
+    // Sizes (estimated source tokens, with SystemPrompt above) that split into 8 and 9 parts for Groq.
+    private const int EightPartSourceTokens = 21_000;
+    private const int NinePartSourceTokens = 24_500;
+
+    [Fact]
+    public async Task More_parts_than_MaxChunkedParts_are_refused_before_any_groq_request()
+    {
+        var (unlimited, _, unlimitedGroq) = GroqRequestBudgetTests.BuildStack(_ => GeminiQuota(), r => GroqOk(PartGeneration(PartOf(r))));
+        var source = ChunkedAnalysisTests.StructuredSource(NinePartSourceTokens, SystemPrompt);
+        Assert.Equal(9, (await Chunked(unlimited, source, Shared([]))).Count); // the size really needs 9 parts
+        Assert.Equal(9, unlimitedGroq.Requests.Count);
+
+        var (client, geminiHttp, groqHttp) = GroqRequestBudgetTests.BuildStack(
+            _ => GeminiQuota(), r => GroqOk(PartGeneration(PartOf(r))), DefaultMaxChunkedParts);
+
+        var ex = await Assert.ThrowsAsync<AiChunkLimitExceededException>(() => Chunked(client, source, Shared([])));
+
+        Assert.Equal(AiFailureKind.RequestRejected, ex.Kind);
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, ex.ProviderStatusCode);
+        Assert.Equal("Groq", ex.Provider);
+        Assert.Equal(9, ex.RequiredParts);
+        Assert.Equal(8, ex.MaxParts);
+        Assert.Equal("Ai:Groq:MaxChunkedParts", ex.MaxPartsSetting);
+        Assert.Contains("sent to Groq in 9 parts, more than the 8 allowed (Ai:Groq:MaxChunkedParts=8)", ex.Message);
+        Assert.Contains("about 72,000 tokens (9 requests of up to 8,000 tokens each)", ex.Message);
+        Assert.Contains("at least about 9 minutes", ex.Message);
+        Assert.Contains("These are estimates, not a check of the remaining Groq quota.", ex.Message);
+        Assert.Contains("Nothing was sent and nothing was saved.", ex.Message);
+        Assert.Empty(groqHttp.Requests);                   // the guard runs before the first part
+        Assert.Single(geminiHttp.Requests);                // only the whole-source attempt, as before
+    }
+
+    // The refusal leads with the actual blocker - Gemini's used-up daily quota - not only Groq's
+    // part limit, and still sends nothing to Groq.
+    [Fact]
+    public async Task Part_limit_refusal_after_a_gemini_daily_quota_names_the_gemini_failure()
+    {
+        var (client, geminiHttp, groqHttp) = GroqRequestBudgetTests.BuildStack(
+            _ => GeminiDailyQuota(), r => GroqOk(PartGeneration(PartOf(r))), DefaultMaxChunkedParts);
+
+        var ex = await Assert.ThrowsAsync<AiChunkLimitExceededException>(() =>
+            Chunked(client, ChunkedAnalysisTests.StructuredSource(NinePartSourceTokens, SystemPrompt), Shared([])));
+
+        Assert.StartsWith(
+            "Primary AI provider not used - Gemini failed: Gemini quota exhausted (daily or zero-limit quota; will not recover " +
+            "within this request). (HTTP 429 RESOURCE_EXHAUSTED: You exceeded your current quota.). " +
+            "The requirement source would have to be sent to Groq in 9 parts, more than the 8 allowed",
+            ex.Message);
+        Assert.Contains("Nothing was sent and nothing was saved.", ex.Message);
+        var primary = Assert.IsType<PrimaryProviderOutcome>(ex.Primary);
+        Assert.Equal("Gemini", primary.Provider);
+        Assert.True(primary.Failure!.QuotaExhausted);
+        Assert.Equal((AiFailureKind.RequestRejected, 9, 8), (ex.Kind, ex.RequiredParts, ex.MaxParts)); // classification unchanged
+        Assert.Single(geminiHttp.Requests);
+        Assert.Empty(groqHttp.Requests);
+    }
+
+    [Fact]
+    public async Task Exactly_MaxChunkedParts_parts_are_sent_as_before()
+    {
+        var (client, _, groqHttp) = GroqRequestBudgetTests.BuildStack(
+            _ => GeminiQuota(), r => GroqOk(PartGeneration(PartOf(r))), DefaultMaxChunkedParts);
+
+        var parts = await Chunked(client, ChunkedAnalysisTests.StructuredSource(EightPartSourceTokens, SystemPrompt), Shared([]));
+
+        Assert.Equal(8, parts.Count);
+        Assert.Equal(Enumerable.Range(1, 8), parts.Select(p => p.Number));
+        Assert.Equal(8, groqHttp.Bodies.Count);
+        Assert.All(groqHttp.Bodies, AssertWithinGroqBudget);
+    }
+
+    [Fact]
+    public async Task MaxChunkedParts_does_not_apply_while_gemini_serves_the_whole_source()
+    {
+        var shared = Shared(Clarifications(120, 40));
+        var source = ChunkedAnalysisTests.StructuredSource(ReportedRequestTokens - Tokens(shared), SystemPrompt);
+        var (client, geminiHttp, groqHttp) = GroqRequestBudgetTests.BuildStack(
+            _ => GeminiOk(PartGeneration(1)), _ => GroqOk(PartGeneration(1)), DefaultMaxChunkedParts);
+
+        Assert.Single(await Chunked(client, source, shared));
+        Assert.Single(geminiHttp.Requests);
+        Assert.Empty(groqHttp.Requests);
+    }
+
+    // Gemini's free-tier daily quota used up: no retry hint, so Gemini cools down and later parts go
+    // straight to Groq - the reported incident.
+    private static HttpResponseMessage GeminiDailyQuota() => GroqAiChatClientTests.Json(new
+    {
+        error = new
+        {
+            code = 429,
+            message = "You exceeded your current quota.",
+            status = "RESOURCE_EXHAUSTED",
+            details = new object[]
+            {
+                new Dictionary<string, object>
+                {
+                    ["@type"] = "type.googleapis.com/google.rpc.QuotaFailure",
+                    ["violations"] = new[] { new { quotaId = "GenerateRequestsPerDayPerProjectPerModel-FreeTier" } }
+                }
+            }
+        }
+    }, HttpStatusCode.TooManyRequests);
+
+    // A Groq 429 naming its daily token limit, as Groq words it (organization included).
+    private const string GroqOrganization = "org_01hzx7qk3rf9tbw5yv2n8c4d6e";
+
+    private static HttpResponseMessage GroqDailyTokenLimit()
+    {
+        var response = GroqAiChatClientTests.Json(new
+        {
+            error = new
+            {
+                message = $"Rate limit reached for model `openai/gpt-oss-120b` in organization `{GroqOrganization}` service tier `on_demand` " +
+                          "on tokens per day (TPD): Limit 200000, Used 199500, Requested 7800. Please try again in 1s.",
+                type = "tokens",
+                code = "rate_limit_exceeded"
+            }
+        }, HttpStatusCode.TooManyRequests);
+        response.Headers.Add("retry-after", "1"); // even a short hint is not waited for on a daily limit
+        return response;
+    }
+
     // ---- through the API: analyze, then generate requirements ----------------------------------
+
+    [Fact]
+    public async Task Generate_requirements_endpoint_refuses_a_source_over_MaxChunkedParts_and_writes_nothing()
+    {
+        var (client, geminiHttp, groqHttp) = GroqRequestBudgetTests.BuildStack(
+            _ => GeminiQuota(), r => GroqOk(PartGeneration(PartOf(r))), DefaultMaxChunkedParts);
+        await using var host = new TestHost(chatClient: client);
+        var ba = await host.RegisterAsync("BusinessAnalyst");
+        var (projectId, sourceId) = await CreateSourceAsync(ba, ChunkedAnalysisTests.StructuredSource(ReportedRequestTokens, SystemPrompt));
+        var artifactsBefore = (await ba.GetAsync($"/api/projects/{projectId}/artifacts")).Body!.ToJsonString();
+        var auditBefore = (await ba.GetAsync($"/api/projects/{projectId}/ai-executions")).Body!.ToJsonString();
+
+        var (status, problem) = await ba.PostAsync($"/api/requirement-sources/{sourceId}/generate-requirements");
+
+        Assert.Equal(502, status);
+        Assert.Equal("ai_request_rejected", problem!["code"]!.GetValue<string>());
+        Assert.False(problem["retryable"]!.GetValue<bool>());
+        Assert.Equal("The requirement source is too large for Groq.", problem["title"]!.GetValue<string>());
+        var detail = problem["detail"]!.GetValue<string>();
+        Assert.Matches(@"exceeds the configured Groq processing limit \(it would need \d+ parts; Ai:Groq:MaxChunkedParts=8\)", detail);
+        Assert.Contains("No request was sent to Groq and nothing was saved.", detail);
+        Assert.False(problem["sentToProvider"]!.GetValue<bool>());
+        Assert.True(problem["requiredParts"]!.GetValue<int>() > 8);
+        Assert.Empty(groqHttp.Requests);
+        Assert.Single(geminiHttp.Requests);
+        Assert.Equal(artifactsBefore, (await ba.GetAsync($"/api/projects/{projectId}/artifacts")).Body!.ToJsonString());
+        Assert.Equal(auditBefore, (await ba.GetAsync($"/api/projects/{projectId}/ai-executions")).Body!.ToJsonString());
+    }
+
+    [Fact]
+    public async Task Daily_token_limit_on_part_2_fails_at_once_naming_the_limit_and_saves_nothing()
+    {
+        var (client, geminiHttp, groqHttp) = GroqRequestBudgetTests.BuildStack(
+            _ => GeminiDailyQuota(), r => PartOf(r) == 2 ? GroqDailyTokenLimit() : GroqOk(PartGeneration(PartOf(r))), DefaultMaxChunkedParts);
+        await using var host = new TestHost(chatClient: client);
+        var ba = await host.RegisterAsync("BusinessAnalyst");
+        var (projectId, sourceId) = await CreateSourceAsync(ba, ChunkedAnalysisTests.StructuredSource(8_000, SystemPrompt));
+
+        var response = await ba.Http.PostAsync($"/api/requirement-sources/{sourceId}/generate-requirements", null);
+        var raw = await response.Content.ReadAsStringAsync();
+        var problem = JsonNode.Parse(raw)!;
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+        Assert.Equal("ai_rate_limited", problem["code"]!.GetValue<string>());
+        Assert.Equal(2, problem["failedPart"]!.GetValue<int>());
+        Assert.InRange(problem["partCount"]!.GetValue<int>(), 2, DefaultMaxChunkedParts);
+        Assert.True(problem["quotaExhausted"]!.GetValue<bool>());
+        Assert.Equal("TPD", problem["rateLimitType"]!.GetValue<string>());
+        Assert.Contains("Groq reported that its tokens-per-day limit (TPD) was reached.", problem["detail"]!.GetValue<string>());
+        Assert.StartsWith("Part 2 of ", problem["detail"]!.GetValue<string>());
+        Assert.DoesNotContain(GroqOrganization, raw);
+
+        // Part 1 once, part 2 once: no retry, no waiting out the hint, nothing after part 2. Gemini
+        // only for the whole source; its daily quota then keeps it out of every part.
+        Assert.Equal(["1", "2"], groqHttp.Bodies.Select(b => PartPattern.Match(GroqMessages(b).User).Groups[1].Value));
+        Assert.Single(geminiHttp.Requests);
+
+        Assert.Empty((await ba.GetAsync($"/api/projects/{projectId}/artifacts")).Body!.AsArray());
+        var (_, audit) = await ba.GetAsync($"/api/projects/{projectId}/ai-executions");
+        Assert.DoesNotContain(audit!.AsArray(), e => e!["operationType"]!.GetValue<string>() == "RequirementGeneration");
+    }
 
     [Fact]
     public async Task Generate_requirements_endpoint_on_a_78k_token_source_merges_parts_after_gemini_quota()
@@ -255,8 +443,10 @@ public class ChunkedRequirementGenerationTests
         var analysisParts = groqHttp.Bodies.Count;
         var (_, questions) = await ba.GetAsync($"/api/requirement-sources/{sourceId}/clarification-questions");
         Assert.Equal(analysisParts * 5, questions!.AsArray().Count);
+        // Requirement generation lists each clarification with its code (P0-2): "- CQ-0xx Q: ...".
         var questionTexts = Enumerable.Range(1, analysisParts)
-            .SelectMany(p => Enumerable.Range(1, 5).Select(k => $"- Q: Which approver handles rule {k} of leave area {p} requests?\n"))
+            .SelectMany(p => Enumerable.Range(1, 5).Select(k =>
+                new Regex(@"- CQ-\d{3,} Q: " + Regex.Escape($"Which approver handles rule {k} of leave area {p} requests?\n"))))
             .ToList();
 
         groqResponder = r => GroqOk(PartGeneration(PartOf(r)));
@@ -271,7 +461,7 @@ public class ChunkedRequirementGenerationTests
         Assert.Contains(users, u => u.Contains("Clarifications gathered so far:"));
         foreach (var question in questionTexts)
         {
-            Assert.Contains(users, u => u.Contains(question, StringComparison.Ordinal));
+            Assert.Contains(users, u => question.IsMatch(u));
         }
 
         // Merged: the restated FR/NFR once, every part's own FR kept, in source order.

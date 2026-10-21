@@ -72,3 +72,11 @@ export function latestRejection(history: StageTransition[], status: number): Sta
   }
   return null;
 }
+
+export const SUBMISSION_EVIDENCE_UNAVAILABLE_NOTE =
+  'Submission-time evidence is not available for this request. The exit-check evidence on record was evaluated when the request was approved, so it should not be read as what was submitted.';
+
+/** The note to show for a transition whose submission-time evidence the backend reports unavailable; null when the flag is false or absent. */
+export function submissionEvidenceNote(transition: Pick<StageTransition, 'submissionEvidenceUnavailable'>): string | null {
+  return transition.submissionEvidenceUnavailable === true ? SUBMISSION_EVIDENCE_UNAVAILABLE_NOTE : null;
+}

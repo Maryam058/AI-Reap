@@ -75,9 +75,10 @@ public class ArtifactEditTests : IAsyncLifetime
     public async Task Editing_a_test_case_round_trips_the_steps_list_and_kind()
     {
         var sourceId = await SourceWithFunctionalRequirementAsync();
-        var (gen, requirements) = await _ba.PostAsync($"/api/requirement-sources/{sourceId}/generate-requirements");
-        Assert.Equal(200, gen);
-        var frId = Id(requirements!["functionalRequirements"]![0]);
+        // The requirement the helper generated (generating again would add nothing: duplicates are skipped).
+        var (_, source) = await _ba.GetAsync($"/api/requirement-sources/{sourceId}");
+        var (_, artifacts) = await _ba.GetAsync($"/api/projects/{source!["projectId"]!.GetValue<string>()}/artifacts");
+        var frId = Id(artifacts!.AsArray().First(a => a!["artifactType"]!.GetValue<int>() == 0)!);
         var (tcs, cases) = await _ba.PostAsync($"/api/artifacts/{frId}/generate-test-cases");
         Assert.Equal(200, tcs);
         var caseId = Id(cases![0]);

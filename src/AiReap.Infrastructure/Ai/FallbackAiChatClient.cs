@@ -32,7 +32,9 @@ public sealed class AiProviderCooldown
 //
 // CompleteUncondensedAsync routes exactly the same way; each provider is asked for an uncondensed
 // call, so a Groq request budget surfaces as AiRequestOverBudgetException (not an
-// AiProviderException: it passes through without a fallback) and Gemini is called as usual.
+// AiProviderException: it passes through without a fallback) and Gemini is called as usual. When
+// the fallback raises it, it carries why the primary did not serve the call (PrimaryProviderOutcome),
+// so the caller's refusal names the real blocker - e.g. Gemini's daily quota - not only Groq's budget.
 public sealed class FallbackAiChatClient : IUncondensedAiChatClient
 {
     private readonly string _primaryName;
@@ -60,6 +62,14 @@ public sealed class FallbackAiChatClient : IUncondensedAiChatClient
 
     public IAiChatClient Primary { get; }
     public IAiChatClient Fallback { get; }
+    public string PrimaryName => _primaryName;
+    public string FallbackName => _fallbackName;
+
+    // When the primary is skipped until (a quota/rate-limit cool-down this process recorded), or
+    // null when none is recorded - which does not mean the primary has quota left: the cool-down is
+    // kept in memory only and is unknown after a restart. Read by AiRouteInspector; never probes.
+    public DateTimeOffset? PrimaryCooldownUntil =>
+        _cooldown.IsCoolingDown(_primaryName, _clock(), out var until) ? until : null;
 
     public string ModelName => _served.ModelName;
 
@@ -89,9 +99,11 @@ public sealed class FallbackAiChatClient : IUncondensedAiChatClient
         }
         catch (AiProviderException ex) when (ShouldFallBack(ex))
         {
+            // ex.Message is sanitized by the provider client (no key, no organization id).
             _logger.LogWarning(
-                "AI provider {Primary} failed ({Kind}, status {Status}, quotaExhausted {QuotaExhausted}); falling back to {Fallback}.",
-                _primaryName, ex.Kind, (int?)ex.ProviderStatusCode, ex.QuotaExhausted, _fallbackName);
+                "AI provider {Primary} failed ({Kind}, status {Status}, quotaExhausted {QuotaExhausted}, retryAfter {RetryAfter}); falling back to {Fallback}. Reason: {Message}",
+                _primaryName, ex.Kind, (int?)ex.ProviderStatusCode, ex.QuotaExhausted, ex.RetryAfter,
+                _fallbackName, PrimaryProviderOutcome.Cap(ex.Message));
             StartCooldown(ex);
             return await CallFallbackAsync($"{_primaryName} failed: {ex.Message}", ex, send, cancellationToken);
         }
@@ -127,6 +139,16 @@ public sealed class FallbackAiChatClient : IUncondensedAiChatClient
             var response = await send(Fallback, cancellationToken);
             _logger.LogInformation("AI fallback provider {Fallback} succeeded (model {Model}).", _fallbackName, Fallback.ModelName);
             return response;
+        }
+        catch (AiRequestOverBudgetException ex) when (ex.Primary is null)
+        {
+            // Nothing was sent to the fallback; the caller splits the input or refuses it. Keep the
+            // primary's reason with it.
+            _logger.LogWarning(
+                "AI fallback provider {Fallback} cannot take the request whole (~{Tokens} estimated input tokens, budget {Budget}); " +
+                "{Primary} was not used: {PrimaryOutcome}",
+                _fallbackName, ex.EstimatedTokens, ex.InputBudget, _primaryName, PrimaryProviderOutcome.Cap(primaryOutcome));
+            throw ex.WithPrimary(new PrimaryProviderOutcome(_primaryName, PrimaryProviderOutcome.Cap(primaryOutcome), primaryFailure));
         }
         catch (AiProviderException ex)
         {

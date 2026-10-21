@@ -37,6 +37,9 @@ public partial class GeminiAiChatClient : IAiChatClient
 
     public string ModelName => _options.Model;
 
+    // Read by AiRouteInspector for the dry-run AI plan.
+    public GeminiOptions Options => _options;
+
     public async Task<string> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken = default)
     {
         if (!_options.HasUsableApiKey)

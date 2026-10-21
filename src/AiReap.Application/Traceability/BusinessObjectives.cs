@@ -33,20 +33,27 @@ public static partial class BusinessObjectives
     public static async Task<List<Artifact>> SyncAsync(
         IAiReapDbContext db, Guid projectId, string? objectivesText, string userId, CancellationToken cancellationToken)
     {
-        var existing = await db.Artifacts
-            .Where(a => a.ProjectId == projectId && a.ArtifactType == ArtifactType.BusinessObjective)
-            .OrderBy(a => a.Code)
-            .ToListAsync(cancellationToken);
-
-        var missing = Split(objectivesText)
-            .Where(line => !existing.Any(a => string.Equals(a.Title, line, StringComparison.OrdinalIgnoreCase)))
-            .ToList();
-        if (missing.Count == 0)
+        var (objectives, added) = await StageAsync(db, projectId, objectivesText, userId, cancellationToken);
+        if (added)
         {
-            return existing;
+            await db.SaveChangesAsync(cancellationToken);
         }
 
-        var codes = await ArtifactCodeGenerator.ReserveCodesAsync(db, projectId, ArtifactType.BusinessObjective, missing.Count, cancellationToken);
+        return objectives;
+    }
+
+    // SyncAsync without saving: missing objectives are added to the context, to be saved with
+    // whatever the caller saves next (requirement generation saves them together with the
+    // requirements that link to them, so a failed run records nothing).
+    public static async Task<(List<Artifact> Objectives, bool Added)> StageAsync(
+        IAiReapDbContext db, Guid projectId, string? objectivesText, string userId, CancellationToken cancellationToken)
+    {
+        var (existing, missing, codes) = await LoadAsync(db, projectId, objectivesText, cancellationToken);
+        if (missing.Count == 0)
+        {
+            return (existing, false);
+        }
+
         var now = DateTime.UtcNow;
         for (var i = 0; i < missing.Count; i++)
         {
@@ -82,8 +89,36 @@ public static partial class BusinessObjectives
             existing.Add(artifact);
         }
 
-        await db.SaveChangesAsync(cancellationToken);
-        return existing;
+        return (existing, true);
+    }
+
+    // The code and title of every objective SyncAsync would return, without recording any: for
+    // the dry-run AI plan, which must not write. Codes not yet recorded are the ones SyncAsync
+    // would reserve now.
+    public static async Task<List<(string Code, string Title)>> PreviewAsync(
+        IAiReapDbContext db, Guid projectId, string? objectivesText, CancellationToken cancellationToken)
+    {
+        var (existing, missing, codes) = await LoadAsync(db, projectId, objectivesText, cancellationToken);
+        return existing.Select(a => (a.Code, a.Title))
+            .Concat(missing.Select((title, i) => (codes[i], title)))
+            .ToList();
+    }
+
+    private static async Task<(List<Artifact> Existing, List<string> Missing, List<string> Codes)> LoadAsync(
+        IAiReapDbContext db, Guid projectId, string? objectivesText, CancellationToken cancellationToken)
+    {
+        var existing = await db.Artifacts
+            .Where(a => a.ProjectId == projectId && a.ArtifactType == ArtifactType.BusinessObjective)
+            .OrderBy(a => a.Code)
+            .ToListAsync(cancellationToken);
+
+        var missing = Split(objectivesText)
+            .Where(line => !existing.Any(a => string.Equals(a.Title, line, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        var codes = missing.Count == 0
+            ? []
+            : await ArtifactCodeGenerator.ReserveCodesAsync(db, projectId, ArtifactType.BusinessObjective, missing.Count, cancellationToken);
+        return (existing, missing, codes);
     }
 
     [GeneratedRegex(@"^\s*(?:[-*•·]|\d+[.)])\s*")]

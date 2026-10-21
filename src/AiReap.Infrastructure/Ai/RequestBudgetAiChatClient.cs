@@ -1,5 +1,6 @@
 using System.Net;
 using AiReap.Application.Ai;
+using AiReap.Application.Ai.Pipeline;
 using Microsoft.Extensions.Logging;
 
 namespace AiReap.Infrastructure.Ai;
@@ -25,17 +26,21 @@ public sealed class RequestBudgetAiChatClient : IUncondensedAiChatClient
     private readonly string _budgetSetting;
     private readonly int _maxRequestTokens;
     private readonly int _reservedOutputTokens;
+    private readonly string? _maxPartsSetting;
     private readonly ILogger _logger;
 
     public RequestBudgetAiChatClient(
         IAiChatClient inner, string providerName, string budgetSetting,
-        int maxRequestTokens, int reservedOutputTokens, ILogger logger)
+        int maxRequestTokens, int reservedOutputTokens, ILogger logger,
+        int maxChunkedParts = 0, string? maxPartsSetting = null)
     {
         Inner = inner;
         _providerName = providerName;
         _budgetSetting = budgetSetting;
         _maxRequestTokens = maxRequestTokens;
         _reservedOutputTokens = Math.Max(0, reservedOutputTokens);
+        MaxChunkedParts = Math.Max(0, maxChunkedParts);
+        _maxPartsSetting = maxPartsSetting;
         _logger = logger;
     }
 
@@ -45,6 +50,18 @@ public sealed class RequestBudgetAiChatClient : IUncondensedAiChatClient
 
     // Input tokens available once the output reserve is set aside; <= 0 means unlimited.
     public int InputBudget => _maxRequestTokens <= 0 ? 0 : Math.Max(0, _maxRequestTokens - _reservedOutputTokens);
+
+    // The most parts a caller may split an over-budget input into (AiRequestOverBudgetException.MaxParts); 0 = no limit.
+    public int MaxChunkedParts { get; }
+
+    // Read by AiRouteInspector, so the dry-run AI plan uses the limits this client enforces.
+    public string ProviderName => _providerName;
+
+    public int MaxRequestTokens => _maxRequestTokens;
+
+    public string BudgetSetting => _budgetSetting;
+
+    public string? MaxPartsSetting => _maxPartsSetting;
 
     public async Task<string> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken = default)
     {
@@ -88,13 +105,14 @@ public sealed class RequestBudgetAiChatClient : IUncondensedAiChatClient
         // Lossless clean-up (whitespace, duplicated passages, repeated page headers) is allowed;
         // dropping any passage is not.
         var fit = PromptBudgetReducer.Fit(systemPrompt, userPrompt, InputBudget);
-        if (!fit.Fits || fit.OmittedPassages > 0)
+        if (!ChunkPlanner.SendsWhole(fit))
         {
             _logger.LogInformation(
                 "AI request for {Provider} not sent uncondensed: ~{Tokens} estimated input tokens exceed the {Budget}-token input budget; " +
                 "the caller will split the input.",
                 _providerName, fit.OriginalTokens, InputBudget);
-            throw new AiRequestOverBudgetException(_providerName, InputBudget, fit.OriginalTokens);
+            throw new AiRequestOverBudgetException(_providerName, InputBudget, fit.OriginalTokens,
+                _maxRequestTokens, MaxChunkedParts, _maxPartsSetting);
         }
 
         _logger.LogInformation(

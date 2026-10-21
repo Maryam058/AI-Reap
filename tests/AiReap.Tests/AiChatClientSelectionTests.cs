@@ -238,6 +238,9 @@ public class AiChatClientSelectionTests
         // Gemini 3 rejects thinkingLevel + thinkingBudget together, and advises against low temperatures.
         Assert.Null(gemini.ThinkingBudget);
         Assert.Null(gemini.Temperature);
+        // Verified against the model's metadata (outputTokenLimit 65,536 for gemini-3.8-flash).
+        Assert.Equal(65536, gemini.MaxOutputTokens);
+        Assert.Equal((300, 1), (gemini.TimeoutSeconds, gemini.MaxTimeoutAttempts));
         // The key only ever comes from user-secrets or Ai__Gemini__ApiKey.
         Assert.True(string.IsNullOrEmpty(gemini.ApiKey));
     }
@@ -303,7 +306,71 @@ public class AiChatClientSelectionTests
         var budgeted = Assert.IsType<RequestBudgetAiChatClient>(client.Fallback);
         Assert.IsType<GroqAiChatClient>(Assert.IsType<ResilientAiChatClient>(budgeted.Inner).Inner);
         Assert.Equal(8000 - 4000, budgeted.InputBudget);
+        Assert.Equal(8, budgeted.MaxChunkedParts); // Ai:Groq:MaxChunkedParts default
         Assert.Equal("gemini-3.8-flash", client.ModelName); // before any call, the primary
+    }
+
+    [Fact]
+    public async Task Groq_part_limit_is_read_from_Ai_Groq_MaxChunkedParts()
+    {
+        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider: "Gemini", geminiKey: PlausibleGeminiKey,
+            groqKey: PlausibleGroqKey, extra: new Dictionary<string, string?> { ["Ai:Groq:MaxChunkedParts"] = "12" });
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var client = Assert.IsType<FallbackAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+
+        Assert.Equal(12, Assert.IsType<RequestBudgetAiChatClient>(client.Fallback).MaxChunkedParts);
+    }
+
+    // Gemini runs under its own per-attempt timeout and timeout-retry limit; Groq keeps Ai:Resilience.
+    [Fact]
+    public async Task Gemini_gets_its_own_timeout_and_groq_keeps_the_shared_resilience_settings()
+    {
+        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider: "Gemini", geminiKey: PlausibleGeminiKey, groqKey: PlausibleGroqKey);
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var client = Assert.IsType<FallbackAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+        var gemini = Assert.IsType<ResilientAiChatClient>(client.Primary).Options;
+        var groq = Assert.IsType<ResilientAiChatClient>(Assert.IsType<RequestBudgetAiChatClient>(client.Fallback).Inner).Options;
+        var shared = new AiResilienceOptions();
+
+        Assert.Equal((300, 1), (gemini.TimeoutSeconds, gemini.MaxTimeoutAttempts));          // GeminiOptions defaults
+        Assert.Equal(1, gemini.MaxRateLimitAttempts);                                         // 429 still goes straight to Groq
+        Assert.Equal(shared.MaxAttempts, gemini.MaxAttempts);                                 // 503s still retried as before
+        Assert.Equal((shared.TimeoutSeconds, 0), (groq.TimeoutSeconds, groq.MaxTimeoutAttempts)); // Groq unchanged
+        Assert.Equal(new GroqOptions().MaxRateLimitAttempts, groq.MaxRateLimitAttempts);
+    }
+
+    [Fact]
+    public async Task Gemini_timeout_settings_are_read_from_Ai_Gemini_also_when_gemini_is_the_only_provider()
+    {
+        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider: "Gemini", geminiKey: PlausibleGeminiKey,
+            extra: new Dictionary<string, string?> { ["Ai:Gemini:TimeoutSeconds"] = "450", ["Ai:Gemini:MaxTimeoutAttempts"] = "2" });
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var options = Assert.IsType<ResilientAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>()).Options;
+
+        Assert.Equal((450, 2), (options.TimeoutSeconds, options.MaxTimeoutAttempts));
+    }
+
+    // 0 falls back to the shared Ai:Resilience values (previous behavior).
+    [Fact]
+    public async Task Gemini_timeout_settings_of_0_use_the_shared_resilience_values()
+    {
+        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider: "Gemini", geminiKey: PlausibleGeminiKey,
+            extra: new Dictionary<string, string?>
+            {
+                ["Ai:Gemini:TimeoutSeconds"] = "0", ["Ai:Gemini:MaxTimeoutAttempts"] = "0", ["Ai:Resilience:TimeoutSeconds"] = "90"
+            });
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var options = Assert.IsType<ResilientAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>()).Options;
+
+        Assert.Equal((90, 0), (options.TimeoutSeconds, options.MaxTimeoutAttempts));
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using AiReap.Application.Ai;
+using AiReap.Application.Ai.Pipeline;
 
 namespace AiReap.Infrastructure.Ai;
 
@@ -35,14 +36,16 @@ public class StubAiChatClient : IAiChatClient
 
         // Canned responses link to "FR-001" / "BO-001". Like a real model, only reference artifacts
         // that were actually given in the prompt (reference validation rejects anything else): use
-        // the first such code present, or no reference at all when there is none.
-        response = ReferenceFirstCodeInPrompt(response, userPrompt, "FR");
-        response = ReferenceFirstCodeInPrompt(response, userPrompt, "BO");
+        // the first such code present, or no reference at all when there is none. An FR code is
+        // taken only from the eligible-FR list under its heading - never from an FR-like ID written
+        // in the raw source text above it ("FR-012" there is a document ID, not a stored code).
+        response = ReferenceFirstCode(response, "FR", FirstListedRequirementCode(userPrompt));
+        response = ReferenceFirstCode(response, "BO", FirstCodeInPrompt(userPrompt, "BO"));
 
         return Task.FromResult(response);
     }
 
-    private static string ReferenceFirstCodeInPrompt(string response, string userPrompt, string prefix)
+    private static string ReferenceFirstCode(string response, string prefix, string? code)
     {
         var placeholder = $"\"{prefix}-001\"";
         if (!response.Contains(placeholder, StringComparison.Ordinal))
@@ -50,10 +53,32 @@ public class StubAiChatClient : IAiChatClient
             return response;
         }
 
-        var firstCode = System.Text.RegularExpressions.Regex.Match(userPrompt, $@"\b{prefix}-\d{{3,}}\b");
-        return firstCode.Success
-            ? response.Replace(placeholder, $"\"{firstCode.Value}\"", StringComparison.Ordinal)
+        return code is not null
+            ? response.Replace(placeholder, $"\"{code}\"", StringComparison.Ordinal)
             : response.Replace($"[{placeholder}]", "[]", StringComparison.Ordinal);
+    }
+
+    // The first "- FR-001: Title" line directly under the last FunctionalRequirementsHeading (the
+    // services append the list after the raw text); null when the prompt carries no such list.
+    private static string? FirstListedRequirementCode(string userPrompt)
+    {
+        var heading = GenerationSupport.FunctionalRequirementsHeading;
+        var at = userPrompt.LastIndexOf(heading, StringComparison.Ordinal);
+        if (at < 0)
+        {
+            return null;
+        }
+
+        var lines = userPrompt[(at + heading.Length)..].Split('\n');
+        var first = lines.Length > 1 ? lines[1].TrimEnd('\r') : string.Empty;
+        var match = System.Text.RegularExpressions.Regex.Match(first, @"^- (FR-\d{3,}): ");
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
+    private static string? FirstCodeInPrompt(string userPrompt, string prefix)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(userPrompt, $@"\b{prefix}-\d{{3,}}\b");
+        return match.Success ? match.Value : null;
     }
 
     private const string ReviewResponse = """

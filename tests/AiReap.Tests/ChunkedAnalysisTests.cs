@@ -377,11 +377,15 @@ public class ChunkedAnalysisTests
         var hugeSystem = SystemPrompt + new string('x', 17_000); // ~5,700 tokens of instructions
         var (client, _, groqHttp) = GroqRequestBudgetTests.BuildStack(_ => GeminiQuota(), _ => GroqOk(SmallAnalysis));
 
-        var ex = await Assert.ThrowsAsync<AiProviderException>(() => GenerationSupport.CallAiAndParseChunkedAsync<WholeShape, PartShape>(
+        var ex = await Assert.ThrowsAsync<AiSourceCannotBeSplitException>(() => GenerationSupport.CallAiAndParseChunkedAsync<WholeShape, PartShape>(
             client, NullLogger.Instance, "RequirementAnalysis", "src-1", hugeSystem, StructuredSource(23_580), CancellationToken.None));
 
         Assert.Equal(AiFailureKind.RequestRejected, ex.Kind);
+        Assert.Equal("Groq", ex.Provider);
+        Assert.Equal(InputBudget, ex.InputBudget);
+        Assert.True(ex.ReservedTokens > 5_000); // the ~5,700-token instructions alone
         Assert.Contains("cannot be split", ex.Message);
+        Assert.DoesNotContain("primary", ex.Message);
         Assert.Empty(groqHttp.Requests);
     }
 

@@ -286,7 +286,7 @@ export interface ClarificationQuestionData {
   answer?: string | null;
 }
 
-export interface FunctionalRequirementData {
+export interface FunctionalRequirementData extends RequirementEvidenceData {
   actor: string;
   preconditions?: string | null;
   inputs?: string | null;
@@ -297,7 +297,35 @@ export interface FunctionalRequirementData {
   sourceReferences?: string[];
 }
 
-export interface NonFunctionalRequirementData {
+// P0-2 — one verbatim quote a generated requirement cites. from/quote/sourceId/ref are the model's;
+// status/reason/matchMode/matchCount are the server's check ("verified" = the words were found in
+// the cited text, nothing more). For a user who may not read raw sources (S2) the quote text — and
+// an excerpt's document label — is withheld (quoteWithheld).
+export interface EvidenceQuote {
+  from?: string | null;
+  quote?: string;
+  sourceId?: string | null;
+  ref?: string | null;
+  status?: 'verified' | 'unverified' | 'none' | null;
+  reason?: string | null;
+  matchMode?: 'strict' | 'spacing_tolerant' | null;
+  matchCount?: number;
+  quoteWithheld?: boolean;
+}
+
+// P0-2 — origin and evidence fields shared by generated FRs and NFRs. All optional: records made
+// before evidence checks have none of them (no evidenceCheck).
+export interface RequirementEvidenceData {
+  requirementOrigin?: string | null;
+  derivationNote?: string | null;
+  assumedClarifications?: string[];
+  evidence?: EvidenceQuote[];
+  evidenceStatus?: 'verified' | 'unverified' | 'none' | null;
+  unsupportedNumbers?: string[];
+  evidenceCheck?: string | null;
+}
+
+export interface NonFunctionalRequirementData extends RequirementEvidenceData {
   category: string;
   description?: string | null;
   targetValue?: string | null;
@@ -305,6 +333,10 @@ export interface NonFunctionalRequirementData {
   // Server-set when a BA/Reviewer confirms the target (POST /api/artifacts/{id}/nfr-confirmation).
   confirmedByUserId?: string | null;
   confirmedAt?: string | null;
+  // P0-2 — the model's claim about the target ("stated" | "proposed"), and the server's check of a
+  // "stated" claim against verified SRS quotes. Neither confirms the target.
+  targetOrigin?: string | null;
+  targetSupport?: 'quote_found' | 'not_supported' | null;
 }
 
 export interface UserStoryData {
@@ -486,11 +518,53 @@ export interface AnalyzeRequirementResult {
   dataElements: string[];
   notes: string[];
   clarificationQuestions: ArtifactSummary[];
+  // Questions not saved because the same question already exists for this source.
+  skippedDuplicates?: number;
+  // P0-7 — absent from older API versions.
+  completeness?: RequirementCompleteness | null;
+}
+
+// P0-7 — how complete an Analyze/Generate result is; response-only (RequirementCompleteness.cs).
+// contextReduction: 'none' = sent whole; 'split' = sent in partCount parts, every passage once, so the
+// AI could not reason across parts. clarifications: 'whole' = every request carried all of them;
+// 'distributed' = each part carried the most relevant ones; 'none' = there were none. The evidence
+// counts (Generate only, null for Analyze) cover the requirements this run created, not skipped
+// duplicates. Source-ID coverage is the result's sourceIdCoverage, not repeated here.
+export interface RequirementCompleteness {
+  contextReduction: 'none' | 'split' | string;
+  partCount: number;
+  clarifications: 'whole' | 'distributed' | 'none' | string;
+  models: string[];
+  unverifiedEvidenceCount?: number | null;
+  noEvidenceCount?: number | null;
+  unsupportedNumbersCount?: number | null;
 }
 
 export interface GenerateRequirementsResult {
   functionalRequirements: ArtifactSummary[];
   nonFunctionalRequirements: ArtifactSummary[];
+  // Requirements not saved because the same requirement already exists for this source.
+  skippedDuplicates?: number;
+  // P0-4 — coverage after this save (see SourceIdCoverage).
+  sourceIdCoverage?: SourceIdCoverage | null;
+  // P0-7 — absent from older API versions.
+  completeness?: RequirementCompleteness | null;
+}
+
+// P0-4 — GET /api/requirement-sources/{id}/source-id-coverage (refused to a user who may not read raw
+// sources). Requirement IDs are "defined" when they start a line (after a bullet, number or "|") and
+// "mentioned only" otherwise; a defined ID is covered when a saved, non-rejected FR/NFR cites it in
+// sourceIds. uncovered includes the IDs in coveredOnlyByRejected. not_applicable: no defined IDs, so
+// coverage cannot be checked (never "complete"). IDs are in source order, as written in the source.
+export type SourceIdCoverageStatus = 'not_applicable' | 'complete' | 'incomplete';
+
+export interface SourceIdCoverage {
+  status: SourceIdCoverageStatus;
+  definedCount: number;
+  covered: string[];
+  uncovered: string[];
+  coveredOnlyByRejected: string[];
+  mentionedOnly: string[];
 }
 
 export interface ClarificationAnswerRequest {
@@ -501,6 +575,8 @@ export interface ClarificationAnswerRequest {
 export interface UpdateArtifactStatusRequest {
   status: number;
   comment?: string;
+  // S1 — for an approve/reject: the version decided on; the API refuses (409) if it is no longer current.
+  version?: number;
 }
 
 // §23 — human edit; the backend replaces `data` wholesale (never a partial patch of it), so
@@ -653,6 +729,12 @@ export interface StageTransition {
   overrideReason?: string | null;
   evidence: LifecycleCheck[];
   reviews: StageReview[];
+  /**
+   * D3 - true when `evidence` is known not to be the submission-time evidence (an approved gated
+   * request recorded without a decision snapshot). Availability only: false or absent (older API
+   * responses) certifies nothing and says nothing about when the row was written.
+   */
+  submissionEvidenceUnavailable?: boolean;
 }
 
 /** What the caller may do right now, decided by the backend. */
@@ -754,10 +836,33 @@ export interface CopilotCitation {
   snippet: string;
 }
 
+// What project context the answer was given (CopilotContextReport on the server). Every count
+// describes the prompt actually sent, and only content the user may see. The four artifact counts
+// are mutually exclusive. excerptsOmitted is null when the user may not read raw sources.
+export interface CopilotContextReport {
+  reduced: boolean;
+  reason: 'standardLimits' | 'providerBudget' | null;
+  provider: string | null;
+  inputBudget: number | null;
+  artifactsFull: number;
+  artifactsTruncated: number;
+  artifactsTitleOnly: number;
+  artifactsOmitted: number;
+  versionsOmitted: number;
+  impactCodesOmitted: number;
+  excerptsOmitted: number | null;
+}
+
 export interface CopilotAnswer {
   answer: string;
   citations: CopilotCitation[];
   relatedArtifactCodes: string[];
+  // Absent from older servers.
+  context?: CopilotContextReport | null;
+}
+
+export interface CopilotLimits {
+  maxQuestionChars: number;
 }
 
 // §36 — agent pipeline. Enums arrive as numbers, matching the rest of the API.
@@ -1067,4 +1172,124 @@ export interface LifecycleReview {
   requirementSources: ReviewedRequirementSource[];
   timeline: ReviewTimelineEvent[];
   traceability: TraceabilityRow[];
+}
+
+// Dry-run AI plan (GET /api/requirement-sources/{id}/ai-plan) - mirrors AiPlanResult. Nothing is
+// sent to any AI provider to make it; token figures are estimates and provider quota is unknown.
+export type AiPlanOperation = 'analyze' | 'generate';
+export type AiPlanStatusValue = 'WithinLimits' | 'Warning' | 'Uncertain' | 'Blocked';
+export type AiPlanAvailabilityValue = 'QuotaUnknown' | 'CoolingDown' | 'Stub' | 'NotConfigured';
+
+export interface AiPlanRange {
+  min: number;
+  max: number;
+  exact: boolean;
+}
+
+export interface AiPlanReason {
+  code: string;
+  severity: 'Blocking' | 'Warning' | 'Info';
+  message: string;
+  setting?: string | null;
+  limit?: number | null;
+  actual?: number | null;
+  until?: string | null;
+}
+
+export interface AiPlanProvider {
+  role: 'Primary' | 'Fallback';
+  provider: string;
+  model: string;
+  status: AiPlanStatusValue;
+  sizeStatus: AiPlanStatusValue;
+  availability: AiPlanAvailabilityValue;
+  cooldownUntil: string | null;
+  wholeRequest: boolean;
+  parts: AiPlanRange | null;
+  estimatedRequestTokens: number;
+  inputBudget: number | null;
+  maxRequestTokens: number | null;
+  maxPartSourceTokens: number | null;
+  reservedTokensPerPart: number | null;
+  clarificationMode: 'Whole' | 'Subset' | null;
+  maxParts: number;
+  maxPartsSetting: string | null;
+  estimatedTotalTokensUpperBound: number | null;
+  maxOutputTokens: number | null;
+  timeoutSeconds: number | null;
+  reasons: AiPlanReason[];
+}
+
+export interface AiPlanResult {
+  operation: AiPlanOperation;
+  requirementSourceId: string;
+  generatedAt: string;
+  context: {
+    sourceTokens: number;
+    systemPromptTokens: number;
+    fixedContextTokens: AiPlanRange;
+    clarificationItems: number;
+    clarificationTokens: number;
+    businessObjectives: number;
+    documentExcerptCandidates: number;
+  };
+  route: {
+    primary: string | null;
+    fallback: string | null;
+    primaryCooldownUntil: string | null;
+    expectedFirst: string | null;
+    configurationError: string | null;
+  };
+  providers: AiPlanProvider[];
+  overall: { status: AiPlanStatusValue; summary: string };
+  caveats: string[];
+  batch?: AiPlanBatch | null;
+}
+
+// Batched (resumable) AI runs - mirrors AiChunkRunResponse. Only when Ai:Groq:MaxBatchedRunParts > 0.
+export type AiChunkRunStatusValue = 'Running' | 'Staged' | 'Committed' | 'Failed' | 'Superseded' | 'Abandoned';
+
+export interface AiChunkRunPartSummary {
+  number: number;
+  status: 'Pending' | 'Succeeded' | 'Failed';
+  attempts: number;
+  section: string | null;
+  model: string | null;
+  lastError: string | null;
+}
+
+export interface AiChunkRun {
+  id: string;
+  requirementSourceId: string;
+  operation: AiPlanOperation;
+  status: AiChunkRunStatusValue;
+  partCount: number;
+  succeededParts: number;
+  failedParts: number;
+  pendingParts: number;
+  partsPerAction: number;
+  remainingActions: number;
+  budgetProvider: string | null;
+  lastError: string | null;
+  lastErrorRetryable: boolean;
+  leaseActive: boolean;
+  startedAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  // sourceIdCoverage: only on the response to a generation run's Commit (not stored with the run).
+  result: { createdArtifactIds: string[]; skippedDuplicates: number; sourceIdCoverage?: SourceIdCoverage | null } | null;
+  parts: AiChunkRunPartSummary[];
+}
+
+// AiPlanResult.batch - enabled false when batch mode is off (nothing else filled).
+export interface AiPlanBatch {
+  enabled: boolean;
+  maxRunParts: number;
+  budgetProvider: string | null;
+  partsPerAction: number | null;
+  parts: number | null;
+  actions: number | null;
+  canStart: boolean;
+  reason: string | null;
+  activeRun: AiChunkRun | null;
 }

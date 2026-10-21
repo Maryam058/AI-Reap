@@ -126,11 +126,18 @@ public static class BlockerReasons
     public const string TraceGaps = "trace-gaps";
     public const string SignOff = "signoff";
 
+    // G3 — the same codes artifact approval refuses with (RequirementApprovalEvidence).
+    public const string EvidenceUnverified = Artifacts.RequirementApprovalEvidence.EvidenceUnverified;
+    public const string EvidenceMissing = Artifacts.RequirementApprovalEvidence.EvidenceMissing;
+    public const string TargetNotSupported = Artifacts.RequirementApprovalEvidence.TargetNotSupported;
+    public const string TargetUnconfirmed = Artifacts.RequirementApprovalEvidence.TargetUnconfirmed;
+
     // Blocker groups are listed in this order: earlier steps first (create, then approve, then do).
     public static readonly IReadOnlyList<string> Order =
     [
         Missing, NotRun, NoneYet, NoApprovedFrs, NoTask, NoTest, NoStory, NoCriteria, NeedsApproval, TestNeedsApproval,
-        OpenQuestions, Unresolved, NeedsDeveloperReview, OpenNotice, Reopened, NotImplemented, WaitingOnTasks,
+        OpenQuestions, Unresolved, NeedsDeveloperReview, OpenNotice, Reopened,
+        EvidenceUnverified, EvidenceMissing, TargetNotSupported, TargetUnconfirmed, NotImplemented, WaitingOnTasks,
         NotCompleted, TaskReopened, NoResult, Failed, Blocked, TestsNotPassed, TraceGaps, SignOff
     ];
 }

@@ -1,6 +1,7 @@
 using AiReap.Application.Ai.Pipeline;
 using AiReap.Application.Persistence;
 using AiReap.Domain.Common;
+using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
 
 namespace AiReap.Application.Agents.Implementations;
@@ -39,7 +40,7 @@ public class QaAgent : IAgent
             _db, ArtifactType.TestCase, RelationshipType.TestedBy, context.ProjectId, cancellationToken);
 
         var produced = new List<AgentArtifactRef>();
-        foreach (var fr in frs.Where(f => !alreadyTested.Contains(f.Id)))
+        foreach (var fr in SelectForTestGeneration(frs, alreadyTested))
         {
             var cases = await _tests.GenerateAsync(fr.Id, cancellationToken);
             if (cases is not null)
@@ -56,4 +57,8 @@ public class QaAgent : IAgent
             Array.Empty<string>(),
             "Review test cases for coverage and correctness. Approving a test case accepts it; its requirement becomes Verified only when QA records every linked test case as passed (after its tasks are complete).");
     }
+
+    // The FRs to generate test cases for: those without any yet, leaving out rejected ones (GenerationInputs).
+    public static IEnumerable<Artifact> SelectForTestGeneration(IEnumerable<Artifact> frs, IReadOnlySet<Guid> alreadyTested) =>
+        frs.Where(f => GenerationInputs.IsEligible(f) && !alreadyTested.Contains(f.Id));
 }

@@ -1,6 +1,5 @@
 using System.Net;
 using System.Text;
-using System.Text.RegularExpressions;
 using AiReap.Application.Artifacts;
 using AiReap.Application.Common;
 using AiReap.Application.Persistence;
@@ -34,18 +33,60 @@ public static class GenerationSupport
             .ToListAsync(cancellationToken);
     }
 
-    public static string BuildContextBlock(string heading, IEnumerable<Artifact> artifacts)
+    // The upstream artifacts a generation prompt builds on: LoadArtifactsAsync without the rejected
+    // ones (GenerationInputs). Counts and metrics keep using LoadArtifactsAsync.
+    public static Task<List<Artifact>> LoadGenerationInputsAsync(
+        IAiReapDbContext db, Guid requirementSourceId, ArtifactType type, CancellationToken cancellationToken) =>
+        GenerationInputs.For(db.Artifacts, requirementSourceId, type).ToListAsync(cancellationToken);
+
+    // The heading over the eligible FR list ("- FR-001: Title" lines) in every stage that builds on
+    // FRs. The development stub (StubAiChatClient) cites from this list only, never from FR-like IDs
+    // in the raw source text, so the two must use this one constant.
+    public const string FunctionalRequirementsHeading = "Functional requirements derived so far:";
+
+    // A4b Phase 4 - the eligible-FR block of the user story, data entity, API and task prompts:
+    // BuildContextBlock under FunctionalRequirementsHeading, with " (source IDs: FR-012)" after the title
+    // of a requirement that records the IDs written in the source it came from. Such an ID can equal a
+    // different stored code, so the prompt shows the mapping; the stored code on the left stays the only
+    // citation. A requirement without source IDs keeps the "- FR-001: Title" line exactly. Business rules
+    // and solution design keep the plain block.
+    public static string BuildFunctionalRequirementBlock(IEnumerable<Artifact> functionalRequirements) =>
+        BuildContextBlock(FunctionalRequirementsHeading, functionalRequirements.Select(fr => (fr.Code, fr.Title + SourceIdsSuffix(fr))));
+
+    private static string SourceIdsSuffix(Artifact functionalRequirement)
     {
-        var list = artifacts.ToList();
+        List<string> sourceIds;
+        try
+        {
+            sourceIds = string.IsNullOrWhiteSpace(functionalRequirement.DataJson)
+                ? []
+                : FunctionalRequirementContext.Read(functionalRequirement).SourceIds ?? [];
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            sourceIds = []; // an unreadable payload shows the plain line, as before
+        }
+
+        var ids = sourceIds.Where(id => !string.IsNullOrWhiteSpace(id)).Select(id => id.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        return ids.Count == 0 ? string.Empty : $" (source IDs: {string.Join(", ", ids)})";
+    }
+
+    public static string BuildContextBlock(string heading, IEnumerable<Artifact> artifacts) =>
+        BuildContextBlock(heading, artifacts.Select(a => (a.Code, a.Title)));
+
+    public static string BuildContextBlock(string heading, IEnumerable<(string Code, string Title)> items)
+    {
+        var list = items.ToList();
         if (list.Count == 0)
         {
             return string.Empty;
         }
 
         var sb = new StringBuilder($"\n\n{heading}\n");
-        foreach (var a in list)
+        foreach (var (code, title) in list)
         {
-            sb.Append($"- {a.Code}: {a.Title}\n");
+            sb.Append($"- {code}: {title}\n");
         }
 
         return sb.ToString();
@@ -100,10 +141,66 @@ public static class GenerationSupport
         string systemPrompt, string userPrompt, CancellationToken cancellationToken,
         IEnumerable<string>? knownArtifactCodes = null, IEnumerable<string>? knownSourceReferences = null) where T : class =>
         CallAndParseAsync<T>(chatClient, logger, operationType, inputReference, systemPrompt, userPrompt,
-            uncondensed: false, knownArtifactCodes?.ToList(), knownSourceReferences?.ToList(), cancellationToken);
+            uncondensed: false, knownArtifactCodes?.ToList(), knownSourceReferences?.ToList(), null, cancellationToken);
+
+    // P0-5 — the same call for the later pipeline stages, which send their prompt whole or not at all.
+    // CallAiAndParseAsync lets a per-request budget (Groq) condense an over-budget prompt by dropping
+    // passages, which can silently lose requirements; here the prompt and its one repair attempt are
+    // sent uncondensed, and a request the serving provider's budget cannot take is refused before it
+    // is sent (AiStageOverBudgetException). Provider routing, fallback, cool-down, retries, logging and
+    // validation are those of CallAiAndParseAsync.
+    public static async Task<(string RawResponse, T Parsed)> CallAiAndParseLosslessAsync<T>(
+        IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
+        string systemPrompt, string userPrompt, CancellationToken cancellationToken,
+        IEnumerable<string>? knownArtifactCodes = null, IEnumerable<string>? knownSourceReferences = null) where T : class
+    {
+        try
+        {
+            return await CallAndParseAsync<T>(chatClient, logger, operationType, inputReference, systemPrompt, userPrompt,
+                uncondensed: true, knownArtifactCodes?.ToList(), knownSourceReferences?.ToList(), null, cancellationToken);
+        }
+        catch (AiRequestOverBudgetException ex)
+        {
+            throw RefuseOverBudget(logger, operationType, inputReference, ex);
+        }
+    }
+
+    // The refusal CallAiAndParseLosslessAsync raises for a request the serving provider's budget cannot
+    // take, logged the same way; also used by callers that make their own uncondensed call (ReviewAgent).
+    public static AiStageOverBudgetException RefuseOverBudget(
+        ILogger logger, string operationType, string inputReference, AiRequestOverBudgetException ex)
+    {
+        var refused = new AiStageOverBudgetException(operationType, ex.Data[RepairAttemptKey] is true, ex);
+        logger.LogWarning(
+            "AI stage request refused, not sent: {OperationType} input={InputReference} repairAttempt={RepairAttempt} provider={Provider} " +
+            "estimatedInputTokens={EstimatedTokens} inputBudget={InputBudget} overBudgetTokens={OverBudgetTokens}. " +
+            "The stage sends its input whole or not at all; nothing was shortened or saved.",
+            operationType, inputReference, refused.RepairAttempt, ex.Provider,
+            refused.EstimatedInputTokens, refused.InputBudget, refused.OverBudgetTokens);
+        return refused;
+    }
+
+    // The uncondensed call and validation of CallAiAndParseLosslessAsync, but a request over the serving
+    // provider's budget surfaces as the AiRequestOverBudgetException itself (nothing was sent; when it
+    // was the repair attempt, Data[RepairAttemptKey] is true), so the caller can decide what to do -
+    // CopilotService fits its optional context to that budget.
+    public static Task<(string RawResponse, T Parsed)> CallAiAndParseUncondensedAsync<T>(
+        IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
+        string systemPrompt, string userPrompt, CancellationToken cancellationToken,
+        IEnumerable<string>? knownArtifactCodes = null) where T : class =>
+        CallAndParseAsync<T>(chatClient, logger, operationType, inputReference, systemPrompt, userPrompt,
+            uncondensed: true, knownArtifactCodes?.ToList(), null, null, cancellationToken);
+
+    // Exception.Data key set on an AiRequestOverBudgetException raised by the repair attempt rather than
+    // the first request, so a refusal does not imply that nothing at all was sent.
+    public const string RepairAttemptKey = "AiRepairAttempt";
 
     // One part of a possibly chunked AI call: its raw response, parsed form, and the model that served it.
-    public sealed record AiPart<T>(int Number, int Count, string RawResponse, T Parsed, string Model);
+    // Section: the heading the part starts under (SourceChunker.SectionAnchors); null for a whole source.
+    // SharedContextWhole: the part carried the whole SharedContext; false when a split source gave each
+    // part only the items most relevant to it (P0-7 RequirementCompleteness reports it).
+    public sealed record AiPart<T>(int Number, int Count, string RawResponse, T Parsed, string Model, string? Section = null,
+        bool SharedContextWhole = true);
 
     // Estimated room kept free in every part for the repair instruction, so a part's one repair
     // attempt fits the same budget as the part itself.
@@ -144,10 +241,6 @@ public static class GenerationSupport
     // whole list does not fit in it; the rest is source text.
     public const int SharedContextBudgetDivisor = 3;
 
-    private const string SharedContextSubsetNote =
-        "[AI-REAP note: {0} of the {1} entries of this list are shown with this part - those most relevant to it; " +
-        "the others are shown with the other parts.]\n";
-
     // CallAiAndParseAsync for a stage whose whole input is one requirement source, without ever
     // condensing it. The source (+ sharedContext + fixedContext) is first sent whole and
     // uncondensed. If the provider serving the call has a per-request budget the prompt does not
@@ -158,13 +251,16 @@ public static class GenerationSupport
     // its own call with its own single repair attempt; the caller merges the parsed parts
     // (TWhole's validation applies to a whole-source response, TPart's to one part). No part's
     // content is dropped and no synthesis request is made. A part that fails ends the whole
-    // operation with that part named - nothing is persisted from the parts before it.
+    // operation with that part named - nothing is persisted from the parts before it. A source
+    // needing more parts than the provider allows (its Ai:<Provider>:MaxChunkedParts) is refused
+    // before any part is sent.
     public static async Task<IReadOnlyList<AiPart<TPart>>> CallAiAndParseChunkedAsync<TWhole, TPart>(
         IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
         string systemPrompt, string sourceText, CancellationToken cancellationToken,
         string fixedContext = "", Func<TimeSpan, CancellationToken, Task>? delay = null,
         SharedContext? sharedContext = null,
-        IEnumerable<string>? knownArtifactCodes = null, IEnumerable<string>? knownSourceReferences = null)
+        IEnumerable<string>? knownArtifactCodes = null, IEnumerable<string>? knownSourceReferences = null,
+        bool validateSourceIds = false)
         where TWhole : class, TPart where TPart : class
     {
         var shared = sharedContext ?? SharedContext.None;
@@ -175,7 +271,8 @@ public static class GenerationSupport
         try
         {
             var (raw, parsed) = await CallAndParseAsync<TWhole>(chatClient, logger, operationType, inputReference,
-                systemPrompt, sourceText + shared.RenderAll() + fixedContext, uncondensed: true, knownCodes, knownRefs, cancellationToken);
+                systemPrompt, ChunkPlanner.WholePrompt(sourceText, shared, fixedContext), uncondensed: true, knownCodes, knownRefs,
+                validateSourceIds ? SourceIdScope.For(sourceText, sourceText) : null, cancellationToken);
             return [new AiPart<TPart>(1, 1, raw, parsed, chatClient.ModelName)];
         }
         catch (AiRequestOverBudgetException ex)
@@ -183,151 +280,136 @@ public static class GenerationSupport
             overBudget = ex;
         }
 
-        var reserved = PromptBudgetReducer.EstimateTokens(systemPrompt) + PromptBudgetReducer.RequestOverheadTokens
-            + PromptBudgetReducer.EstimateTokens(PartHeader(999, 999)) + PromptBudgetReducer.EstimateTokens(fixedContext)
-            + PartRepairReserveTokens;
-
-        // The shared list goes whole with every part while it takes at most its share of what is
-        // left; beyond that, each part carries a bounded, relevance-chosen subset of it.
-        var available = overBudget.InputBudget - reserved;
-        var sharedTokens = shared.Items.Count == 0 ? 0
-            : PromptBudgetReducer.EstimateTokens(shared.Heading) + shared.Items.Sum(PromptBudgetReducer.EstimateTokens);
-        var sharedWhole = sharedTokens <= available / SharedContextBudgetDivisor;
-        var sharedBudget = sharedWhole ? sharedTokens : available / SharedContextBudgetDivisor;
-        var maxPartTokens = available - sharedBudget;
-        if (maxPartTokens < MinPartSourceTokens)
+        // The same plan the dry-run AI plan (AiPlanService) reports for this provider.
+        var plan = ChunkPlanner.Split(systemPrompt, sourceText, fixedContext, shared,
+            overBudget.InputBudget, overBudget.MaxParts, overBudget.EstimatedTokens);
+        if (plan.Outcome == ChunkPlanOutcome.CannotSplit)
         {
-            var message =
+            var message = PrimaryNote(overBudget) +
                 $"The requirement source cannot be split for {overBudget.Provider}: its input budget of {overBudget.InputBudget:N0} tokens " +
-                $"leaves too little room for source text next to the ~{reserved:N0} tokens every request must carry " +
-                "(instructions, context and a repair reserve). Retry when the primary AI provider is available again.";
-            throw new AiProviderException(AiFailureKind.RequestRejected, overBudget.Provider, message,
-                HttpStatusCode.RequestEntityTooLarge, message, inner: overBudget);
+                $"leaves too little room for source text next to the ~{plan.ReservedTokensPerPart:N0} tokens every request must carry " +
+                "(instructions, context and a repair reserve). Nothing was sent and nothing was saved.";
+            throw new AiSourceCannotBeSplitException(overBudget.Provider, message, overBudget.InputBudget, plan.ReservedTokensPerPart, inner: overBudget);
         }
 
-        var chunks = SourceChunker.Split(sourceText, maxPartTokens);
+        var chunks = plan.Chunks;
+        if (plan.Outcome == ChunkPlanOutcome.TooManyParts)
+        {
+            throw TooManyParts(overBudget, chunks.Count, logger, operationType, inputReference);
+        }
+
         logger.LogInformation(
             "AI input split: {OperationType} input={InputReference} ~{Tokens} tokens exceed {Provider}'s {Budget}-token input budget; " +
             "sending {Parts} parts of at most ~{MaxPartTokens} source tokens each.",
-            operationType, inputReference, overBudget.EstimatedTokens, overBudget.Provider, overBudget.InputBudget, chunks.Count, maxPartTokens);
+            operationType, inputReference, overBudget.EstimatedTokens, overBudget.Provider, overBudget.InputBudget, chunks.Count, plan.MaxPartSourceTokens);
 
-        var sharedParts = sharedWhole
-            ? chunks.Select(_ => shared.RenderAll()).ToList()
-            : SplitSharedContext(shared, chunks, sharedBudget, overBudget, logger, operationType, inputReference);
+        if (plan.Outcome == ChunkPlanOutcome.SharedContextDoesNotFit)
+        {
+            throw SharedContextDoesNotFit(overBudget, plan, logger, operationType, inputReference);
+        }
+
+        if (!plan.SharedContextWhole)
+        {
+            logger.LogInformation(
+                "AI shared context split: {OperationType} input={InputReference} {Items} items (~{Tokens} tokens) over {Parts} parts, " +
+                "at most ~{Budget} tokens each; items per part: {PerPart}.",
+                operationType, inputReference, shared.Items.Count, plan.SharedContextTokens - PromptBudgetReducer.EstimateTokens(shared.Heading),
+                chunks.Count, plan.SharedContextItemBudget, string.Join(",", plan.SharedItemsPerPart));
+        }
+
+        var sharedParts = plan.SharedContextParts;
+        var anchors = SourceChunker.SectionAnchors(chunks);
 
         var parts = new List<AiPart<TPart>>(chunks.Count);
         for (var i = 0; i < chunks.Count; i++)
         {
             var number = i + 1;
-            var prompt = PartHeader(number, chunks.Count) + chunks[i] + sharedParts[i] + fixedContext;
-
-            // Safeguard: a single part (only if the provider refused a whole prompt our estimate says
-            // fits) is the whole source, so it is held to TWhole's rules; the caller merges nothing
-            // that could apply them later.
-            var (raw, parsed) = chunks.Count == 1
-                ? await CallPartAsync<TWhole>(chatClient, logger, operationType, inputReference,
-                    systemPrompt, prompt, number, chunks.Count, delay, knownCodes, knownRefs, cancellationToken)
-                : await CallPartAsync<TPart>(chatClient, logger, operationType, inputReference,
-                    systemPrompt, prompt, number, chunks.Count, delay, knownCodes, knownRefs, cancellationToken);
-            parts.Add(new AiPart<TPart>(number, chunks.Count, raw, parsed, chatClient.ModelName));
+            var prompt = PartPrompt(number, chunks.Count, chunks[i], sharedParts[i], fixedContext);
+            var (raw, parsed) = await CallPlannedPartAsync<TWhole, TPart>(chatClient, logger, operationType, inputReference,
+                systemPrompt, prompt, number, chunks.Count, delay, knownCodes, knownRefs,
+                validateSourceIds ? SourceIdScope.For(chunks[i], sourceText) : null, cancellationToken);
+            parts.Add(new AiPart<TPart>(number, chunks.Count, raw, parsed, chatClient.ModelName, anchors[i], plan.SharedContextWhole));
         }
 
         return parts;
     }
 
-    // Each part's rendering of a shared list too large to go whole with every part. First every
-    // item is placed with the part it is most relevant to (terms shared with that part's text) that
-    // still has room, so each item is shown at least once; then each part's remaining room is
-    // filled with other items relevant to it. Items keep their original order within a part. If
-    // some item fits no part, nothing is sent: leaving clarifications out would be silent loss.
-    private static List<string> SplitSharedContext(
-        SharedContext shared, IReadOnlyList<string> chunks, int sharedBudget, AiRequestOverBudgetException overBudget,
-        ILogger logger, string operationType, string inputReference)
+    // The user prompt of one planned part, exactly as CallAiAndParseChunkedAsync sends it (a batched
+    // run, AiChunkRunService, freezes it at Start).
+    public static string PartPrompt(int number, int count, string chunk, string sharedPart, string fixedContext) =>
+        PartHeader(number, count) + chunk + sharedPart + fixedContext;
+
+    // One planned part: its own single repair attempt, one wait on a short per-minute rate limit,
+    // and failures labelled with the part. A single part (only if the provider refused a whole
+    // prompt our estimate says fits) is the whole source, so it is held to TWhole's rules; the
+    // caller merges nothing that could apply them later.
+    public static async Task<(string RawResponse, TPart Parsed)> CallPlannedPartAsync<TWhole, TPart>(
+        IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
+        string systemPrompt, string prompt, int number, int count, Func<TimeSpan, CancellationToken, Task>? delay,
+        IReadOnlyList<string>? knownCodes, IReadOnlyList<string>? knownRefs, SourceIdScope? sourceIds,
+        CancellationToken cancellationToken)
+        where TWhole : class, TPart where TPart : class
     {
-        var itemBudget = sharedBudget - PromptBudgetReducer.EstimateTokens(shared.Heading)
-            - PromptBudgetReducer.EstimateTokens(string.Format(SharedContextSubsetNote, 99_999, 99_999));
-        var itemTokens = shared.Items.Select(PromptBudgetReducer.EstimateTokens).ToArray();
-
-        // Wording common to most items ("not yet answered - treat as still unresolved ...") says
-        // nothing about which part an item belongs to.
-        var itemTerms = shared.Items.Select(ContextTerms).ToList();
-        HashSet<string> boilerplate = itemTerms.Count < 4 ? [] : itemTerms.SelectMany(t => t)
-            .GroupBy(t => t).Where(g => g.Count() > itemTerms.Count / 2).Select(g => g.Key).ToHashSet();
-        itemTerms.ForEach(t => t.ExceptWith(boilerplate));
-
-        var chunkTerms = chunks.Select(ContextTerms).ToList();
-        var relevance = chunks.Select((_, p) => itemTerms.Select(t => t.Count(chunkTerms[p].Contains)).ToArray()).ToArray();
-        var room = Enumerable.Repeat(itemBudget, chunks.Count).ToArray();
-        var selected = chunks.Select(_ => new SortedSet<int>()).ToArray();
-
-        var unplaced = 0;
-        for (var i = 0; i < shared.Items.Count; i++)
-        {
-            var item = i;
-            var best = Enumerable.Range(0, chunks.Count)
-                .Where(p => itemTokens[item] <= room[p])
-                .OrderByDescending(p => relevance[p][item]).ThenByDescending(p => room[p])
-                .DefaultIfEmpty(-1).First();
-            if (best < 0)
-            {
-                unplaced++;
-                continue;
-            }
-
-            selected[best].Add(item);
-            room[best] -= itemTokens[item];
-        }
-
-        if (unplaced > 0)
-        {
-            var message =
-                $"The requirement source was split into {chunks.Count} parts for {overBudget.Provider}, but {unplaced:N0} of its " +
-                $"{shared.Items.Count:N0} clarifications do not fit in any part's {overBudget.InputBudget:N0}-token input budget, so " +
-                "they could not be shown to the AI. Nothing was sent. Retry when the primary AI provider is available again.";
-            logger.LogWarning(
-                "AI input not sent: {OperationType} input={InputReference} {Unplaced} of {Items} shared context items fit no part.",
-                operationType, inputReference, unplaced, shared.Items.Count);
-            throw new AiProviderException(AiFailureKind.RequestRejected, overBudget.Provider, message,
-                HttpStatusCode.RequestEntityTooLarge, message, inner: overBudget);
-        }
-
-        for (var p = 0; p < chunks.Count; p++)
-        {
-            var part = p;
-            foreach (var item in Enumerable.Range(0, shared.Items.Count)
-                .Where(i => relevance[part][i] > 0 && !selected[part].Contains(i))
-                .OrderByDescending(i => relevance[part][i]).ThenBy(i => i))
-            {
-                if (itemTokens[item] <= room[part])
-                {
-                    selected[part].Add(item);
-                    room[part] -= itemTokens[item];
-                }
-            }
-        }
-
-        logger.LogInformation(
-            "AI shared context split: {OperationType} input={InputReference} {Items} items (~{Tokens} tokens) over {Parts} parts, " +
-            "at most ~{Budget} tokens each; items per part: {PerPart}.",
-            operationType, inputReference, shared.Items.Count, itemTokens.Sum(), chunks.Count, itemBudget,
-            string.Join(",", selected.Select(s => s.Count)));
-
-        return selected.Select(s => s.Count == 0 ? string.Empty
-            : shared.Heading + string.Format(SharedContextSubsetNote, s.Count, shared.Items.Count) + string.Concat(s.Select(i => shared.Items[i])))
-            .ToList();
+        var codes = knownCodes?.ToList();
+        var refs = knownRefs?.ToList();
+        return count == 1
+            ? await CallPartAsync<TWhole>(chatClient, logger, operationType, inputReference,
+                systemPrompt, prompt, number, count, delay, codes, refs, sourceIds, cancellationToken)
+            : await CallPartAsync<TPart>(chatClient, logger, operationType, inputReference,
+                systemPrompt, prompt, number, count, delay, codes, refs, sourceIds, cancellationToken);
     }
 
-    private static readonly Regex ContextWord =
-        new(@"\b[A-Za-z][A-Za-z-]{3,}\b", RegexOptions.Compiled);
+    // A source needing more parts than the provider allows is refused before any part is sent:
+    // every part may use the provider's whole per-request budget, so a long run of parts can spend
+    // a daily quota and still fail part-way, saving nothing. The figures are upper-bound estimates
+    // from our own token counting - the provider's remaining quota is not known here.
+    private static AiChunkLimitExceededException TooManyParts(
+        AiRequestOverBudgetException overBudget, int parts, ILogger logger, string operationType, string inputReference)
+    {
+        var setting = overBudget.MaxPartsSetting ?? "the configured maximum";
+        var estimate = overBudget.MaxRequestTokens > 0
+            ? $" Estimated upper bound: about {parts * (long)overBudget.MaxRequestTokens:N0} tokens " +
+              $"({parts} requests of up to {overBudget.MaxRequestTokens:N0} tokens each) and, if that request size is " +
+              $"{overBudget.Provider}'s per-minute token limit, at least about {parts} minutes."
+            : string.Empty;
+        var message = PrimaryNote(overBudget) +
+            $"The requirement source would have to be sent to {overBudget.Provider} in {parts} parts, more than the " +
+            $"{overBudget.MaxParts} allowed ({setting}={overBudget.MaxParts}).{estimate} These are estimates, not a check of " +
+            $"the remaining {overBudget.Provider} quota. Nothing was sent and nothing was saved. Retry when the primary AI " +
+            "provider is available again, or split the source into smaller requirement sources.";
+        logger.LogWarning(
+            "AI input not sent: {OperationType} input={InputReference} needs {Parts} parts for {Provider}, more than the {MaxParts} allowed.",
+            operationType, inputReference, parts, overBudget.Provider, overBudget.MaxParts);
+        return new AiChunkLimitExceededException(overBudget.Provider, message, parts, overBudget.MaxParts, setting, inner: overBudget);
+    }
 
-    private static HashSet<string> ContextTerms(string text) =>
-        ContextWord.Matches(text).Select(m => m.Value.ToLowerInvariant()).ToHashSet(StringComparer.Ordinal);
+    // Leads a refusal with the actual blocker when the budgeted provider was only serving as the
+    // fallback: e.g. "Primary AI provider not used - Gemini failed: Gemini quota exhausted (...)."
+    // The outcome is the primary's sanitized AiProviderException message (FallbackAiChatClient).
+    private static string PrimaryNote(AiRequestOverBudgetException overBudget) =>
+        overBudget.Primary is { } primary ? $"Primary AI provider not used - {primary.Outcome.TrimEnd('.', ' ')}. " : string.Empty;
+
+    // Some clarifications fit no part (ChunkPlanner): nothing is sent, since leaving them out would
+    // be silent loss.
+    private static AiProviderException SharedContextDoesNotFit(
+        AiRequestOverBudgetException overBudget, ChunkPlan plan, ILogger logger, string operationType, string inputReference)
+    {
+        var message = PrimaryNote(overBudget) +
+            $"The requirement source was split into {plan.Chunks.Count} parts for {overBudget.Provider}, but {plan.UnplacedSharedItems:N0} of its " +
+            $"{plan.SharedContextItems:N0} clarifications do not fit in any part's {overBudget.InputBudget:N0}-token input budget, so " +
+            "they could not be shown to the AI. Nothing was sent. Retry when the primary AI provider is available again.";
+        logger.LogWarning(
+            "AI input not sent: {OperationType} input={InputReference} {Unplaced} of {Items} shared context items fit no part.",
+            operationType, inputReference, plan.UnplacedSharedItems, plan.SharedContextItems);
+        return new AiProviderException(AiFailureKind.RequestRejected, overBudget.Provider, message,
+            HttpStatusCode.RequestEntityTooLarge, message, inner: overBudget);
+    }
 
     private static async Task<(string RawResponse, T Parsed)> CallPartAsync<T>(
         IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
         string systemPrompt, string prompt, int number, int count,
         Func<TimeSpan, CancellationToken, Task>? delay, List<string>? knownCodes, List<string>? knownRefs,
-        CancellationToken cancellationToken) where T : class
+        SourceIdScope? sourceIds, CancellationToken cancellationToken) where T : class
     {
         var partReference = $"{inputReference}#part-{number}-of-{count}";
         var label = $"Part {number} of {count} of the requirement source";
@@ -338,7 +420,7 @@ public static class GenerationSupport
                 try
                 {
                     return await CallAndParseAsync<T>(chatClient, logger, operationType, partReference,
-                        systemPrompt, prompt, uncondensed: true, knownCodes, knownRefs, cancellationToken);
+                        systemPrompt, prompt, uncondensed: true, knownCodes, knownRefs, sourceIds, cancellationToken);
                 }
                 catch (AiProviderException ex) when (attempt == 1
                     && ex is { Kind: AiFailureKind.RateLimited, QuotaExhausted: false, RetryAfter: { } wait }
@@ -383,17 +465,27 @@ public static class GenerationSupport
     private static async Task<(string RawResponse, T Parsed)> CallAndParseAsync<T>(
         IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
         string systemPrompt, string userPrompt, bool uncondensed,
-        List<string>? knownCodes, List<string>? knownRefs, CancellationToken cancellationToken) where T : class
+        List<string>? knownCodes, List<string>? knownRefs, SourceIdScope? sourceIds, CancellationToken cancellationToken) where T : class
     {
         var prompt = userPrompt;
 
         for (var attempt = 1; ; attempt++)
         {
-            var rawResponse = await CallAiAsync(chatClient, logger, operationType, inputReference, systemPrompt, prompt, uncondensed, cancellationToken);
+            string rawResponse;
+            try
+            {
+                rawResponse = await CallAiAsync(chatClient, logger, operationType, inputReference, systemPrompt, prompt, uncondensed, cancellationToken);
+            }
+            catch (AiRequestOverBudgetException ex) when (attempt > 1)
+            {
+                // The repair prompt (request plus validation errors) is larger than the first request.
+                ex.Data[RepairAttemptKey] = true;
+                throw;
+            }
 
             try
             {
-                return (rawResponse, AiJsonParser.Parse<T>(rawResponse, knownCodes, knownRefs));
+                return (rawResponse, AiJsonParser.Parse<T>(rawResponse, knownCodes, knownRefs, sourceIds));
             }
             catch (AiOutputValidationException ex) when (attempt == 1 && ex.Repairable)
             {
@@ -462,6 +554,20 @@ public static class GenerationSupport
         string.Join("\n- ", errors) +
         "\nReturn a corrected response: ONLY the single JSON object in the required shape, with every problem above fixed. " +
         "Do not invent facts to fill gaps - leave optional fields empty instead.";
+
+    // The candidates a response cites, matched the way AiResponseValidator.CodesExist accepts a code
+    // (trimmed, case-insensitive) and resolved to the stored artifact, each at most once, in candidate
+    // order. So a citation that passed validation always becomes its link, and a repeated code never
+    // adds a second relationship (unique on source, type, target). Codes outside the candidates are
+    // dropped here; validation has already rejected them when the candidates were the known codes.
+    public static List<Artifact> ResolveCited(IEnumerable<string>? codes, IEnumerable<Artifact> candidates)
+    {
+        var cited = (codes ?? [])
+            .Where(c => !string.IsNullOrWhiteSpace(c))
+            .Select(c => c.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return candidates.Where(a => cited.Contains(a.Code.Trim())).DistinctBy(a => a.Id).ToList();
+    }
 
     public static void LinkToRelated(IAiReapDbContext db, Artifact newArtifact, IEnumerable<Artifact> related, RelationshipType type, DateTime now)
     {

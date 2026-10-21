@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AiReap.Application.Artifacts;
 using AiReap.Application.Artifacts.Payloads;
 using AiReap.Application.Common;
 using AiReap.Application.Persistence;
@@ -277,7 +278,8 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
                 AllApproved(ExitCheckKeys.DatabaseApproved, Labels.DatabaseApproved, Of(ArtifactType.DataEntity), "data entities"),
                 DeveloperReviewed(designSet, e.DeveloperReviewedVersions, canSee),
                 OpenNotices(ExitCheckKeys.DesignNotices, "No open impact notices on design", designSet, e.OpenNoticeArtifactIds, "design artifact(s)", canSee),
-                BaselineIntact(live, canSee)),
+                BaselineIntact(live, canSee),
+                SourceEvidence(live, canSee)),
 
             Stage(ProjectStatus.Approved,
                 AllApproved(ExitCheckKeys.TasksApproved, Labels.TasksApproved, tasks, "implementation tasks"),
@@ -324,7 +326,8 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
                             : new Gap(BlockerReasons.NoTest)),
                 Chain(ExitCheckKeys.FullyTraced, Labels.FullyTraced, approvedFrs, stories, criteria, designs, tasks, tests, e.Relationships, full: true, canSee),
                 OpenNotices(ExitCheckKeys.TestingNotices, "No open impact notices", live, e.OpenNoticeArtifactIds, "artifact(s)", canSee),
-                ConflictsResolved()),
+                ConflictsResolved(),
+                SourceEvidence(live, canSee)),
 
             Stage(ProjectStatus.Completed),
         ];
@@ -357,6 +360,7 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
         public const string TestsApproved = "Test cases approved";
         public const string FrsVerified = "Functional requirements verified";
         public const string FullyTraced = "Every approved functional requirement fully traced";
+        public const string SourceEvidence = "Requirement source evidence and NFR targets accepted";
     }
 
     private static StageCheckEvidence Stage(ProjectStatus status, params CheckEvidence[] checks)
@@ -479,6 +483,39 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
                     : new Gap(BlockerReasons.Reopened, "edited since approval"))))));
     }
 
+    // G3 — every live FR and NFR, judged by RequirementApprovalEvidence (the rule artifact approval
+    // also applies). Records made before evidence checks and derived/assumed requirements without a
+    // quote do not block, but are named (subject to ArtifactVisibility) so they are never mistaken for
+    // source-verified ones. Only codes and statuses are reported, never quote text.
+    private static CheckEvidence SourceEvidence(IReadOnlyList<Artifact> live, Func<Artifact, bool> canSee)
+    {
+        var assessed = live
+            .Where(a => RequirementApprovalEvidence.Applies(a.ArtifactType))
+            .Select(a => (Artifact: a, Assessment: RequirementApprovalEvidence.Assess(a.ArtifactType, a.DataJson)))
+            .ToList();
+        if (assessed.Count == 0)
+        {
+            return Result(ExitCheckKeys.SourceEvidence, new(Labels.SourceEvidence, true, "No functional or non-functional requirements to check."));
+        }
+
+        string Noted(string what, Func<RequirementApprovalEvidence.Assessment, bool> which)
+        {
+            var items = assessed.Where(x => which(x.Assessment)).Select(x => x.Artifact).ToList();
+            return items.Count == 0 ? "" : $" {items.Count} {what}{Listing(items, canSee)}.";
+        }
+
+        var notes = Noted("made before evidence checks (not verified)", a => a.EvidenceUnchecked)
+            + Noted("derived or assumed with no source quote (not source-verified)", a => a.OriginWithoutQuote is not null);
+        var blocked = assessed.Where(x => x.Assessment.Blocks).ToList();
+        return blocked.Count == 0
+            ? Result(ExitCheckKeys.SourceEvidence, new(Labels.SourceEvidence, true,
+                $"No requirement has an unverified quote, an explicit claim without a quote or an unconfirmed NFR target.{notes}"))
+            : Result(ExitCheckKeys.SourceEvidence, new(Labels.SourceEvidence, false,
+                    $"{blocked.Count} of {assessed.Count} requirements need a decision on their source evidence or NFR target{Listing(blocked.Select(x => x.Artifact).ToList(), canSee)}.{notes}"),
+                Group(blocked.Select(x => (x.Artifact, (Gap?)new Gap(x.Assessment.Blockers[0],
+                    x.Assessment.Blockers.Count > 1 ? "also: " + string.Join("; ", x.Assessment.Blockers.Skip(1).Select(RequirementApprovalEvidence.Describe)) : null)))));
+    }
+
     // Both sides of every unresolved conflict/duplicate pair, each noting the other side(s).
     private static CheckBlocker ConflictBlocker(List<ArtifactRelationship> pairs, Dictionary<Guid, Artifact> byId)
     {
@@ -493,7 +530,13 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
             entry.Related.Add(other);
         }
 
-        foreach (var pair in pairs)
+        // A fixed order (not the order rows were read in), so an artifact in several pairs always gets
+        // the same note: the note is part of the failure identity an override covers (OverrideScope).
+        foreach (var pair in pairs
+                     .OrderBy(p => p.RelationshipType)
+                     .ThenBy(p => byId[p.SourceArtifactId].Code, StringComparer.Ordinal)
+                     .ThenBy(p => byId[p.TargetArtifactId].Code, StringComparer.Ordinal)
+                     .ThenBy(p => p.Id))
         {
             var note = pair.RelationshipType == RelationshipType.DuplicateOf ? "possible duplicate of" : "conflicts with";
             Add(byId[pair.SourceArtifactId], byId[pair.TargetArtifactId], note);

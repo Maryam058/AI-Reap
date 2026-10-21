@@ -1,3 +1,4 @@
+using AiReap.Application.Artifacts;
 using AiReap.Application.Common;
 using AiReap.Application.Persistence;
 using AiReap.Domain.Entities;
@@ -152,8 +153,33 @@ public class TraceabilityService : ITraceabilityService
 
         requirement.UpdatedAt = now;
         requirement.UpdatedByUserId = _currentUser.UserId;
-        await _db.SaveChangesAsync(cancellationToken);
+
+        // S1 - the requirement's update carries its concurrency tokens, so a concurrent change to it
+        // (another objective edit, an edit, a decision) fails this save; a concurrent save adding the
+        // same link can instead hit the link's unique index. Both mean nothing was saved (409, reload
+        // and retry; not retried automatically). Any other database failure propagates as before.
+        try
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            ArtifactPersistence.Undo(_db);
+            throw new ConflictException(ObjectivesChangedMessage(requirement.Code));
+        }
+        catch (DbUpdateException ex) when (ArtifactPersistence.IsUniqueViolationOn(ex, ObjectiveLinkIndex))
+        {
+            ArtifactPersistence.Undo(_db);
+            throw new ConflictException(ObjectivesChangedMessage(requirement.Code));
+        }
 
         return objectives.OrderBy(o => o.Code).Select(o => new TraceRef(o.Id, o.Code, o.Title)).ToList();
     }
+
+    // The unique index on ArtifactRelationships (SourceArtifactId, RelationshipType, TargetArtifactId),
+    // as InitialCreate named it.
+    public const string ObjectiveLinkIndex = "IX_ArtifactRelationships_SourceArtifactId_RelationshipType_TargetArtifactId";
+
+    public static string ObjectivesChangedMessage(string code) =>
+        $"{code} or its business objective links were changed by someone else at the same time. Your change was not saved; reload and try again.";
 }

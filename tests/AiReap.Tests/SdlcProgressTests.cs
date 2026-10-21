@@ -77,8 +77,12 @@ public class SdlcProgressTests : IAsyncLifetime
         var projectId = Id(project);
         var (_, source) = await _ba.PostAsync($"/api/projects/{projectId}/requirement-sources",
             new { sourceType = 1, rawText = "Employees submit leave requests; managers approve." });
+        // A second source with the same text: generating twice from one source no longer creates
+        // duplicate requirements (ArtifactFingerprints), but two sources may legitimately overlap.
+        var (_, otherSource) = await _ba.PostAsync($"/api/projects/{projectId}/requirement-sources",
+            new { sourceType = 1, rawText = "Employees submit leave requests; managers approve." });
         var (_, first) = await _ba.PostAsync($"/api/requirement-sources/{Id(source)}/generate-requirements");
-        var (_, second) = await _ba.PostAsync($"/api/requirement-sources/{Id(source)}/generate-requirements");
+        var (_, second) = await _ba.PostAsync($"/api/requirement-sources/{Id(otherSource)}/generate-requirements");
         var frA = Id(first!["functionalRequirements"]![0]);
         var frB = Id(second!["functionalRequirements"]![0]);
 

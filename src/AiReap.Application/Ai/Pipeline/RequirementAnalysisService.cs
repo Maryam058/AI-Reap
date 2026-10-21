@@ -10,11 +10,12 @@ using Microsoft.Extensions.Logging;
 
 namespace AiReap.Application.Ai.Pipeline;
 
-public class RequirementAnalysisService : IRequirementAnalysisService
+public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRunOperation
 {
-    private const string PromptTemplateVersion = "RequirementAnalysis-v1";
+    internal const string PromptTemplateVersion = "RequirementAnalysis-v1";
 
-    private const string SystemPrompt = """
+    // Shared with the dry-run AI plan (AiPlanService), so it plans the prompt a real run sends.
+    internal const string SystemPrompt = """
         You are a requirements analyst (§7 of an SDLC automation spec). Given a raw, possibly
         incomplete software requirement, decompose it into actors, capabilities, data elements
         the system must track, informal notes/rules you observed, and a list of missing
@@ -37,24 +38,29 @@ public class RequirementAnalysisService : IRequirementAnalysisService
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
     private readonly IProjectAccessService _projectAccess;
+    private readonly IAiBatchSettings _batchSettings;
     private readonly ILogger<RequirementAnalysisService> _logger;
 
     public RequirementAnalysisService(
         IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser, IProjectAccessService projectAccess,
-        ILogger<RequirementAnalysisService> logger)
+        IAiBatchSettings batchSettings, ILogger<RequirementAnalysisService> logger)
     {
         _chatClient = chatClient;
         _db = db;
         _currentUser = currentUser;
         _projectAccess = projectAccess;
+        _batchSettings = batchSettings;
         _logger = logger;
     }
+
+    public AiChunkRunOperation Operation => AiChunkRunOperation.Analyze;
 
     public async Task<AnalyzeRequirementResult> AnalyzeAsync(Guid requirementSourceId, CancellationToken cancellationToken = default)
     {
         var source = await _db.RequirementSources.FirstOrDefaultAsync(s => s.Id == requirementSourceId, cancellationToken)
             ?? throw new KeyNotFoundException($"RequirementSource {requirementSourceId} not found.");
         await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
+        await AiChunkRunGuard.EnsureNoActiveRunAsync(_db, _batchSettings, source.Id, Operation, cancellationToken);
 
         // A source too large for the request budget of the provider serving the call (Groq) is
         // analysed in parts and merged here, never condensed; Gemini gets the whole source as before.
@@ -64,71 +70,145 @@ public class RequirementAnalysisService : IRequirementAnalysisService
             ? (parts[0].Parsed, parts[0].RawResponse, parts[0].Model)
             : Merge(parts);
 
-        var codes = await ArtifactCodeGenerator.ReserveCodesAsync(
-            _db, source.ProjectId, ArtifactType.ClarificationQuestion, parsed.MissingInformation.Count, cancellationToken);
-
-        var now = DateTime.UtcNow;
-        var questionArtifacts = new List<Artifact>();
-
-        for (var i = 0; i < parsed.MissingInformation.Count; i++)
-        {
-            var item = parsed.MissingInformation[i];
-            var payload = new ClarificationQuestionPayload
-            {
-                Question = item.Question,
-                Reason = item.Reason,
-                ClarificationStatus = "Open"
-            };
-
-            var artifact = new Artifact
-            {
-                Id = Guid.NewGuid(),
-                ProjectId = source.ProjectId,
-                ArtifactType = ArtifactType.ClarificationQuestion,
-                Code = codes[i],
-                Title = item.Topic,
-                Status = ArtifactStatus.AiGenerated,
-                Origin = ArtifactOrigin.Ai,
-                RequirementSourceId = source.Id,
-                DataJson = JsonSerializer.Serialize(payload),
-                CurrentVersion = 1,
-                CreatedByUserId = _currentUser.UserId,
-                CreatedAt = now,
-                UpdatedAt = now
-            };
-
-            _db.Artifacts.Add(artifact);
-            _db.ArtifactVersions.Add(new ArtifactVersion
-            {
-                Id = Guid.NewGuid(),
-                ArtifactId = artifact.Id,
-                VersionNumber = 1,
-                DataSnapshotJson = artifact.DataJson,
-                Title = artifact.Title,
-                Priority = artifact.Priority,
-                Status = artifact.Status,
-                ChangedByUserId = _currentUser.UserId,
-                ChangedAt = now,
-                Reason = "AI requirement analysis",
-                Origin = ArtifactOrigin.Ai
-            });
-
-            questionArtifacts.Add(artifact);
-        }
-
-        GenerationSupport.AddExecutions(
-            _db, source.ProjectId, "RequirementAnalysis", PromptTemplateVersion, _currentUser.UserId,
-            model, source.Id.ToString(), rawResponse, now,
-            questionArtifacts.Select(a => a.Id).ToList());
-
-        await _db.SaveChangesAsync(cancellationToken);
+        var (questions, skipped) = await PersistAsync(source, parsed, rawResponse, model, onPrepared: null, cancellationToken);
 
         return new AnalyzeRequirementResult(
             parsed.Actors,
             parsed.Capabilities,
             parsed.DataElements,
             parsed.Notes,
-            questionArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList());
+            questions.Select(ArtifactResponseMapper.ToResponse).ToList(),
+            skipped,
+            RequirementCompleteness.ForParts(parts, clarificationCount: 0));
+    }
+
+    // One save (ArtifactPersistence): the questions not already saved for this source
+    // (ArtifactFingerprints - a re-run or retry adds no duplicate), their versions and fingerprints,
+    // and the audit rows. A unique-index race re-prepares against the database.
+    private async Task<(List<Artifact> Questions, int Skipped)> PersistAsync(
+        RequirementSource source, AnalysisPartAiResponse parsed, string rawResponse, string model,
+        Action<ChunkRunCommitSummary>? onPrepared, CancellationToken cancellationToken)
+    {
+        var questionArtifacts = new List<Artifact>();
+        var skipped = 0;
+
+        await ArtifactPersistence.SaveAsync(_db, async ct =>
+        {
+            var now = DateTime.UtcNow;
+            questionArtifacts = [];
+            skipped = 0;
+
+            var existing = await ArtifactFingerprints.ExistingAsync(_db, source.Id, [ArtifactType.ClarificationQuestion], ct);
+            var fresh = new List<(MissingInformationItem Item, string Fingerprint)>();
+            foreach (var item in parsed.MissingInformation)
+            {
+                var fingerprint = ArtifactFingerprints.ForClarification(item.Question);
+                if (existing.Add((ArtifactType.ClarificationQuestion, fingerprint))) fresh.Add((item, fingerprint));
+                else skipped++;
+            }
+
+            var codes = await ArtifactCodeGenerator.ReserveCodesAsync(
+                _db, source.ProjectId, ArtifactType.ClarificationQuestion, fresh.Count, ct);
+
+            for (var i = 0; i < fresh.Count; i++)
+            {
+                var (item, fingerprint) = fresh[i];
+                var payload = new ClarificationQuestionPayload
+                {
+                    Question = item.Question,
+                    Reason = item.Reason,
+                    ClarificationStatus = "Open"
+                };
+
+                var artifact = new Artifact
+                {
+                    Id = Guid.NewGuid(),
+                    ProjectId = source.ProjectId,
+                    ArtifactType = ArtifactType.ClarificationQuestion,
+                    Code = codes[i],
+                    Title = item.Topic,
+                    Status = ArtifactStatus.AiGenerated,
+                    Origin = ArtifactOrigin.Ai,
+                    RequirementSourceId = source.Id,
+                    DataJson = JsonSerializer.Serialize(payload),
+                    CurrentVersion = 1,
+                    CreatedByUserId = _currentUser.UserId,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                };
+
+                _db.Artifacts.Add(artifact);
+                _db.ArtifactVersions.Add(new ArtifactVersion
+                {
+                    Id = Guid.NewGuid(),
+                    ArtifactId = artifact.Id,
+                    VersionNumber = 1,
+                    DataSnapshotJson = artifact.DataJson,
+                    Title = artifact.Title,
+                    Priority = artifact.Priority,
+                    Status = artifact.Status,
+                    ChangedByUserId = _currentUser.UserId,
+                    ChangedAt = now,
+                    Reason = "AI requirement analysis",
+                    Origin = ArtifactOrigin.Ai
+                });
+                _db.ArtifactFingerprints.Add(ArtifactFingerprints.Record(artifact, fingerprint, now));
+
+                questionArtifacts.Add(artifact);
+            }
+
+            var created = questionArtifacts.Select(a => a.Id).ToList();
+            GenerationSupport.AddExecutions(
+                _db, source.ProjectId, "RequirementAnalysis", PromptTemplateVersion, _currentUser.UserId,
+                model, source.Id.ToString(), rawResponse, now, created);
+            onPrepared?.Invoke(new ChunkRunCommitSummary(created, skipped));
+        }, cancellationToken);
+
+        if (skipped > 0)
+        {
+            _logger.LogInformation(
+                "RequirementAnalysis for source {SourceId}: {Skipped} clarification questions already existed and were not saved again.",
+                source.Id, skipped);
+        }
+
+        return (questionArtifacts, skipped);
+    }
+
+    // ---- batched runs (IChunkRunOperation) ---------------------------------------------------
+
+    public Task<ChunkRunInputs> BuildRunInputsAsync(RequirementSource source, CancellationToken cancellationToken) =>
+        Task.FromResult(new ChunkRunInputs(
+            PromptTemplateVersion, SystemPrompt, source.RawText, string.Empty, GenerationSupport.SharedContext.None,
+            [], [], ValidateSourceIds: false, ContextMaterial()));
+
+    public Task<string> ContextMaterialAsync(RequirementSource source, CancellationToken cancellationToken) =>
+        Task.FromResult(ContextMaterial());
+
+    private static string ContextMaterial() => PromptTemplateVersion + "\u001e" + SystemPrompt;
+
+    public async Task<ChunkRunPartResult> SendPartAsync(ChunkRunPartRequest request, CancellationToken cancellationToken)
+    {
+        var (raw, parsed) = await GenerationSupport.CallPlannedPartAsync<AnalysisAiResponse, AnalysisPartAiResponse>(
+            _chatClient, _logger, "RequirementAnalysis", $"{request.RequirementSourceId}#run-{request.Frozen.RunId}",
+            request.Frozen.SystemPrompt, request.Prompt, request.Number, request.Count, request.Delay,
+            null, null, null, cancellationToken);
+        return new ChunkRunPartResult(raw, JsonSerializer.Serialize(parsed), _chatClient.ModelName);
+    }
+
+    public async Task<ChunkRunCommitSummary> CommitAsync(
+        RequirementSource source, ChunkRunFrozen frozen, IReadOnlyList<ChunkRunPartOutput> parts,
+        Action<ChunkRunCommitSummary> onPrepared, CancellationToken cancellationToken)
+    {
+        var aiParts = parts.Select(p => new GenerationSupport.AiPart<AnalysisPartAiResponse>(
+                p.Number, p.Count, p.RawResponse,
+                JsonSerializer.Deserialize<AnalysisPartAiResponse>(p.ParsedJson) ?? new AnalysisPartAiResponse(),
+                p.Model, p.Section))
+            .ToList();
+        var (parsed, rawResponse, model) = aiParts.Count == 1
+            ? (aiParts[0].Parsed, aiParts[0].RawResponse, aiParts[0].Model)
+            : Merge(aiParts);
+        var (questions, skipped) = await PersistAsync(source, parsed, rawResponse, model, onPrepared, cancellationToken);
+        return new ChunkRunCommitSummary(questions.Select(q => q.Id).ToList(), skipped);
     }
 
     // Parts are merged in source order with duplicates removed (AiResultMerge). The audit keeps

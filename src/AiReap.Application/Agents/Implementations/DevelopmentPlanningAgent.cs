@@ -31,6 +31,13 @@ public class DevelopmentPlanningAgent : IAgent
         var sourceId = context.RequirementSourceId;
         var produced = new List<AgentArtifactRef>();
 
+        // R1 — checked when the stage runs, not when the run started: requirements rejected while an
+        // earlier stage awaited its decision still stop planning here.
+        if (await GenerationInputs.AllFunctionalRequirementsRejectedAsync(_db, sourceId, cancellationToken))
+        {
+            throw new InvalidOperationException(GenerationInputs.AllRejectedMessage("plan implementation tasks for"));
+        }
+
         if (!await AgentSupport.ExistsAsync(_db, sourceId, ArtifactType.ImplementationTask, cancellationToken))
         {
             produced.AddRange((await _planning.GenerateAsync(sourceId, cancellationToken)).Select(AgentSupport.ToRef));

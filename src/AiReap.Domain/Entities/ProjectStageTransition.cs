@@ -42,8 +42,17 @@ public class ProjectStageTransition
     public bool IsOverride { get; set; }
     public string? OverrideReason { get; set; }
 
-    // The evidence checks as they stood when the transition was decided (JSON array).
+    // The evidence checks as they stood when the transition was requested (JSON array): for a gated
+    // request, the submission snapshot, never overwritten by its decision. Rows decided before
+    // DecisionEvidenceSnapshotJson existed (it is null on them) differ: an approved gated request's
+    // snapshot here was replaced by the approval-time checks, so its submission snapshot is lost; a
+    // rejected one still holds its submission snapshot.
     public string EvidenceSnapshotJson { get; set; } = "[]";
+
+    // D3 - the evidence checks as they stood when a gated request was approved or rejected (JSON
+    // array). Null on every other kind of row (direct advance, rollback, baseline, withdrawal), on a
+    // pending request, on rows decided before it existed, and on a rejection whose re-evaluation failed.
+    public string? DecisionEvidenceSnapshotJson { get; set; }
 
     // Concurrency token: approve / reject / withdraw is a claim only one caller can win.
     public byte[] RowVersion { get; set; } = Array.Empty<byte>();

@@ -69,9 +69,16 @@ public class ArtifactWorkService : IArtifactWorkService
             RecordedAt = DateTime.UtcNow
         };
         _db.ArtifactWorkRecords.Add(record);
-        await _db.SaveChangesAsync(cancellationToken);
 
-        await PromoteLinkedFunctionalRequirementsAsync(artifact, cancellationToken);
+        // S1 - the record and the promotions it causes are saved together, under concurrency checks
+        // on the task/test it is recorded on and on every requirement the promotion decision read
+        // (promoted or not): if any of those rows changed since it was read - including another work
+        // record's touch, e.g. two developers completing a requirement's last two tasks at once,
+        // where neither sees the other's completion - nothing is written (409; the caller reloads
+        // and retries, and the retry sees both completions). Not retried automatically.
+        _db.MarkArtifactForConcurrencyCheck(artifact);
+        await PromoteLinkedFunctionalRequirementsAsync(artifact, record, cancellationToken);
+        await ArtifactConcurrency.SaveAsync(_db, cancellationToken);
         return ToResponse(record);
     }
 
@@ -92,7 +99,8 @@ public class ArtifactWorkService : IArtifactWorkService
         return records.Select(ToResponse).ToList();
     }
 
-    private async Task PromoteLinkedFunctionalRequirementsAsync(Artifact trigger, CancellationToken cancellationToken)
+    // Applies the promotions to the tracked requirements; the caller saves them with the new record.
+    private async Task PromoteLinkedFunctionalRequirementsAsync(Artifact trigger, ArtifactWorkRecord recorded, CancellationToken cancellationToken)
     {
         var frIds = trigger.ArtifactType == ArtifactType.ImplementationTask
             ? await _db.ArtifactRelationships
@@ -110,6 +118,13 @@ public class ArtifactWorkService : IArtifactWorkService
             return;
         }
 
+        // The requirements are read before the work records below: a competing work save that commits
+        // after this read has touched the same requirement, so this save's check on it fails (409).
+        foreach (var fr in frs)
+        {
+            _db.MarkArtifactForConcurrencyCheck(fr);
+        }
+
         var links = await _db.ArtifactRelationships
             .Where(r => (r.RelationshipType == RelationshipType.Implements && frIds.Contains(r.TargetArtifactId))
                      || (r.RelationshipType == RelationshipType.TestedBy && frIds.Contains(r.SourceArtifactId)))
@@ -119,8 +134,14 @@ public class ArtifactWorkService : IArtifactWorkService
         var live = await _db.Artifacts
             .Where(a => linkedIds.Contains(a.Id) && a.Status != ArtifactStatus.Rejected)
             .Select(a => a.Id).ToListAsync(cancellationToken);
-        var outcomes = LifecycleEvidenceService.LatestOutcomes(
-            await _db.ArtifactWorkRecords.Where(w => live.Contains(w.ArtifactId)).ToListAsync(cancellationToken));
+        // The new record is not saved yet, so it is added to the stored ones here (exactly once).
+        var records = await _db.ArtifactWorkRecords.Where(w => live.Contains(w.ArtifactId) && w.Id != recorded.Id).ToListAsync(cancellationToken);
+        if (live.Contains(recorded.ArtifactId))
+        {
+            records.Add(recorded);
+        }
+
+        var outcomes = LifecycleEvidenceService.LatestOutcomes(records);
 
         bool All(IEnumerable<Guid> ids, WorkOutcome outcome)
         {
@@ -129,7 +150,6 @@ public class ArtifactWorkService : IArtifactWorkService
         }
 
         var now = DateTime.UtcNow;
-        var changed = false;
         foreach (var fr in frs)
         {
             var tasks = links.Where(r => r.RelationshipType == RelationshipType.Implements && r.TargetArtifactId == fr.Id).Select(r => r.SourceArtifactId);
@@ -139,20 +159,13 @@ public class ArtifactWorkService : IArtifactWorkService
             {
                 fr.Status = ArtifactStatus.Implemented;
                 fr.UpdatedAt = now;
-                changed = true;
             }
 
             if (ArtifactStatusTransitions.CanSystemPromote(fr.Status, ArtifactStatus.Verified) && All(tests, WorkOutcome.TestPassed))
             {
                 fr.Status = ArtifactStatus.Verified;
                 fr.UpdatedAt = now;
-                changed = true;
             }
-        }
-
-        if (changed)
-        {
-            await _db.SaveChangesAsync(cancellationToken);
         }
     }
 

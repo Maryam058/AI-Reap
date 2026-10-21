@@ -118,10 +118,17 @@ public class ReviewAgent : IAgent
             "AI call starting: {OperationType} model={Model} input={InputReference}",
             "AgentReviewSummary", _chatClient.ModelName, context.RequirementSourceId);
 
+        // P0-5 — sent whole or not at all: a request the serving provider's budget cannot take is refused
+        // before it is sent (AiStageOverBudgetException; the run stage fails with its safe message),
+        // never condensed. Providers without a budget (Gemini) are called exactly as before.
         string rawResponse;
         try
         {
-            rawResponse = await _chatClient.CompleteAsync(SystemPrompt, JsonSerializer.Serialize(metrics), cancellationToken);
+            rawResponse = await _chatClient.CompleteUncondensedAsync(SystemPrompt, JsonSerializer.Serialize(metrics), cancellationToken);
+        }
+        catch (AiRequestOverBudgetException ex)
+        {
+            throw GenerationSupport.RefuseOverBudget(_logger, "AgentReviewSummary", context.RequirementSourceId.ToString(), ex);
         }
         catch (Exception ex)
         {

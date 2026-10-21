@@ -1,4 +1,5 @@
 using AiReap.Api.Authorization;
+using AiReap.Application.Ai;
 using AiReap.Application.Ai.Pipeline;
 using AiReap.Application.Files;
 using AiReap.Application.RequirementSources;
@@ -24,6 +25,7 @@ public class RequirementSourcesController : ControllerBase
     private readonly IBusinessRuleService _businessRuleService;
     private readonly IRequirementQualityService _qualityService;
     private readonly IDocumentTextExtractor _textExtractor;
+    private readonly IAiPlanService _aiPlanService;
 
     public RequirementSourcesController(
         IRequirementSourceService sources,
@@ -33,7 +35,8 @@ public class RequirementSourcesController : ControllerBase
         IUserStoryService userStoryService,
         IBusinessRuleService businessRuleService,
         IRequirementQualityService qualityService,
-        IDocumentTextExtractor textExtractor)
+        IDocumentTextExtractor textExtractor,
+        IAiPlanService aiPlanService)
     {
         _sources = sources;
         _analysisService = analysisService;
@@ -43,6 +46,7 @@ public class RequirementSourcesController : ControllerBase
         _businessRuleService = businessRuleService;
         _qualityService = qualityService;
         _textExtractor = textExtractor;
+        _aiPlanService = aiPlanService;
     }
 
     // §6 — manual entry or pasted meeting notes.
@@ -106,6 +110,16 @@ public class RequirementSourcesController : ControllerBase
         return source is null ? NotFound() : Ok(source);
     }
 
+    // P0-4 — which requirement IDs written in the source no saved, non-rejected FR/NFR cites. Read-only;
+    // computed from the source text and the current requirements. Refused (403) to a caller who may
+    // not read raw sources (S2).
+    [HttpGet("api/requirement-sources/{id:guid}/source-id-coverage")]
+    public async Task<ActionResult<SourceIdCoverage>> GetSourceIdCoverage(Guid id, CancellationToken cancellationToken)
+    {
+        var coverage = await _sources.GetSourceIdCoverageAsync(id, cancellationToken);
+        return coverage is null ? NotFound() : Ok(coverage);
+    }
+
     // §7/§8 — analyze the raw source and generate clarification questions for anything missing.
     [HttpPost("api/requirement-sources/{id:guid}/analyze")]
     [Authorize(Roles = WriterRoles)]
@@ -114,6 +128,32 @@ public class RequirementSourcesController : ControllerBase
         try
         {
             return Ok(await _analysisService.AnalyzeAsync(id, cancellationToken));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+    }
+
+    // Dry run for Analyze / Generate requirements: how each configured AI provider would take this
+    // source (whole, in N parts, or refused) and why. Sends nothing to any AI provider and saves
+    // nothing; token figures are estimates and remaining provider quota is unknown.
+    [HttpGet("api/requirement-sources/{id:guid}/ai-plan")]
+    public async Task<ActionResult<AiPlanResult>> GetAiPlan(Guid id, [FromQuery] string? operation, CancellationToken cancellationToken)
+    {
+        if (!Enum.TryParse<AiPlanOperation>(operation, ignoreCase: true, out var op) || !Enum.IsDefined(op))
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Title = "Unknown operation.",
+                Detail = "operation must be 'analyze' or 'generate'.",
+                Status = StatusCodes.Status400BadRequest
+            });
+        }
+
+        try
+        {
+            return Ok(await _aiPlanService.PlanAsync(id, op, cancellationToken));
         }
         catch (KeyNotFoundException)
         {
@@ -149,7 +189,9 @@ public class RequirementSourcesController : ControllerBase
     {
         try
         {
-            return Ok(await _userStoryService.GenerateStoriesAsync(id, cancellationToken));
+            var result = await _userStoryService.GenerateStoriesAsync(id, cancellationToken);
+            GenerationCountHeaders.Write(Response, result);
+            return Ok(result);
         }
         catch (KeyNotFoundException)
         {
@@ -164,7 +206,9 @@ public class RequirementSourcesController : ControllerBase
     {
         try
         {
-            return Ok(await _businessRuleService.GenerateAsync(id, cancellationToken));
+            var result = await _businessRuleService.GenerateAsync(id, cancellationToken);
+            GenerationCountHeaders.Write(Response, result);
+            return Ok(result);
         }
         catch (KeyNotFoundException)
         {

@@ -52,7 +52,11 @@ public class ImpactAnalysisService : IImpactAnalysisService
     // §22 — called when approved content changes. Flags every downstream artifact with an open
     // notice (replacing any still-open notice from an earlier change of the same source, so one
     // artifact never accumulates duplicates). Nothing downstream is modified.
-    public async Task<int> RaiseNoticesForChangeAsync(Artifact changed, CancellationToken cancellationToken = default)
+    //
+    // Only stages the notices in the context; it does not save. The caller saves them in the
+    // same SaveChangesAsync as the change and its new version, so an edit is never committed without
+    // its notices (or notices without the edit). Call it after the new version number is assigned.
+    public async Task<int> StageNoticesForChangeAsync(Artifact changed, CancellationToken cancellationToken = default)
     {
         var found = await WalkDownstreamAsync(changed, cancellationToken);
         if (found.Count == 0)
@@ -89,7 +93,6 @@ public class ImpactAnalysisService : IImpactAnalysisService
             });
         }
 
-        await _db.SaveChangesAsync(cancellationToken);
         return found.Count;
     }
 

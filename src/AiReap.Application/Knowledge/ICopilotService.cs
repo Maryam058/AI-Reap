@@ -6,5 +6,9 @@ namespace AiReap.Application.Knowledge;
 // ephemeral answer, only the AIExecution call is logged for the audit trail.
 public interface ICopilotService
 {
+    // A question longer than GetLimits().MaxQuestionChars is rejected (RequestValidationException),
+    // never shortened.
     Task<CopilotAnswerResponse> AskAsync(Guid projectId, string question, CancellationToken cancellationToken = default);
+
+    CopilotLimitsResponse GetLimits();
 }

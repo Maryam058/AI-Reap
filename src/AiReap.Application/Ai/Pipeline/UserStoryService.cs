@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using AiReap.Application.Artifacts;
 using AiReap.Application.Artifacts.Payloads;
@@ -13,8 +12,13 @@ namespace AiReap.Application.Ai.Pipeline;
 
 public class UserStoryService : IUserStoryService
 {
-    private const string StoryPromptTemplateVersion = "UserStoryGeneration-v1";
-    private const string AcceptanceCriteriaPromptTemplateVersion = "AcceptanceCriteriaGeneration-v1";
+    private const string StoryPromptTemplateVersion = "UserStoryGeneration-v3";
+    // UserStoryGeneration-v3 (A4b Phase 4) = UserStoryGeneration-v2 plus each listed FR's source IDs (BuildFunctionalRequirementBlock)
+    // and the rule that raw-text IDs are document IDs, not citation codes; an FR without source IDs keeps its line.
+
+    // v2 (A4b Phase 3) = v1 plus the story's eligible linked FRs (FunctionalRequirementContext) and the
+    // rule against invented or unconfirmed numerical limits; a story without one keeps v1's user prompt.
+    private const string AcceptanceCriteriaPromptTemplateVersion = "AcceptanceCriteriaGeneration-v2";
 
     private const string StorySystemPrompt = """
         You are a requirements engineer (§12 of an SDLC automation spec). Given a raw
@@ -22,6 +26,15 @@ public class UserStoryService : IUserStoryService
         it, write user stories. Reference the functional requirement(s) each story realizes by
         their code (e.g. "FR-001") in relatedRequirementCodes - only use codes that were given
         to you, never invent one.
+        When functional requirements are listed, every story must cite at least one of
+        them - the one(s) it actually serves; never cite an unrelated code just to fill the
+        field. When none are listed, leave relatedRequirementCodes empty.
+        Cite a requirement only by its stored code - the code on the left of a line in the
+        functional requirements list. Identifiers written in the raw requirement text (such as
+        "FR-012") are document IDs, not citation codes: one can look like, or even equal, a listed
+        code yet name a different requirement. Where a listed line shows "(source IDs: ...)", those
+        are the document IDs that requirement came from - cite it by the stored code on the left.
+        Never invent a code or cite an unrelated one.
 
         Respond with ONLY a single JSON object, no markdown fences, no commentary:
         {
@@ -36,6 +49,13 @@ public class UserStoryService : IUserStoryService
         You are a QA-minded requirements engineer (§13 of an SDLC automation spec). Given a
         user story, write acceptance criteria in Given/When/Then form, covering positive,
         negative, and boundary cases.
+
+        When linked functional requirements are listed, base the criteria on them. They are linked
+        to the story for traceability; a link is not evidence from the requirement source.
+        Never invent a numerical limit (an amount, duration, size or count): use one only if it is
+        written in the story or a linked functional requirement. A number listed under "Numbers not
+        found in verified quotes" is unconfirmed - do not state it as a confirmed rule; say the value
+        is to be confirmed. For a boundary case with no stated limit, describe the boundary in words.
 
         Respond with ONLY a single JSON object, no markdown fences, no commentary:
         {
@@ -68,35 +88,51 @@ public class UserStoryService : IUserStoryService
         var source = await _db.RequirementSources.FirstOrDefaultAsync(s => s.Id == requirementSourceId, cancellationToken)
             ?? throw new KeyNotFoundException($"RequirementSource {requirementSourceId} not found.");
         await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
+        await GenerationInputs.EnsureNotAllRejectedAsync(_db, requirementSourceId, "generate user stories from", cancellationToken);
 
-        var functionalRequirements = await _db.Artifacts
-            .Where(a => a.RequirementSourceId == requirementSourceId && a.ArtifactType == ArtifactType.FunctionalRequirement)
-            .OrderBy(a => a.Code)
-            .ToListAsync(cancellationToken);
+        var functionalRequirements = await GenerationSupport.LoadGenerationInputsAsync(
+            _db, requirementSourceId, ArtifactType.FunctionalRequirement, cancellationToken);
 
         var context = await ClarificationContextBuilder.BuildAsync(_db, requirementSourceId, cancellationToken);
-        var frContext = new StringBuilder("\n\nFunctional requirements derived so far:\n");
-        foreach (var fr in functionalRequirements)
-        {
-            frContext.Append($"- {fr.Code}: {fr.Title}\n");
-        }
+        var frContext = GenerationSupport.BuildFunctionalRequirementBlock(functionalRequirements);
 
-        var userPrompt = source.RawText + context + (functionalRequirements.Count > 0 ? frContext.ToString() : string.Empty);
+        var userPrompt = source.RawText + context + frContext;
 
-        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<StoryAiResponse>(
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseLosslessAsync<StoryAiResponse>(
             _chatClient, _logger, "UserStoryGeneration", source.Id.ToString(), StorySystemPrompt, userPrompt, cancellationToken,
             knownArtifactCodes: functionalRequirements.Select(fr => fr.Code));
 
+        // G2 — one save (ArtifactPersistence) of the stories not already saved for this source
+        // (ArtifactFingerprints): a re-run with the same output adds nothing, and existing stories are
+        // never changed. A unique-index race re-prepares against the database.
+        var storyArtifacts = new List<Artifact>();
+        var skipped = 0;
+        await ArtifactPersistence.SaveAsync(_db, async ct =>
+            (storyArtifacts, skipped) = await PrepareStoriesAsync(source, parsed, functionalRequirements, rawResponse, ct), cancellationToken);
+
+        LogSkipped("UserStoryGeneration", source.Id, storyArtifacts.Count, skipped);
+        return new GeneratedArtifacts(storyArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList(), skipped);
+    }
+
+    // The stories of the response not already saved for the source, added to the context with their
+    // versions, fingerprints, links and audit rows - not saved here.
+    private async Task<(List<Artifact> Created, int Skipped)> PrepareStoriesAsync(
+        RequirementSource source, StoryAiResponse parsed, IReadOnlyList<Artifact> functionalRequirements, string rawResponse,
+        CancellationToken cancellationToken)
+    {
         var now = DateTime.UtcNow;
+        var existing = await ArtifactFingerprints.ExistingAsync(_db, source.Id, [ArtifactType.UserStory], cancellationToken);
+        var fresh = ArtifactFingerprints.Fresh(parsed.UserStories, ArtifactType.UserStory,
+            s => ArtifactFingerprints.ForUserStory(s.Persona, s.Title, s.ValueStatement), existing, out var skipped);
         var codes = await ArtifactCodeGenerator.ReserveCodesAsync(
-            _db, source.ProjectId, ArtifactType.UserStory, parsed.UserStories.Count, cancellationToken);
+            _db, source.ProjectId, ArtifactType.UserStory, fresh.Count, cancellationToken);
 
         var storyArtifacts = new List<Artifact>();
         var relationships = new List<ArtifactRelationship>();
 
-        for (var i = 0; i < parsed.UserStories.Count; i++)
+        for (var i = 0; i < fresh.Count; i++)
         {
-            var item = parsed.UserStories[i];
+            var item = fresh[i].Item;
             var payload = new UserStoryPayload { Persona = item.Persona, ValueStatement = item.ValueStatement };
 
             var artifact = new Artifact
@@ -132,21 +168,18 @@ public class UserStoryService : IUserStoryService
                 Reason = "AI user story generation",
                 Origin = ArtifactOrigin.Ai
             });
+            _db.ArtifactFingerprints.Add(ArtifactFingerprints.Record(artifact, fresh[i].Fingerprint, now));
 
-            foreach (var frCode in item.RelatedRequirementCodes)
+            foreach (var relatedFr in GenerationSupport.ResolveCited(item.RelatedRequirementCodes, functionalRequirements))
             {
-                var relatedFr = functionalRequirements.FirstOrDefault(fr => fr.Code == frCode);
-                if (relatedFr is not null)
+                relationships.Add(new ArtifactRelationship
                 {
-                    relationships.Add(new ArtifactRelationship
-                    {
-                        Id = Guid.NewGuid(),
-                        SourceArtifactId = artifact.Id,
-                        TargetArtifactId = relatedFr.Id,
-                        RelationshipType = RelationshipType.DerivedFrom,
-                        CreatedAt = now
-                    });
-                }
+                    Id = Guid.NewGuid(),
+                    SourceArtifactId = artifact.Id,
+                    TargetArtifactId = relatedFr.Id,
+                    RelationshipType = RelationshipType.DerivedFrom,
+                    CreatedAt = now
+                });
             }
 
             storyArtifacts.Add(artifact);
@@ -162,9 +195,17 @@ public class UserStoryService : IUserStoryService
             _chatClient.ModelName, source.Id.ToString(), rawResponse, now,
             storyArtifacts.Select(a => a.Id).ToList());
 
-        await _db.SaveChangesAsync(cancellationToken);
+        return (storyArtifacts, skipped);
+    }
 
-        return storyArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList();
+    private void LogSkipped(string operation, Guid input, int created, int skipped)
+    {
+        if (skipped > 0)
+        {
+            _logger.LogInformation(
+                "{Operation} for {Input}: {Created} created, {Skipped} already existed and were not saved again.",
+                operation, input, created, skipped);
+        }
     }
 
     public async Task<IReadOnlyList<ArtifactResponse>?> GenerateAcceptanceCriteriaAsync(Guid userStoryArtifactId, CancellationToken cancellationToken = default)
@@ -176,25 +217,55 @@ public class UserStoryService : IUserStoryService
         }
 
         await _projectAccess.EnsureMemberAsync(story.ProjectId, cancellationToken);
+        var linkedFrs = (await GenerationInputs.LinkedFunctionalRequirementsAsync(_db, [story.Id], cancellationToken))[story.Id].ToList();
+        GenerationInputs.EnsureAcceptanceCriteriaTarget(story, linkedFrs);
 
         var payload = JsonSerializer.Deserialize<UserStoryPayload>(
             story.DataJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new UserStoryPayload();
 
+        // A4b Phase 3 — the eligible linked FRs follow the story, never a rejected one; with none, the
+        // prompt is exactly v1's. Sent whole or refused before sending (CallAiAndParseLosslessAsync).
         var userPrompt =
-            $"Title: {story.Title}\nPersona: {payload.Persona}\nValue: {payload.ValueStatement}";
+            $"Title: {story.Title}\nPersona: {payload.Persona}\nValue: {payload.ValueStatement}" +
+            FunctionalRequirementContext.LinkedBlock(linkedFrs.Where(GenerationInputs.IsEligible));
 
-        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<AcceptanceCriteriaAiResponse>(
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseLosslessAsync<AcceptanceCriteriaAiResponse>(
             _chatClient, _logger, "AcceptanceCriteriaGeneration", story.Id.ToString(), AcceptanceCriteriaSystemPrompt, userPrompt, cancellationToken);
 
+        // G2 — one save of the criteria not already saved for this story (ArtifactFingerprints, scoped
+        // to the story: the same wording under another story is a different criterion). Existing
+        // criteria are never changed.
+        var acArtifacts = new List<Artifact>();
+        var skipped = 0;
+        await ArtifactPersistence.SaveAsync(_db, async ct =>
+            (acArtifacts, skipped) = await PrepareCriteriaAsync(story, parsed, rawResponse, ct), cancellationToken);
+
+        LogSkipped("AcceptanceCriteriaGeneration", story.Id, acArtifacts.Count, skipped);
+        return new GeneratedArtifacts(acArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList(), skipped);
+    }
+
+    // The criteria of the response not already saved for the story, added to the context with their
+    // versions, fingerprints, links and audit rows - not saved here.
+    private async Task<(List<Artifact> Created, int Skipped)> PrepareCriteriaAsync(
+        Artifact story, AcceptanceCriteriaAiResponse parsed, string rawResponse, CancellationToken cancellationToken)
+    {
         var now = DateTime.UtcNow;
+        var children = await _db.ArtifactRelationships
+            .Where(r => r.TargetArtifactId == story.Id && r.RelationshipType == RelationshipType.DerivedFrom)
+            .Select(r => r.SourceArtifactId)
+            .ToListAsync(cancellationToken);
+        var existing = await ArtifactFingerprints.ExistingForParentAsync(
+            _db, story.RequirementSourceId, ArtifactType.AcceptanceCriterion, story.Id, children, cancellationToken);
+        var fresh = ArtifactFingerprints.Fresh(parsed.AcceptanceCriteria, ArtifactType.AcceptanceCriterion,
+            c => ArtifactFingerprints.ForAcceptanceCriterion(story.Id, c.Given, c.When, c.Then), existing, out var skipped);
         var codes = await ArtifactCodeGenerator.ReserveCodesAsync(
-            _db, story.ProjectId, ArtifactType.AcceptanceCriterion, parsed.AcceptanceCriteria.Count, cancellationToken);
+            _db, story.ProjectId, ArtifactType.AcceptanceCriterion, fresh.Count, cancellationToken);
 
         var acArtifacts = new List<Artifact>();
 
-        for (var i = 0; i < parsed.AcceptanceCriteria.Count; i++)
+        for (var i = 0; i < fresh.Count; i++)
         {
-            var item = parsed.AcceptanceCriteria[i];
+            var item = fresh[i].Item;
             var acPayload = new AcceptanceCriterionPayload
             {
                 Given = item.Given,
@@ -235,6 +306,10 @@ public class UserStoryService : IUserStoryService
                 Reason = "AI acceptance criteria generation",
                 Origin = ArtifactOrigin.Ai
             });
+            if (ArtifactFingerprints.TryRecord(artifact, fresh[i].Fingerprint, now) is { } fingerprint)
+            {
+                _db.ArtifactFingerprints.Add(fingerprint);
+            }
 
             _db.ArtifactRelationships.Add(new ArtifactRelationship
             {
@@ -253,9 +328,7 @@ public class UserStoryService : IUserStoryService
             _chatClient.ModelName, story.Id.ToString(), rawResponse, now,
             acArtifacts.Select(a => a.Id).ToList());
 
-        await _db.SaveChangesAsync(cancellationToken);
-
-        return acArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList();
+        return (acArtifacts, skipped);
     }
 
     private class StoryAiResponse : IValidatableAiResponse
@@ -271,6 +344,7 @@ public class UserStoryService : IUserStoryService
                 v.Required(item.ValueStatement, $"{path}.valueStatement");
                 v.OneOf(item.Priority, $"{path}.priority", AiVocabulary.Priorities, optional: true);
                 v.CodesExist(item.RelatedRequirementCodes, $"{path}.relatedRequirementCodes");
+                v.CodesRequired(item.RelatedRequirementCodes, $"{path}.relatedRequirementCodes");
             }, minItems: 1);
     }
 

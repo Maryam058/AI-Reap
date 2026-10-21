@@ -160,6 +160,44 @@ public class GroqAiChatClientTests
         Assert.True(ex.QuotaExhausted);
     }
 
+    // The limit Groq names is reported as-is; QuotaExhausted still follows "per day" alone.
+    [Theory]
+    [InlineData("on tokens per day (TPD): Limit 200000, Used 199500, Requested 7800.", "TPD", true)]
+    [InlineData("on requests per day (RPD): Limit 1000, Used 1000, Requested 1.", "RPD", true)]
+    [InlineData("on tokens per minute (TPM): Limit 8000, Used 7900, Requested 500.", "TPM", false)]
+    [InlineData("on requests per minute (RPM): Limit 30, Used 30, Requested 1.", "RPM", false)]
+    [InlineData("Please slow down.", null, false)]                                                  // no limit named: not guessed
+    [InlineData("on tokens per minute (TPM) and requests per day (RPD).", null, true)]               // two limits named: not guessed
+    public async Task Rate_limit_429_reports_the_limit_groq_names_and_never_the_organization(
+        string limitText, string? expectedType, bool expectedQuotaExhausted)
+    {
+        const string organization = "org_01hzx7qk3rf9tbw5yv2n8c4d6e";
+        var (client, _) = Build(_ => Json(Error(
+            $"Rate limit reached for model `openai/gpt-oss-120b` in organization `{organization}` service tier `on_demand` {limitText}",
+            "tokens", "rate_limit_exceeded"), HttpStatusCode.TooManyRequests));
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"));
+
+        Assert.Equal(AiFailureKind.RateLimited, ex.Kind);
+        Assert.Equal(expectedType, ex.RateLimitType);
+        Assert.Equal(expectedQuotaExhausted, ex.QuotaExhausted);
+        Assert.DoesNotContain(organization, ex.Message);
+        Assert.DoesNotContain(organization, ex.ProviderMessage);
+        Assert.Contains("org_[redacted]", ex.ProviderMessage);
+    }
+
+    [Fact]
+    public async Task Non_rate_limit_errors_carry_no_limit_type()
+    {
+        var (client, _) = Build(_ => Json(Error("Invalid request: tokens per day (TPD) mentioned in passing.", "invalid_request_error"),
+            HttpStatusCode.BadRequest));
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"));
+
+        Assert.Equal(AiFailureKind.RequestRejected, ex.Kind);
+        Assert.Null(ex.RateLimitType);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.Unauthorized, AiFailureKind.Authentication)]
     [InlineData(HttpStatusCode.InternalServerError, AiFailureKind.Unavailable)]

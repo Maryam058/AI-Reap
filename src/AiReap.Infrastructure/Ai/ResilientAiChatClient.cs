@@ -27,6 +27,11 @@ public class AiResilienceOptions
     // provider's own Retry-After when given) is enough to ride out a short per-minute limit.
     public int MaxRateLimitAttempts { get; set; } = 2;
 
+    // Total attempts (including the first) when an attempt times out; 0 means MaxAttempts. A request
+    // that ran out its whole per-attempt timeout was usually still processed (and charged) by the
+    // provider, so resending it at once spends that quota again for the same likely outcome.
+    public int MaxTimeoutAttempts { get; set; }
+
     // For a primary provider that has a fallback (FallbackAiChatClient): a 429 goes straight to the
     // fallback instead of waiting to retry and spending more of the primary's quota.
     public AiResilienceOptions WithoutRateLimitRetry() => new()
@@ -36,7 +41,8 @@ public class AiResilienceOptions
         BaseDelayMilliseconds = BaseDelayMilliseconds,
         MaxDelaySeconds = MaxDelaySeconds,
         MaxRetryAfterSeconds = MaxRetryAfterSeconds,
-        MaxRateLimitAttempts = 1
+        MaxRateLimitAttempts = 1,
+        MaxTimeoutAttempts = MaxTimeoutAttempts
     };
 
     // For a provider whose per-minute token window refills gradually (Groq's free tier): its
@@ -49,7 +55,21 @@ public class AiResilienceOptions
         BaseDelayMilliseconds = BaseDelayMilliseconds,
         MaxDelaySeconds = MaxDelaySeconds,
         MaxRetryAfterSeconds = MaxRetryAfterSeconds,
-        MaxRateLimitAttempts = Math.Max(MaxRateLimitAttempts, attempts)
+        MaxRateLimitAttempts = Math.Max(MaxRateLimitAttempts, attempts),
+        MaxTimeoutAttempts = MaxTimeoutAttempts
+    };
+
+    // For a provider whose requests can legitimately run long (Gemini on a large requirement source):
+    // its own per-attempt timeout and timeout-retry limit; everything else is kept.
+    public AiResilienceOptions WithTimeout(int timeoutSeconds, int maxTimeoutAttempts) => new()
+    {
+        TimeoutSeconds = timeoutSeconds,
+        MaxAttempts = MaxAttempts,
+        BaseDelayMilliseconds = BaseDelayMilliseconds,
+        MaxDelaySeconds = MaxDelaySeconds,
+        MaxRetryAfterSeconds = MaxRetryAfterSeconds,
+        MaxRateLimitAttempts = MaxRateLimitAttempts,
+        MaxTimeoutAttempts = maxTimeoutAttempts
     };
 }
 
@@ -76,6 +96,11 @@ public sealed class ResilientAiChatClient : IAiChatClient
     }
 
     public IAiChatClient Inner { get; }
+
+    // The policy in effect (DependencyInjection derives a per-provider copy).
+    public AiResilienceOptions Options => _options;
+
+    public string ProviderName => _providerName;
 
     public string ModelName => Inner.ModelName;
 
@@ -130,9 +155,12 @@ public sealed class ResilientAiChatClient : IAiChatClient
                 throw failure;
             }
 
-            var attemptLimit = failure.Kind == AiFailureKind.RateLimited
-                ? Math.Clamp(_options.MaxRateLimitAttempts, 1, maxAttempts)
-                : maxAttempts;
+            var attemptLimit = failure.Kind switch
+            {
+                AiFailureKind.RateLimited => Math.Clamp(_options.MaxRateLimitAttempts, 1, maxAttempts),
+                AiFailureKind.Timeout when _options.MaxTimeoutAttempts > 0 => Math.Clamp(_options.MaxTimeoutAttempts, 1, maxAttempts),
+                _ => maxAttempts
+            };
             if (attempt >= attemptLimit)
             {
                 _logger.LogWarning("AI provider {Provider} still failing after {Attempts} attempt(s): {Kind}", _providerName, attempt, failure.Kind);

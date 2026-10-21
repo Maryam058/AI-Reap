@@ -1,0 +1,18 @@
+{
+  "_note": "SYNTHETIC scorer test input - hand-written. Clarification questions that cover every planted gap (G1-G3) and contradiction (C1-C2), plus one question that addresses neither.",
+  "requirements": [],
+  "clarifications": [
+    { "topic": "Deposit", "question": "What is the deposit amount and which payment methods are accepted?",
+      "reason": "FR-012 says patients pay a deposit but gives no amount or payment method." },
+    { "topic": "Priority patients", "question": "How are priority patients defined, and who qualifies?",
+      "reason": "FR-005 uses the term without a definition." },
+    { "topic": "Retention period", "question": "How long must booking records be retained?",
+      "reason": "Section 9 says records are retained as required by law but gives no period." },
+    { "topic": "Cancellation window", "question": "Is the cancellation deadline 24 hours (FR-007) or 48 hours (section 7)?",
+      "reason": "The two sections state different cancellation deadlines." },
+    { "topic": "Deleting bookings", "question": "Can receptionists delete bookings (FR-006), or only administrators (FR-009)?",
+      "reason": "The two requirements give different permissions for deletion." },
+    { "topic": "Room types", "question": "Which types of consultation room exist, and can every clinician use every room?",
+      "reason": "The source does not list the rooms." }
+  ]
+}

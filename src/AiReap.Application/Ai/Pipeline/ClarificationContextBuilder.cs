@@ -23,7 +23,14 @@ public static class ClarificationContextBuilder
     // BuildAsync's list without its heading - one "- Q: ... / A: ..." entry per question, in code
     // order - so a stage that splits its source can show each part the clarifications relevant to
     // it (GenerationSupport.SharedContext) instead of all of them.
-    public static async Task<List<string>> BuildItemsAsync(IAiReapDbContext db, Guid requirementSourceId, CancellationToken cancellationToken)
+    public static Task<List<string>> BuildItemsAsync(IAiReapDbContext db, Guid requirementSourceId, CancellationToken cancellationToken) =>
+        BuildItemsAsync(db, requirementSourceId, withCodes: false, cancellationToken);
+
+    // withCodes: requirement generation only (P0-2) - each entry starts with its question's code, so
+    // a requirement can cite the clarification its evidence or assumption comes from:
+    // "- CQ-003 Q: ... / A: ...". Every other stage keeps the entries above, unchanged.
+    public static async Task<List<string>> BuildItemsAsync(
+        IAiReapDbContext db, Guid requirementSourceId, bool withCodes, CancellationToken cancellationToken)
     {
         var questions = await db.Artifacts
             .Where(a => a.RequirementSourceId == requirementSourceId && a.ArtifactType == ArtifactType.ClarificationQuestion)
@@ -37,6 +44,14 @@ public static class ClarificationContextBuilder
         {
             var payload = JsonSerializer.Deserialize<ClarificationQuestionPayload>(question.DataJson, options)
                 ?? new ClarificationQuestionPayload();
+
+            if (withCodes)
+            {
+                items.Add($"- {question.Code} Q: {payload.Question}\n" + (payload.ClarificationStatus == "Open"
+                    ? $"  A: (not yet answered - anything that depends on it is assumed: cite {question.Code} in assumedClarifications)\n"
+                    : $"  A: {payload.Answer}\n"));
+                continue;
+            }
 
             var sb = new StringBuilder($"- Q: {payload.Question}\n");
             sb.Append(payload.ClarificationStatus == "Open"

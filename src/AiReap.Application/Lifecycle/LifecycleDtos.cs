@@ -36,8 +36,16 @@ public record StageTransitionResponse(
     string? DecisionReason,
     bool IsOverride,
     string? OverrideReason,
+    // As requested (for a gated request: at submission).
     IReadOnlyList<SdlcCheck> Evidence,
-    IReadOnlyList<StageReviewResponse> Reviews);
+    IReadOnlyList<StageReviewResponse> Reviews,
+    // D3 - as decided (a gated request's approval or rejection); null when not recorded.
+    IReadOnlyList<SdlcCheck>? DecisionEvidence = null,
+    // D3 - true when Evidence is known not to be the submission-time evidence (an approved gated
+    // request without a decision snapshot, whose single snapshot is approval-time): the submission
+    // evidence is unavailable. Availability only - false does not certify anything, and it is not a
+    // "recorded before D3" marker (see ProjectLifecycleService.SubmissionEvidenceUnavailable).
+    bool SubmissionEvidenceUnavailable = false);
 
 // What the caller may do right now; computed from ProjectLifecyclePolicy, the pending request and
 // who submitted it, so a UI never has to re-implement the rules.

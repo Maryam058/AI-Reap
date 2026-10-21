@@ -26,6 +26,9 @@ public static class ExitCheckKeys
     public const string ConflictsResolved = "conflicts.resolved";
     public const string StoryChain = "analysis.chain";
 
+    // G3 — checked at both the Design and the Testing gate.
+    public const string SourceEvidence = "requirements.source-evidence";
+
     public const string DesignApproved = "design.solution-approved";
     public const string ApiApproved = "design.api-approved";
     public const string DatabaseApproved = "design.db-approved";
@@ -126,6 +129,12 @@ public static class ExitCheckCatalog
     private static readonly ReasonGuide ResolveConflicts = new(CheckKinds.Approval, "Unresolved pairs",
         "Open Validation › Conflicts. For each pair, keep one side and reject the other with a reason. Conflicts are never deleted; rejecting one side resolves the pair.",
         Approvers, new(CheckAreas.Validation, "sec-consistency"), ApproveArtifact);
+
+    // G3 — the NFR confirmation action: a Business Analyst or Reviewer who did not author the NFR.
+    private static ReasonGuide ConfirmTarget(string title, string lead) => new(CheckKinds.Approval, title,
+        $"{lead} A Business Analyst or Reviewer who did not author the requirement opens it in Analysis and confirms its target, " +
+        "which records a human decision (it does not make the target source-supported); a writer may instead correct the target.",
+        [Roles.BusinessAnalyst, Roles.Reviewer], new(CheckAreas.Analysis, "sec-nonfunctional"), "ArtifactsController.ConfirmNfrTarget");
 
     private static CheckGuide Check(string kind, string howTo, params (string Reason, ReasonGuide Guide)[] reasons) =>
         new(kind, howTo, reasons.ToDictionary(r => r.Reason, r => r.Guide), []);
@@ -234,6 +243,21 @@ public static class ExitCheckCatalog
             (BlockerReasons.Reopened, new(CheckKinds.Approval, "Reopened requirements",
                 "Open each listed requirement in Analysis, review what changed and approve it again.",
                 Approvers, new(CheckAreas.Analysis), ApproveArtifact))),
+        [ExitCheckKeys.SourceEvidence] = Check(CheckKinds.Approval,
+            "Every functional and non-functional requirement cites a verified source quote or is classified as derived or assumed, and every NFR target is confirmed.",
+            (BlockerReasons.EvidenceUnverified, new(CheckKinds.Approval, "Source quote not verified",
+                "Each listed requirement cites a source quote that was not found in the text it cites. Quote results are computed by the server and cannot be edited. " +
+                "Check the requirement against its source and, if it is not supported, reject it with a reason (rejected requirements are left out of this check). " +
+                "Otherwise only an Administrator can move the stage on, as an override with a reason.",
+                Approvers, new(CheckAreas.Analysis), ApproveArtifact)),
+            (BlockerReasons.EvidenceMissing, new(CheckKinds.Action, "Stated in the source but no quote",
+                "Each listed requirement is classified as explicit (or has no recorded origin) but cites no source quote. If it is not written in the source, edit it and set its " +
+                "requirement origin to derived or assumed with a derivation note (the edit sends it back for approval), or reject it with a reason.",
+                Writers, new(CheckAreas.Analysis), "ArtifactsController.Update")),
+            (BlockerReasons.TargetNotSupported, ConfirmTarget("Target not supported by the source",
+                "Each listed non-functional requirement claims its target is stated in the source, but no verified source quote contains it.")),
+            (BlockerReasons.TargetUnconfirmed, ConfirmTarget("Target not confirmed",
+                "Each listed non-functional requirement has a proposed target that nobody has confirmed yet."))),
 
         // ---- Approved ---------------------------------------------------------------------------
         [ExitCheckKeys.TasksApproved] = Check(CheckKinds.Approval, "Approve every implementation task.",

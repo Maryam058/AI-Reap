@@ -209,6 +209,7 @@ public partial class GroqAiChatClient : IAiChatClient
         // A 429 on a per-day limit (RPD/TPD) won't clear within this request.
         var quotaExhausted = kind == AiFailureKind.RateLimited
             && providerMessage.Contains("per day", StringComparison.OrdinalIgnoreCase);
+        var rateLimitType = kind == AiFailureKind.RateLimited ? RateLimitType(providerMessage) : null;
 
         var summary = kind switch
         {
@@ -226,8 +227,25 @@ public partial class GroqAiChatClient : IAiChatClient
 
         return new AiProviderException(kind, ProviderName,
             $"{summary} (HTTP {status}{(code.Length > 0 ? " " + code : "")}: {providerMessage})",
-            response.StatusCode, providerMessage, RetryDelay(response.Headers), quotaExhausted: quotaExhausted);
+            response.StatusCode, providerMessage, RetryDelay(response.Headers), quotaExhausted: quotaExhausted,
+            rateLimitType: rateLimitType);
     }
+
+    // The limit Groq names, e.g. "... on tokens per day (TPD): Limit 200000 ...". Only when the
+    // message names exactly one limit; anything else (none, or several) is not guessed.
+    internal static string? RateLimitType(string providerMessage)
+    {
+        var named = RateLimitPattern().Matches(providerMessage)
+            .Select(m => m.Groups["code"].Success
+                ? m.Groups["code"].Value.ToUpperInvariant()
+                : $"{char.ToUpperInvariant(m.Groups["unit"].Value[0])}P{char.ToUpperInvariant(m.Groups["window"].Value[0])}")
+            .Distinct()
+            .ToList();
+        return named.Count == 1 ? named[0] : null;
+    }
+
+    [GeneratedRegex(@"\((?<code>TPD|RPD|TPM|RPM)\)|\b(?<unit>tokens|requests) per (?<window>day|minute)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex RateLimitPattern();
 
     private static TimeSpan? RetryDelay(HttpResponseHeaders headers)
     {
@@ -239,6 +257,8 @@ public partial class GroqAiChatClient : IAiChatClient
     private string Sanitize(string message)
     {
         var sanitized = GroqKeyPattern().Replace(message, "[redacted-key]");
+        // Rate-limit messages name the account's organization ("in organization `org_...`").
+        sanitized = GroqOrganizationPattern().Replace(sanitized, "org_[redacted]");
         if (!string.IsNullOrWhiteSpace(_options.ApiKey))
         {
             sanitized = sanitized.Replace(_options.ApiKey.Trim(), "[redacted-key]", StringComparison.Ordinal);
@@ -249,6 +269,9 @@ public partial class GroqAiChatClient : IAiChatClient
 
     [GeneratedRegex("gsk_[0-9A-Za-z]{20,}")]
     private static partial Regex GroqKeyPattern();
+
+    [GeneratedRegex("org_[0-9A-Za-z]+")]
+    private static partial Regex GroqOrganizationPattern();
 
     private static readonly JsonSerializerOptions RequestJson = new()
     {

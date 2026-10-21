@@ -324,4 +324,97 @@ public class FallbackAiChatClientTests
         Assert.Equal(new AiResilienceOptions().MaxAttempts, geminiHttp.Requests.Count);
         Assert.Single(groqHttp.Requests);
     }
+
+    // ---- A fallback that cannot take the request whole keeps the primary's reason ---------------
+    // Regression for the 40-part refusal of a 250k-character source: Gemini's daily quota was the
+    // actual blocker, but the final error named only Groq's MaxChunkedParts.
+
+    private const string StackGeminiKey = "AIzaSyTESTTESTTESTTESTTESTTESTTESTTEST12"; // GroqRequestBudgetTests.BuildStack's key
+
+    // A source far over Groq's 4,000-token input budget (~16,700 estimated tokens).
+    private static readonly string OversizedSource = string.Join(" ", Enumerable.Repeat("Employees request leave.", 2000));
+
+    private static HttpResponseMessage GeminiDailyQuotaEchoingTheKey() => GroqAiChatClientTests.Json(new
+    {
+        error = new
+        {
+            code = 429,
+            message = $"Quota exceeded for metric: generate_content_free_tier_requests, limit: 20, model: gemini-3.8-flash (key {StackGeminiKey}).",
+            status = "RESOURCE_EXHAUSTED",
+            details = new object[]
+            {
+                new Dictionary<string, object>
+                {
+                    ["@type"] = "type.googleapis.com/google.rpc.QuotaFailure",
+                    ["violations"] = new[] { new { quotaId = "GenerateRequestsPerDayPerProjectPerModel-FreeTier" } }
+                }
+            }
+        }
+    }, HttpStatusCode.TooManyRequests);
+
+    [Fact]
+    public async Task Over_budget_fallback_carries_the_sanitized_gemini_quota_failure_and_nothing_is_sent_to_groq()
+    {
+        var (client, geminiHttp, groqHttp) = GroqRequestBudgetTests.BuildStack(
+            _ => GeminiDailyQuotaEchoingTheKey(), _ => GroqAiChatClientTests.Json(GroqAiChatClientTests.Success("{}")));
+
+        var ex = await Assert.ThrowsAsync<AiRequestOverBudgetException>(() => client.CompleteUncondensedAsync("Return JSON", OversizedSource));
+
+        Assert.Equal("Groq", ex.Provider);
+        Assert.Equal(4000, ex.InputBudget);
+        var primary = Assert.IsType<PrimaryProviderOutcome>(ex.Primary);
+        Assert.Equal("Gemini", primary.Provider);
+        Assert.StartsWith("Gemini failed: Gemini quota exhausted (daily or zero-limit quota", primary.Outcome);
+        Assert.Contains("generate_content_free_tier_requests, limit: 20", primary.Outcome);
+        Assert.DoesNotContain(StackGeminiKey, primary.Outcome);
+        Assert.DoesNotContain("AIza", primary.Outcome);
+        Assert.Equal(AiFailureKind.RateLimited, primary.Failure!.Kind);
+        Assert.True(primary.Failure.QuotaExhausted);
+        Assert.Null(Assert.IsType<AiRequestOverBudgetException>(ex.InnerException).Primary); // Groq's original refusal is kept
+        Assert.Single(geminiHttp.Requests);
+        Assert.Empty(groqHttp.Requests);
+    }
+
+    [Fact]
+    public async Task Over_budget_fallback_while_gemini_cools_down_says_gemini_was_skipped()
+    {
+        var overBudget = new AiRequestOverBudgetException("Groq", 4000, 84_308, 8000, 8, "Ai:Groq:MaxChunkedParts");
+        var gemini = new ScriptedClient("gemini-3.8-flash",
+            Throws(GeminiFailure(AiFailureKind.RateLimited, HttpStatusCode.TooManyRequests, retryAfter: TimeSpan.FromMinutes(5), quotaExhausted: true)));
+        var groq = new ScriptedClient("groq:openai/gpt-oss-120b", Returns("{}"), Throws(overBudget));
+        var now = DateTimeOffset.Parse("2026-10-14T17:00:00Z");
+        var (client, log) = Build(gemini, groq, clock: () => now);
+
+        await client.CompleteUncondensedAsync("s", "small");                 // Gemini 429 -> Groq; Gemini cools down
+        var ex = await Assert.ThrowsAsync<AiRequestOverBudgetException>(() => client.CompleteUncondensedAsync("s", "large"));
+
+        var primary = Assert.IsType<PrimaryProviderOutcome>(ex.Primary);
+        Assert.Equal("Gemini was skipped (rate limit/quota cool-down until 2026-10-14 17:05:00Z)", primary.Outcome);
+        Assert.Null(primary.Failure);
+        Assert.Equal(1, gemini.Calls);
+        Assert.Contains(log.Messages, m => m.Contains("cannot take the request whole") && m.Contains("Gemini was not used: Gemini was skipped"));
+    }
+
+    // The fallback warning names the primary's (sanitized) reason, not only its kind and status.
+    [Fact]
+    public async Task Fallback_warning_logs_the_primary_failure_message()
+    {
+        var gemini = new ScriptedClient("gemini-3.8-flash", Throws(GeminiFailure(AiFailureKind.Unavailable, HttpStatusCode.ServiceUnavailable)));
+        var groq = new ScriptedClient("groq:openai/gpt-oss-120b", Returns("{}"));
+        var (client, log) = Build(gemini, groq);
+
+        await client.CompleteAsync("s", "u");
+
+        Assert.Contains(log.Messages, m => m.Contains("AI provider Gemini failed (Unavailable, status 503") && m.Contains("Gemini failure Unavailable"));
+    }
+
+    [Fact]
+    public void Primary_outcome_is_capped()
+    {
+        var capped = PrimaryProviderOutcome.Cap(new string('x', 5000));
+
+        Assert.Equal(PrimaryProviderOutcome.MaxOutcomeLength + 3, capped.Length);
+        Assert.EndsWith("...", capped);
+        Assert.Equal("short", PrimaryProviderOutcome.Cap("short"));
+    }
 }

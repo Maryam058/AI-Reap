@@ -5,25 +5,35 @@ import { sectionForArtifactType } from '../lib/checkGuidance';
 import { useAuth } from '../auth/AuthContext';
 import { apiErrorText } from '../lib/errors';
 import { readsRawSources } from '../lib/access';
+import { planButtonHint } from '../lib/aiPlan';
 import { requirementSourcesApi } from '../api/requirementSources';
 import { artifactsApi } from '../api/artifacts';
 import { traceabilityApi } from '../api/traceability';
 import {
   ARTIFACT_TYPE_VALUES,
+  type AiPlanResult,
   type AnalyzeRequirementResult,
   type ArtifactSummary,
   type ClarificationQuestionData,
+  type GenerateRequirementsResult,
   type QualityFinding,
   type RequirementSource,
+  type SourceIdCoverage,
   type TraceabilityRow,
 } from '../api/types';
+import { coverageNotice } from '../lib/sourceIdCoverage';
+import { canGenerateDownstream } from '../lib/downstreamGeneration';
+import { analysisCompletenessNotice, generationCompletenessNotice, type CompletenessNotice } from '../lib/completeness';
 import { nextStamp, type DisclosureRequest } from '../lib/disclosure';
 import { apiResourceOf, byField, groupByRequirement, groupByValue, plural, statusSummary, type ArtifactGroup } from '../lib/grouping';
+import { decisionRequest } from '../lib/artifactDecision';
 import { ClarificationQuestionCard } from './ClarificationQuestionCard';
 import { ArtifactCard } from './ArtifactCard';
 import { CollectionGroup, CollectionGroups, CollectionSection, GeneratedOverview, type OverviewItem } from './GeneratedCollection';
 import { EmptyState } from './ui/EmptyState';
-import { IconAlert, IconCheck, IconCheckCircle, IconDocument, IconInbox, IconLock, IconSparkles, IconUpload } from './icons';
+import { AiPlanSummary } from './AiPlanSummary';
+import { AiRunPanel } from './AiRunPanel';
+import { IconAlert, IconCheck, IconCheckCircle, IconChevronDown, IconDocument, IconInbox, IconLock, IconSparkles, IconUpload } from './icons';
 
 /** Which SDLC phase's slice of the requirement pipeline to render. Each phase page mounts its own view. */
 export type WorkspaceView = 'gathering' | 'analysis' | 'validation' | 'design' | 'development' | 'testing';
@@ -52,6 +62,8 @@ export function RequirementWorkspace({
   const [uploadFile, setUploadFile] = useState<File | null>(null);
 
   const [analysis, setAnalysis] = useState<AnalyzeRequirementResult | null>(null);
+  // P0-7 — the last Generate response (response-only completeness; gone on reload or source change).
+  const [generation, setGeneration] = useState<GenerateRequirementsResult | null>(null);
   const [questions, setQuestions] = useState<ArtifactSummary[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactSummary[]>([]);
   const [qualityFindings, setQualityFindings] = useState<QualityFinding[] | null>(null);
@@ -72,6 +84,19 @@ export function RequirementWorkspace({
   // The source whose artifacts are currently loaded, so a deep link never acts on a previous source's list.
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const handledLink = useRef<string | null>(null);
+  // Dry-run AI plans for Analyze / Generate (estimates; no AI provider is contacted to make them).
+  const [aiPlans, setAiPlans] = useState<{
+    sourceId: string | null;
+    analyze: AiPlanResult | null;
+    generate: AiPlanResult | null;
+    loading: boolean;
+    failed: boolean;
+  }>({ sourceId: null, analyze: null, generate: null, loading: false, failed: false });
+  // Bumped after an Analyze / Generate run: a run can start a provider cool-down or add clarifications.
+  const [planStamp, setPlanStamp] = useState(0);
+  // P0-4 — the selected source's requirement-ID coverage, read from the server (the generate response
+  // is not kept); null when it could not be read.
+  const [coverage, setCoverage] = useState<{ sourceId: string | null; value: SourceIdCoverage | null }>({ sourceId: null, value: null });
 
   const selectedSource = sources.find((s) => s.id === selectedId) ?? null;
 
@@ -119,6 +144,7 @@ export function RequirementWorkspace({
 
   useEffect(() => {
     setAnalysis(null);
+    setGeneration(null);
     setQualityFindings(null);
     setLoadedFor(null);
     if (selectedId) {
@@ -129,6 +155,38 @@ export function RequirementWorkspace({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
+
+  // Clarifications (added, or answered - a new version) change what Generate must carry.
+  const clarificationKey = questions.map((q) => `${q.id}:${q.currentVersion}`).join(',');
+  const showsAiPlan = canWrite && view === 'analysis';
+
+  useEffect(() => {
+    if (!showsAiPlan || !selectedId) return;
+    let cancelled = false;
+    setAiPlans((prev) =>
+      prev.sourceId === selectedId
+        ? { ...prev, loading: true }
+        : { sourceId: selectedId, analyze: null, generate: null, loading: true, failed: false },
+    );
+    Promise.allSettled([
+      requirementSourcesApi.aiPlan(selectedId, 'analyze', token),
+      requirementSourcesApi.aiPlan(selectedId, 'generate', token),
+    ]).then(([analyze, generate]) => {
+      if (cancelled) return;
+      setAiPlans({
+        sourceId: selectedId,
+        analyze: analyze.status === 'fulfilled' ? analyze.value : null,
+        generate: generate.status === 'fulfilled' ? generate.value : null,
+        loading: false,
+        failed: analyze.status === 'rejected' || generate.status === 'rejected',
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [showsAiPlan, selectedId, clarificationKey, planStamp, token]);
+
+  const plansForSelected = aiPlans.sourceId === selectedId ? aiPlans : null;
 
   // Resolves to whether the action succeeded, so callers only show a success state after a real success.
   const runAction = async (key: string, fn: () => Promise<void>) => {
@@ -144,6 +202,7 @@ export function RequirementWorkspace({
       return false;
     } finally {
       setBusy(null);
+      if (key === 'analyze' || key === 'generate-requirements') setPlanStamp((n) => n + 1);
     }
   };
 
@@ -181,7 +240,9 @@ export function RequirementWorkspace({
   const onGenerateRequirements = () =>
     selectedId &&
     runAction('generate-requirements', async () => {
-      await requirementSourcesApi.generateRequirements(selectedId, token);
+      setGeneration(null); // a failed run must not leave the previous run's notice showing
+      const result = await requirementSourcesApi.generateRequirements(selectedId, token);
+      setGeneration(result);
       await loadDerived(selectedId);
     });
 
@@ -253,18 +314,19 @@ export function RequirementWorkspace({
 
   // §24 — a review decision, with the reviewer's comment (the reason, for a rejection) recorded on it.
   // Resolves to whether the decision was recorded, so the card keeps the comment when it was not.
-  const decideArtifact = async (id: string, status: number, comment?: string) => {
+  // S1 — made on the version the card showed; a 409 (changed since) is reported like any other refusal.
+  const decideArtifact = async (id: string, status: number, comment: string | undefined, version: number) => {
     let recorded = false;
     await runAction(`${status === 3 ? 'approve' : 'reject'}-${id}`, async () => {
-      await artifactsApi.updateStatus(id, { status, comment }, token);
+      await artifactsApi.updateStatus(id, decisionRequest(status, comment, version), token);
       recorded = true;
       if (selectedId) await loadDerived(selectedId);
     });
     return recorded;
   };
 
-  const onApprove = (id: string, comment?: string) => decideArtifact(id, 3, comment); // 3 = Approved
-  const onReject = (id: string, comment?: string) => decideArtifact(id, 4, comment); // 4 = Rejected
+  const onApprove = (id: string, comment: string | undefined, version: number) => decideArtifact(id, 3, comment, version); // 3 = Approved
+  const onReject = (id: string, comment: string | undefined, version: number) => decideArtifact(id, 4, comment, version); // 4 = Rejected
 
   // §24 workflow moves other than approve/reject (submit for review, return to draft, reopen).
   const onChangeStatus = (id: string, status: number) =>
@@ -283,6 +345,26 @@ export function RequirementWorkspace({
   const apiSpecifications = artifacts.filter((a) => a.artifactType === ARTIFACT_TYPE_VALUES.ApiSpecification);
   const implementationTasks = artifacts.filter((a) => a.artifactType === ARTIFACT_TYPE_VALUES.ImplementationTask);
   const testCases = artifacts.filter((a) => a.artifactType === ARTIFACT_TYPE_VALUES.TestCase);
+
+  // P0-4 — re-read the coverage whenever the source's FRs/NFRs change (generated, edited, approved or
+  // rejected). Only for users who may read raw sources; the server refuses anyone else.
+  const coverageKey = [...functionalRequirements, ...nonFunctionalRequirements]
+    .map((a) => `${a.id}:${a.currentVersion}:${a.status}`)
+    .join(',');
+  useEffect(() => {
+    if (!showRawInput || !selectedId || loadedFor !== selectedId) return;
+    let cancelled = false;
+    requirementSourcesApi
+      .sourceIdCoverage(selectedId, token)
+      .then((value) => !cancelled && setCoverage({ sourceId: selectedId, value }))
+      .catch(() => !cancelled && setCoverage({ sourceId: selectedId, value: null }));
+    return () => {
+      cancelled = true;
+    };
+  }, [showRawInput, selectedId, loadedFor, coverageKey, token]);
+  const coverageForSelected = coverage.sourceId === selectedId ? coverageNotice(coverage.value) : null;
+  const analysisCompleteness = analysisCompletenessNotice(analysis);
+  const generationCompleteness = generationCompletenessNotice(generation);
 
   const openQuestionCount = questions.filter((q) => (q.data as { clarificationStatus?: string }).clarificationStatus === 'Open').length;
 
@@ -391,6 +473,8 @@ export function RequirementWorkspace({
 
   // Test-case generation for one requirement: Generate → Generating… → ✓ Generated (+ Generate more, which adds another set).
   const testGenerateActions = (frId: string, generated: boolean) => {
+    const fr = functionalRequirements.find((a) => a.id === frId);
+    if (fr && !canGenerateDownstream(fr.status)) return null;
     const key = `generate-tc-${frId}`;
     if (busy === key) {
       return (
@@ -557,10 +641,50 @@ export function RequirementWorkspace({
           {canWrite && view === 'analysis' && (
             <div className="req-pipeline" id="sec-ai-analysis">
               <PipelineStep n={1} title="Analyze">
-                {generateButton('analyze', 'Run AI analysis', 'Analyzing…', onAnalyze, false, true)}
+                {generateButton('analyze', 'Run AI analysis', 'Analyzing…', onAnalyze, false, true, planButtonHint(plansForSelected?.analyze ?? null))}
+                <AiPlanSummary
+                  plan={plansForSelected?.analyze ?? null}
+                  loading={plansForSelected?.loading ?? true}
+                  failed={plansForSelected?.failed ?? false}
+                />
+                {selectedId && (
+                  <AiRunPanel
+                    sourceId={selectedId}
+                    operation="analyze"
+                    plan={plansForSelected?.analyze ?? null}
+                    token={token}
+                    canWrite={canWrite}
+                    onChanged={() => setPlanStamp((n) => n + 1)}
+                    onSaved={() => {
+                      loadDerived(selectedId);
+                      onChange?.();
+                    }}
+                  />
+                )}
               </PipelineStep>
               <PipelineStep n={2} title="Specify">
-                {generateButton('generate-requirements', 'Generate FR / NFR', 'Generating…', onGenerateRequirements, questions.length === 0, false, questions.length === 0 ? 'Run AI analysis first' : undefined, functionalRequirements.length + nonFunctionalRequirements.length)}
+                {generateButton('generate-requirements', 'Generate FR / NFR', 'Generating…', onGenerateRequirements, questions.length === 0, false, questions.length === 0 ? 'Run AI analysis first' : planButtonHint(plansForSelected?.generate ?? null), functionalRequirements.length + nonFunctionalRequirements.length)}
+                {questions.length > 0 && (
+                  <AiPlanSummary
+                    plan={plansForSelected?.generate ?? null}
+                    loading={plansForSelected?.loading ?? true}
+                    failed={plansForSelected?.failed ?? false}
+                  />
+                )}
+                {questions.length > 0 && selectedId && (
+                  <AiRunPanel
+                    sourceId={selectedId}
+                    operation="generate"
+                    plan={plansForSelected?.generate ?? null}
+                    token={token}
+                    canWrite={canWrite}
+                    onChanged={() => setPlanStamp((n) => n + 1)}
+                    onSaved={() => {
+                      loadDerived(selectedId);
+                      onChange?.();
+                    }}
+                  />
+                )}
                 {generateButton('generate-stories', 'Generate user stories', 'Generating…', onGenerateStories, needsFr, false, needsFrHint, userStories.length)}
                 {generateButton('generate-rules', 'Extract business rules', 'Generating…', onGenerateBusinessRules, needsFr, false, needsFrHint, businessRules.length)}
               </PipelineStep>
@@ -593,27 +717,8 @@ export function RequirementWorkspace({
             </div>
           )}
 
-          {view === 'analysis' && analysis && (
-            <div className="req-ai-panel">
-              <div className="req-ai-panel-head">
-                <span className="ai-badge">
-                  <IconSparkles width={12} height={12} /> AI Generated — Human Review Required
-                </span>
-                <h3>Analysis summary</h3>
-              </div>
-              <dl className="req-summary">
-                <SummaryRow label="Actors" items={analysis.actors} />
-                <SummaryRow label="Capabilities" items={analysis.capabilities} />
-                <SummaryRow label="Data elements" items={analysis.dataElements} />
-              </dl>
-              {analysis.notes.length > 0 && (
-                <p className="req-notes">
-                  <span className="detail-label">Notes</span>
-                  {analysis.notes.join(' ')}
-                </p>
-              )}
-            </div>
-          )}
+          {view === 'analysis' && analysisCompleteness && <CompletenessAlert notice={analysisCompleteness} id="sec-analysis-completeness" />}
+          {view === 'analysis' && analysis && <AnalysisSummaryPanel analysis={analysis} />}
 
           {view === 'analysis' && openQuestionCount > 0 && (
             <p className="req-next-hint warn">
@@ -687,6 +792,18 @@ export function RequirementWorkspace({
                 { id: 'sec-stories', label: 'User stories', count: userStories.length },
                 { id: 'sec-criteria', label: 'Acceptance criteria', count: acceptanceCriteria.length },
               ])}
+              {generationCompleteness && <CompletenessAlert notice={generationCompleteness} id="sec-completeness" />}
+              {coverageForSelected && functionalRequirements.length + nonFunctionalRequirements.length > 0 && (
+                <div className={`alert alert-${coverageForSelected.tone} req-alert`} role="status" id="sec-id-coverage">
+                  {coverageForSelected.tone === 'success' ? <IconCheckCircle width={16} height={16} /> : <IconAlert width={16} height={16} />}
+                  <div>
+                    <strong>{coverageForSelected.title}</strong>
+                    {coverageForSelected.details.map((line) => (
+                      <div key={line}>{line}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {functionalRequirements.length > 0 && (
                 <ArtifactSection id="sec-functional" title="Functional Requirements" noun={['requirement', 'requirements']} items={functionalRequirements}
                   groups={frGroups} groupEyebrow="Actor" reveal={reveal('sec-functional')} {...reviewProps} />
@@ -817,6 +934,21 @@ export function RequirementWorkspace({
   );
 }
 
+// P0-7 — the completeness notice of the last Analyze/Generate result (lib/completeness).
+function CompletenessAlert({ notice, id }: { notice: CompletenessNotice; id: string }) {
+  return (
+    <div className={`alert alert-${notice.tone} req-alert`} role="status" id={id}>
+      {notice.tone === 'success' ? <IconCheckCircle width={16} height={16} /> : <IconAlert width={16} height={16} />}
+      <div>
+        <strong>{notice.title}</strong>
+        {notice.details.map((line) => (
+          <div key={line}>{line}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function PipelineStep({ n, title, children }: { n: number; title: string; children: ReactNode }) {
   return (
     <div className="req-step">
@@ -829,7 +961,79 @@ function PipelineStep({ n, title, children }: { n: number; title: string; childr
   );
 }
 
+// Chips shown per summary row, and characters of notes shown, before "Show more".
+const VISIBLE_CHIPS = 8;
+const NOTES_PREVIEW_CHARS = 280;
+
+function AnalysisSummaryPanel({ analysis }: { analysis: AnalyzeRequirementResult }) {
+  const [open, setOpen] = useState(true);
+  const [notesOpen, setNotesOpen] = useState(true);
+  const bodyId = 'req-analysis-summary-body';
+  const notesId = 'req-analysis-notes-body';
+  return (
+    <div className="req-ai-panel">
+      <div className="req-ai-panel-head">
+        <span className="ai-badge">
+          <IconSparkles width={12} height={12} /> AI Generated — Human Review Required
+        </span>
+        <h3>
+          <button type="button" className="gen-toggle" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((v) => !v)}>
+            <IconChevronDown width={16} height={16} className="gen-chevron" />
+            <span className="gen-title">Analysis summary</span>
+          </button>
+        </h3>
+      </div>
+      <div id={bodyId} hidden={!open}>
+        <dl className="req-summary">
+          <SummaryRow label="Actors" items={analysis.actors} />
+          <SummaryRow label="Capabilities" items={analysis.capabilities} />
+          <SummaryRow label="Data elements" items={analysis.dataElements} />
+        </dl>
+        {analysis.notes.length > 0 && (
+          <div className="req-notes">
+            <button
+              type="button"
+              className="gen-toggle req-notes-toggle"
+              aria-expanded={notesOpen}
+              aria-controls={notesId}
+              onClick={() => setNotesOpen((v) => !v)}
+            >
+              <IconChevronDown width={14} height={14} className="gen-chevron" />
+              <span className="detail-label">Notes</span>
+            </button>
+            <div id={notesId} hidden={!notesOpen}>
+              <ExpandableText text={analysis.notes.join(' ')} />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ExpandableText({ text }: { text: string }) {
+  const [showAll, setShowAll] = useState(false);
+  const long = text.length > NOTES_PREVIEW_CHARS;
+  const shown = long && !showAll ? `${text.slice(0, NOTES_PREVIEW_CHARS).trimEnd()}…` : text;
+  return (
+    <p className="req-notes-text">
+      {shown}
+      {long && (
+        <>
+          {' '}
+          <button type="button" className="req-show-more" aria-expanded={showAll} onClick={() => setShowAll((v) => !v)}>
+            {showAll ? 'Show less' : 'Show more'}
+          </button>
+        </>
+      )}
+    </p>
+  );
+}
+
 function SummaryRow({ label, items }: { label: string; items: string[] }) {
+  const [showAll, setShowAll] = useState(false);
+  const hidden = items.length - VISIBLE_CHIPS;
+  const shown = hidden > 0 && !showAll ? items.slice(0, VISIBLE_CHIPS) : items;
   return (
     <div className="req-summary-row">
       <dt>{label}</dt>
@@ -837,11 +1041,16 @@ function SummaryRow({ label, items }: { label: string; items: string[] }) {
         {items.length === 0 ? (
           <span className="req-none">—</span>
         ) : (
-          items.map((item, i) => (
+          shown.map((item, i) => (
             <span key={i} className="req-chip">
               {item}
             </span>
           ))
+        )}
+        {hidden > 0 && (
+          <button type="button" className="req-show-more" aria-expanded={showAll} onClick={() => setShowAll((v) => !v)}>
+            {showAll ? 'Show less' : `+${hidden} more`}
+          </button>
         )}
       </dd>
     </div>
@@ -887,8 +1096,8 @@ function ArtifactSection({
   canReview: boolean;
   canEdit: boolean;
   token: string | null;
-  onApprove: (id: string, comment?: string) => Promise<boolean>;
-  onReject: (id: string, comment?: string) => Promise<boolean>;
+  onApprove: (id: string, comment: string | undefined, version: number) => Promise<boolean>;
+  onReject: (id: string, comment: string | undefined, version: number) => Promise<boolean>;
   onChangeStatus: (id: string, status: number) => Promise<unknown>;
   onSaved: () => void;
   onGenerateAcceptanceCriteria?: (id: string) => Promise<unknown>;

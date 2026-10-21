@@ -29,6 +29,21 @@ public class GroqOptions
     // counts against the same per-minute window. Input budget = MaxRequestTokens - ReservedOutputTokens.
     public int ReservedOutputTokens { get; set; } = 4000;
 
+    // The most parts a source split for Groq may be sent in (GenerationSupport.CallAiAndParseChunkedAsync).
+    // Each part can use the whole MaxRequestTokens budget - on the free tier, a whole minute's tokens -
+    // so a source needing more parts is refused before any part is sent, instead of spending the
+    // daily quota on a run unlikely to finish. 0 disables the check.
+    public int MaxChunkedParts { get; set; } = 8;
+
+    // Batch mode (AiChunkRunService). 0 (default) = off: nothing changes - normal Analyze/Generate
+    // refuse a source needing more than MaxChunkedParts parts, the batched-run endpoints answer 400
+    // batch_mode_disabled, and the AiChunkRuns tables are never queried.
+    // N > 0 = on: normal Analyze/Generate are unchanged (still refused above MaxChunkedParts); in
+    // addition a batched run of up to N parts in total can be started for such a source. Each
+    // Continue action of a run sends at most MaxChunkedParts parts (N when MaxChunkedParts is 0),
+    // keeps every part that succeeded, and nothing is saved as artifacts until Commit.
+    public int MaxBatchedRunParts { get; set; }
+
     // Total attempts on a 429 from Groq (overrides Ai:Resilience:MaxRateLimitAttempts when higher).
     // Requests are sent back to back (a repair attempt, chunked parts) against an 8,000 TPM window,
     // and Groq's sub-second retry hints rarely clear it, so a few backed-off retries are allowed.

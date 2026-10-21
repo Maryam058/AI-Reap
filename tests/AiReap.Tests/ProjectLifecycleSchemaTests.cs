@@ -1,7 +1,6 @@
 using AiReap.Domain.Common;
 using AiReap.Domain.Enums;
 using AiReap.Infrastructure.Persistence;
-using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -160,52 +159,40 @@ public class ProjectLifecycleMigrationTests : IAsyncLifetime
     [Fact]
     public async Task Existing_projects_get_one_baseline_row_and_keep_their_status()
     {
-        var database = $"AiReapTests_{Guid.NewGuid():N}";
-        var options = new DbContextOptionsBuilder<AiReapDbContext>()
-            .UseSqlServer($"{TestHost.ServerConnection};Database={database}").Options;
-        try
+        // Created and dropped only by the guard. Declared in this order so the verified connection is
+        // disposed (releasing its reservation) before the database's guarded drop runs.
+        await using var database = await TestSqlServer.Default.CreateDatabaseAsync();
+        await using var conn = await TestSqlServer.Default.OpenVerifiedAsync(database.Name);
+
+        await using (var db = new AiReapDbContext(conn.CreateMigrationOptions()))
         {
-            await using (var db = new AiReapDbContext(options))
-            {
-                await db.GetService<IMigrator>().MigrateAsync(PreviousMigration);
+            await db.GetService<IMigrator>().MigrateAsync(PreviousMigration);
 
-                // Two projects that predate lifecycle tracking, one far along the lifecycle.
-                await db.Database.ExecuteSqlRawAsync(@"
-                    INSERT INTO Projects (Id, Name, Status, CreatedByUserId, CreatedAt, UpdatedAt)
-                    VALUES ('11111111-1111-1111-1111-111111111111', 'Old draft', 0, 'u1', SYSUTCDATETIME(), SYSUTCDATETIME()),
-                           ('22222222-2222-2222-2222-222222222222', 'Old implementation', 5, 'u1', SYSUTCDATETIME(), SYSUTCDATETIME())");
+            // Two projects that predate lifecycle tracking, one far along the lifecycle.
+            await db.Database.ExecuteSqlRawAsync(@"
+                INSERT INTO Projects (Id, Name, Status, CreatedByUserId, CreatedAt, UpdatedAt)
+                VALUES ('11111111-1111-1111-1111-111111111111', 'Old draft', 0, 'u1', SYSUTCDATETIME(), SYSUTCDATETIME()),
+                       ('22222222-2222-2222-2222-222222222222', 'Old implementation', 5, 'u1', SYSUTCDATETIME(), SYSUTCDATETIME())");
 
-                await db.Database.MigrateAsync();
-            }
-
-            await using var conn = new SqlConnection($"{TestHost.ServerConnection};Database={database}");
-            await conn.OpenAsync();
-
-            async Task<int> Scalar(string sql)
-            {
-                await using var cmd = new SqlCommand(sql, conn);
-                return Convert.ToInt32(await cmd.ExecuteScalarAsync());
-            }
-
-            // Status untouched: nobody is moved backward.
-            Assert.Equal(5, await Scalar("SELECT Status FROM Projects WHERE Id = '22222222-2222-2222-2222-222222222222'"));
-            Assert.Equal(0, await Scalar("SELECT Status FROM Projects WHERE Id = '11111111-1111-1111-1111-111111111111'"));
-
-            // Exactly one Baseline(0), Completed(1) row per project, at its current status, sequence 0.
-            Assert.Equal(2, await Scalar("SELECT COUNT(*) FROM ProjectStageTransitions"));
-            Assert.Equal(1, await Scalar(@"SELECT COUNT(*) FROM ProjectStageTransitions
-                WHERE ProjectId = '22222222-2222-2222-2222-222222222222' AND Kind = 0 AND State = 1
-                  AND FromStatus IS NULL AND ToStatus = 5 AND Sequence = 0 AND IsOverride = 0 AND RequestedByUserId = 'system'"));
-            Assert.Equal(1, await Scalar(@"SELECT COUNT(*) FROM ProjectStageTransitions
-                WHERE ProjectId = '11111111-1111-1111-1111-111111111111' AND Kind = 0 AND ToStatus = 0"));
+            await db.Database.MigrateAsync();
         }
-        finally
+
+        async Task<int> Scalar(string sql)
         {
-            await using var master = new SqlConnection(TestHost.ServerConnection);
-            await master.OpenAsync();
-            await using var drop = new SqlCommand(
-                $"IF DB_ID('{database}') IS NOT NULL BEGIN ALTER DATABASE [{database}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{database}]; END", master);
-            await drop.ExecuteNonQueryAsync();
+            await using var cmd = conn.CreateCommand(sql);
+            return Convert.ToInt32(await cmd.ExecuteScalarAsync());
         }
+
+        // Status untouched: nobody is moved backward.
+        Assert.Equal(5, await Scalar("SELECT Status FROM Projects WHERE Id = '22222222-2222-2222-2222-222222222222'"));
+        Assert.Equal(0, await Scalar("SELECT Status FROM Projects WHERE Id = '11111111-1111-1111-1111-111111111111'"));
+
+        // Exactly one Baseline(0), Completed(1) row per project, at its current status, sequence 0.
+        Assert.Equal(2, await Scalar("SELECT COUNT(*) FROM ProjectStageTransitions"));
+        Assert.Equal(1, await Scalar(@"SELECT COUNT(*) FROM ProjectStageTransitions
+            WHERE ProjectId = '22222222-2222-2222-2222-222222222222' AND Kind = 0 AND State = 1
+              AND FromStatus IS NULL AND ToStatus = 5 AND Sequence = 0 AND IsOverride = 0 AND RequestedByUserId = 'system'"));
+        Assert.Equal(1, await Scalar(@"SELECT COUNT(*) FROM ProjectStageTransitions
+            WHERE ProjectId = '11111111-1111-1111-1111-111111111111' AND Kind = 0 AND ToStatus = 0"));
     }
 }

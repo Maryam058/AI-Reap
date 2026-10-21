@@ -6,6 +6,7 @@ using AiReap.Domain.Common;
 using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace AiReap.Application.Lifecycle;
 
@@ -30,6 +31,11 @@ namespace AiReap.Application.Lifecycle;
 // Concurrency: rows are numbered per project (unique ProjectId+Sequence), so two transitions racing
 // from the same state can't both be written; a filtered unique index allows one Pending row per
 // project; deciding a pending row is guarded by its rowversion.
+//
+// Evidence is judged as observed during evaluation. The artifacts it reads are not locked or
+// re-checked when the transition is saved, so an artifact may still change between the evaluation
+// and that save; the gate does not claim otherwise. What the row records (EvidenceSnapshotJson,
+// DecisionEvidenceSnapshotJson) is the evidence that was actually evaluated.
 public class ProjectLifecycleService : IProjectLifecycleService
 {
     public const string SignOffLabel = "QA sign-off recorded";
@@ -42,10 +48,12 @@ public class ProjectLifecycleService : IProjectLifecycleService
     private readonly ILifecycleEvidenceService _evidence;
     private readonly LifecycleNotifications _notifications;
     private readonly ExitCheckGuidanceService _guidance;
+    private readonly ILogger<ProjectLifecycleService> _logger;
 
     public ProjectLifecycleService(
         IAiReapDbContext db, ICurrentUser currentUser, IProjectAccessService projectAccess,
-        ILifecycleEvidenceService evidence, LifecycleNotifications notifications, ExitCheckGuidanceService guidance)
+        ILifecycleEvidenceService evidence, LifecycleNotifications notifications, ExitCheckGuidanceService guidance,
+        ILogger<ProjectLifecycleService> logger)
     {
         _db = db;
         _currentUser = currentUser;
@@ -53,6 +61,7 @@ public class ProjectLifecycleService : IProjectLifecycleService
         _evidence = evidence;
         _notifications = notifications;
         _guidance = guidance;
+        _logger = logger;
     }
 
     // The first history row of a new project (ProjectService.CreateAsync), matching the Baseline
@@ -177,7 +186,7 @@ public class ProjectLifecycleService : IProjectLifecycleService
         var gated = ProjectLifecyclePolicy.IsGated(from);
         var note = Clean(request.Note);
         var checks = await EvaluateExitAsync(project, role, note, cancellationToken);
-        var overrideReason = await ResolveOverrideAsync(projectId, checks, request.OverrideReason, alreadyOverridden: false, stage.Label, cancellationToken)
+        var overrideReason = await ResolveOverrideAsync(projectId, checks, request.OverrideReason, NoAuthorizedFailures, stage.Label, cancellationToken)
             ?? StandInOverride(role, stage.OwnerRole, request.OverrideReason, $"move the project out of {stage.Label}");
 
         var now = DateTime.UtcNow;
@@ -196,7 +205,7 @@ public class ProjectLifecycleService : IProjectLifecycleService
             RequestNote = note,
             IsOverride = overrideReason is not null,
             OverrideReason = overrideReason,
-            EvidenceSnapshotJson = Snapshot(checks.Select(c => c.Check).ToList())
+            EvidenceSnapshotJson = OverrideScope.Snapshot(checks)
         };
 
         if (!gated)
@@ -254,6 +263,8 @@ public class ProjectLifecycleService : IProjectLifecycleService
                 throw new RequestValidationException("A reason is required to reject a stage transition.");
             }
 
+            // D3 - the evidence as it stands at rejection, for the record only: it never blocks a rejection.
+            transition.DecisionEvidenceSnapshotJson = await RejectionEvidenceSnapshotAsync(project, transition, cancellationToken);
             Decide(transition, StageTransitionState.Rejected, role, now, reason);
             _db.ProjectStageReviews.Add(Review(transition, role, ReviewDecision.Rejected, reason, now));
             await _notifications.RejectedAsync(project, transition, cancellationToken);
@@ -262,9 +273,10 @@ public class ProjectLifecycleService : IProjectLifecycleService
             return ToResponse(transition);
         }
 
-        // Evidence can have changed since submission: judge it again, as it stands now.
+        // Evidence can have changed since submission: judge it again, as it stands now. An override
+        // given at submission covers only the failures it was given over (F3).
         var checks = await EvaluateExitAsync(project, transition.RequestedByRole, transition.RequestNote, cancellationToken);
-        var overrideReason = await ResolveOverrideAsync(project.Id, checks, request.OverrideReason, transition.IsOverride, stage.Label, cancellationToken)
+        var overrideReason = await ResolveOverrideAsync(project.Id, checks, request.OverrideReason, AuthorizedFailures(transition), stage.Label, cancellationToken)
             ?? StandInOverride(role, ProjectLifecyclePolicy.GateApproverRole, request.OverrideReason, $"approve moving the project out of {stage.Label}");
         if (overrideReason is not null)
         {
@@ -274,7 +286,9 @@ public class ProjectLifecycleService : IProjectLifecycleService
                 : $"{transition.OverrideReason} | {overrideReason}";
         }
 
-        transition.EvidenceSnapshotJson = Snapshot(checks.Select(c => c.Check).ToList());
+        // D3 - the submission snapshot (EvidenceSnapshotJson) stays as submitted; the approval's own
+        // evaluation is recorded beside it.
+        transition.DecisionEvidenceSnapshotJson = OverrideScope.Snapshot(checks);
         Decide(transition, StageTransitionState.Completed, role, now, reason);
         // Added through the DbSet: a pre-keyed child added via the navigation would be treated as existing.
         _db.ProjectStageReviews.Add(Review(transition, role, ReviewDecision.Approved, reason, now));
@@ -373,11 +387,44 @@ public class ProjectLifecycleService : IProjectLifecycleService
         return checks;
     }
 
+    // D3 - the same evaluation an approval makes, recorded on a rejection. A rejection never depends on
+    // evidence, so a failure to evaluate it (anything but cancellation) does not stop the rejection:
+    // the decision snapshot is then left null ("not recorded"), never a made-up or partial one. The
+    // failure is logged with identifiers only - no evidence text, quotes or requirement content.
+    private async Task<string?> RejectionEvidenceSnapshotAsync(Project project, ProjectStageTransition transition, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return OverrideScope.Snapshot(await EvaluateExitAsync(project, transition.RequestedByRole, transition.RequestNote, cancellationToken));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex,
+                "Stage exit evidence could not be evaluated while rejecting stage transition {TransitionId} of project {ProjectId} ({FromStatus} -> {ToStatus}); the rejection is recorded without a decision evidence snapshot.",
+                transition.Id, project.Id, transition.FromStatus, transition.ToStatus);
+            return null;
+        }
+    }
+
+    private static readonly IReadOnlySet<string> NoAuthorizedFailures = new HashSet<string>();
+
+    // F3 - the failures an Administrator's override at submission was given over: the failure
+    // identities (OverrideScope) of the submission snapshot of a request flagged as an override. A
+    // request is flagged when ResolveOverrideAsync accepted an Administrator's reason over failing
+    // checks, or when it was only a stand-in (StandInOverride); the second kind is submitted with
+    // every check passing, so its snapshot has no failures and it covers none. A failure is covered
+    // only while it is the same failure (same check, reason and artifacts), whatever its label or
+    // detail says: a check that newly fails, or fails over different artifacts, needs a fresh override.
+    private static IReadOnlySet<string> AuthorizedFailures(ProjectStageTransition transition) =>
+        transition.IsOverride ? OverrideScope.Authorized(transition.EvidenceSnapshotJson) : NoAuthorizedFailures;
+
     // Returns the override reason to record, or null when the evidence passes. Failing evidence
-    // needs an Administrator's reason - unless the request already carries one (a gated request an
-    // Administrator submitted with an override, now being approved).
+    // needs an Administrator's reason - unless every failing check is one the request's own override
+    // already covers (AuthorizedFailures: a gated request an Administrator submitted with an override
+    // over exactly these failures, now being approved).
     private async Task<string?> ResolveOverrideAsync(
-        Guid projectId, IReadOnlyList<CheckEvidence> checks, string? requestedReason, bool alreadyOverridden, string stageLabel, CancellationToken cancellationToken)
+        Guid projectId, IReadOnlyList<CheckEvidence> checks, string? requestedReason,
+        IReadOnlySet<string> authorizedFailures, string stageLabel, CancellationToken cancellationToken)
     {
         var failing = checks.Where(c => !c.Check.Passed).ToList();
         if (failing.Count == 0)
@@ -388,14 +435,17 @@ public class ProjectLifecycleService : IProjectLifecycleService
         var reason = Clean(requestedReason);
         if (reason is null)
         {
-            if (alreadyOverridden)
+            var uncovered = failing.Where(c => !OverrideScope.Covers(authorizedFailures, c)).ToList();
+            if (uncovered.Count == 0)
             {
                 return null;
             }
 
             throw new LifecycleEvidenceException(
-                $"{stageLabel} is not complete: {failing.Count} check(s) failing. An Administrator may override with a reason.",
-                await _guidance.ViewsAsync(projectId, failing, cancellationToken));
+                authorizedFailures.Count == 0
+                    ? $"{stageLabel} is not complete: {failing.Count} check(s) failing. An Administrator may override with a reason."
+                    : $"{stageLabel} is not complete: {uncovered.Count} check(s) failing that the override given at submission did not cover (new or changed since). An Administrator may override with a reason.",
+                await _guidance.ViewsAsync(projectId, uncovered, cancellationToken));
         }
 
         if (ProjectLifecyclePolicy.OverrideRole(_currentUser.IsInRole) is null)
@@ -506,8 +556,30 @@ public class ProjectLifecycleService : IProjectLifecycleService
         t.RequestedByUserId, t.RequestedByRole, t.RequestedAt, t.RequestNote,
         t.DecidedByUserId, t.DecidedByRole, t.DecidedAt, t.DecisionReason,
         t.IsOverride, t.OverrideReason,
-        JsonSerializer.Deserialize<List<SdlcCheck>>(t.EvidenceSnapshotJson, JsonOptions) ?? [],
+        PublicChecks(t.EvidenceSnapshotJson) ?? [],
         t.Reviews.OrderBy(r => r.ReviewedAt)
             .Select(r => new StageReviewResponse(r.Id, r.ReviewerUserId, r.ReviewerRole, r.Decision, r.Comment, r.ReviewedAt))
-            .ToList());
+            .ToList(),
+        t.DecisionEvidenceSnapshotJson is null ? null : PublicChecks(t.DecisionEvidenceSnapshotJson) ?? [],
+        SubmissionEvidenceUnavailable(t));
+
+    // D3 - true only when this row's EvidenceSnapshotJson is known NOT to be its submission evidence:
+    // an approved gated request (Advance from a gated stage, Completed, decided by someone other than
+    // the requester) that has no decision snapshot. Every approval this code makes records a decision
+    // snapshot and leaves the submission one as submitted; the approval code before D3 instead
+    // replaced the submission snapshot with the approval-time checks and recorded no decision
+    // snapshot. So such a row's single snapshot is approval-time evidence and its submission evidence
+    // is not available. This is an availability flag only: it does not claim when or why the row was
+    // written that way, and a null decision snapshot alone (a rejection whose re-evaluation failed, a
+    // pending, withdrawn or direct row) never sets it - those rows still hold their submission snapshot.
+    public static bool SubmissionEvidenceUnavailable(ProjectStageTransition t) =>
+        t.Kind == StageTransitionKind.Advance
+        && t.State == StageTransitionState.Completed
+        && t.FromStatus is { } from && ProjectLifecyclePolicy.IsGated(from)
+        && t.DecidedByUserId is not null && t.DecidedByUserId != t.RequestedByUserId
+        && t.DecisionEvidenceSnapshotJson is null;
+
+    // Read as plain SdlcCheck (label, passed, detail): the snapshot's check keys and failure identities
+    // (OverrideScope) never leave the server.
+    private static List<SdlcCheck>? PublicChecks(string snapshotJson) => JsonSerializer.Deserialize<List<SdlcCheck>>(snapshotJson, JsonOptions);
 }

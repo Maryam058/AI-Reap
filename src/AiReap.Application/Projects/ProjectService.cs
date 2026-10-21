@@ -1,3 +1,4 @@
+using AiReap.Application.Artifacts;
 using AiReap.Application.Common;
 using AiReap.Application.Lifecycle;
 using AiReap.Application.Persistence;
@@ -139,9 +140,26 @@ public class ProjectService : IProjectService
         _db.ProjectMembers.RemoveRange(await _db.ProjectMembers.Where(m => m.ProjectId == id).ToListAsync(cancellationToken));
         _db.Projects.Remove(project);
 
-        await _db.SaveChangesAsync(cancellationToken);
+        // One save, so one transaction: everything above is deleted together or not at all. A row
+        // deleted under a concurrency token (an artifact's CurrentVersion/RowVersion, a stage
+        // transition's RowVersion) that changed since it was read - or one already deleted by someone
+        // else - fails the whole save (409, nothing deleted; not retried automatically). Any other
+        // database failure (e.g. a row added meanwhile that still references the project) propagates.
+        try
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            ArtifactPersistence.Undo(_db);
+            throw new ConflictException(DeleteConflictMessage);
+        }
+
         return true;
     }
+
+    public const string DeleteConflictMessage =
+        "The project changed while it was being deleted, so it was not deleted. Reload and try again.";
 
     public async Task<IReadOnlyList<StakeholderResponse>> GetStakeholdersAsync(Guid projectId, CancellationToken cancellationToken = default)
     {

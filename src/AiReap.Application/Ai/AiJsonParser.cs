@@ -15,7 +15,7 @@ public static class AiJsonParser
     };
 
     public static T Parse<T>(string rawResponse, IEnumerable<string>? knownArtifactCodes = null,
-        IEnumerable<string>? knownSourceReferences = null) where T : class
+        IEnumerable<string>? knownSourceReferences = null, SourceIdScope? sourceIds = null) where T : class
     {
         if (string.IsNullOrWhiteSpace(rawResponse))
         {
@@ -43,7 +43,7 @@ public static class AiJsonParser
         // §31 — semantic checks (required fields, allowed values, real artifact references).
         if (result is IValidatableAiResponse validatable)
         {
-            var validator = new AiResponseValidator(knownArtifactCodes, knownSourceReferences);
+            var validator = new AiResponseValidator(knownArtifactCodes, knownSourceReferences, sourceIds);
             validatable.Validate(validator);
             if (!validator.IsValid)
             {

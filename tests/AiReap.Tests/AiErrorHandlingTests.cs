@@ -87,6 +87,139 @@ public class AiErrorHandlingTests : IAsyncLifetime
         Assert.Contains("credit balance is too low", body["detail"]!.GetValue<string>());
     }
 
+    // GenerationSupport's MaxChunkedParts guard refuses before anything is sent: the heading must not
+    // say the provider rejected the request.
+    [Fact]
+    public async Task Chunk_limit_refusal_says_nothing_was_sent_instead_of_blaming_the_provider()
+    {
+        _host.Ai.ThrowOnceWhenPromptContains(AnalysisMarker,
+            new AiChunkLimitExceededException("Groq", "The requirement source would have to be sent to Groq in 40 parts ...",
+                requiredParts: 40, maxParts: 8, maxPartsSetting: "Ai:Groq:MaxChunkedParts"));
+
+        var (status, body) = await AnalyzeAsync();
+
+        Assert.Equal(502, status);
+        Assert.Equal("ai_request_rejected", body!["code"]!.GetValue<string>());
+        Assert.False(body["retryable"]!.GetValue<bool>());
+        Assert.Equal("The requirement source is too large for Groq.", body["title"]!.GetValue<string>());
+        Assert.Equal(
+            "The requirement source exceeds the configured Groq processing limit " +
+            "(it would need 40 parts; Ai:Groq:MaxChunkedParts=8). No request was sent to Groq and nothing was saved. " +
+            "Retry when an AI provider without this limit is available, or split the requirement source into smaller parts.",
+            body["detail"]!.GetValue<string>());
+        Assert.Equal("Groq", body["provider"]!.GetValue<string>());
+        Assert.False(body["sentToProvider"]!.GetValue<bool>());
+        Assert.Equal(40, body["requiredParts"]!.GetValue<int>());
+        Assert.Equal(8, body["maxParts"]!.GetValue<int>());
+        Assert.Equal(0, await ArtifactCountAsync());
+    }
+
+    // Groq was only the fallback: the detail leads with why Gemini did not serve the request, and the
+    // body carries it in machine-readable form. Code, status and retryable stay as above.
+    [Fact]
+    public async Task Chunk_limit_refusal_after_a_gemini_failure_names_the_gemini_failure()
+    {
+        var gemini = new AiProviderException(AiFailureKind.RateLimited, "Gemini",
+            "Gemini quota exhausted (daily or zero-limit quota; will not recover within this request). (HTTP 429 RESOURCE_EXHAUSTED: Quota exceeded.)",
+            HttpStatusCode.TooManyRequests, "Quota exceeded.", retryAfter: TimeSpan.FromSeconds(37.2), quotaExhausted: true);
+        var overBudget = new AiRequestOverBudgetException("Groq", 4000, 84_308, 8000, 8, "Ai:Groq:MaxChunkedParts")
+            .WithPrimary(new PrimaryProviderOutcome("Gemini", $"Gemini failed: {gemini.Message}", gemini));
+        _host.Ai.ThrowOnceWhenPromptContains(AnalysisMarker,
+            new AiChunkLimitExceededException("Groq", "The requirement source would have to be sent to Groq in 40 parts ...",
+                requiredParts: 40, maxParts: 8, maxPartsSetting: "Ai:Groq:MaxChunkedParts", inner: overBudget));
+
+        var response = await _ba.Http.PostAsync($"/api/requirement-sources/{_sourceId}/analyze", null);
+        var body = JsonNode.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Null(response.Headers.RetryAfter); // no Retry-After: retrying this request alone will not help
+        Assert.Equal("ai_request_rejected", body!["code"]!.GetValue<string>());
+        Assert.False(body["retryable"]!.GetValue<bool>());
+        Assert.Equal("The requirement source is too large for Groq.", body["title"]!.GetValue<string>());
+        Assert.Equal(
+            "Gemini, the primary AI provider, did not serve this request (Gemini failed: Gemini quota exhausted (daily or zero-limit " +
+            "quota; will not recover within this request). (HTTP 429 RESOURCE_EXHAUSTED: Quota exceeded.)), so it went to the fallback provider. " +
+            "The requirement source exceeds the configured Groq processing limit " +
+            "(it would need 40 parts; Ai:Groq:MaxChunkedParts=8). No request was sent to Groq and nothing was saved. " +
+            "Retry when an AI provider without this limit is available, or split the requirement source into smaller parts.",
+            body["detail"]!.GetValue<string>());
+        Assert.Equal("Groq", body["provider"]!.GetValue<string>());
+        Assert.False(body["sentToProvider"]!.GetValue<bool>());
+        Assert.Equal("Gemini", body["primaryProvider"]!.GetValue<string>());
+        Assert.Equal("RateLimited", body["primaryFailureKind"]!.GetValue<string>());
+        Assert.True(body["primaryQuotaExhausted"]!.GetValue<bool>());
+        Assert.Equal(38, body["primaryRetryAfterSeconds"]!.GetValue<int>());
+        Assert.StartsWith("Gemini failed: Gemini quota exhausted", body["primaryOutcome"]!.GetValue<string>());
+        Assert.Equal(0, await ArtifactCountAsync());
+    }
+
+    [Fact]
+    public async Task Cannot_split_refusal_after_a_skipped_gemini_names_the_cool_down()
+    {
+        var overBudget = new AiRequestOverBudgetException("Groq", 4000, 84_308)
+            .WithPrimary(new PrimaryProviderOutcome("Gemini", "Gemini was skipped (rate limit/quota cool-down until 2026-10-14 17:05:00Z)", null));
+        _host.Ai.ThrowOnceWhenPromptContains(AnalysisMarker,
+            new AiSourceCannotBeSplitException("Groq", "The requirement source cannot be split for Groq ...",
+                inputBudget: 4000, reservedTokens: 5712, inner: overBudget));
+
+        var (status, body) = await AnalyzeAsync();
+
+        Assert.Equal(502, status);
+        Assert.False(body!["retryable"]!.GetValue<bool>());
+        Assert.StartsWith(
+            "Gemini, the primary AI provider, did not serve this request (Gemini was skipped (rate limit/quota cool-down until " +
+            "2026-10-14 17:05:00Z)), so it went to the fallback provider. Groq's configured input budget of 4,000 tokens",
+            body["detail"]!.GetValue<string>());
+        Assert.Equal("Gemini", body["primaryProvider"]!.GetValue<string>());
+        Assert.Null(body["primaryFailureKind"]);
+        Assert.Null(body["primaryRetryAfterSeconds"]);
+    }
+
+    // Groq's input budget is already filled by what every request must carry: refused before anything
+    // is sent, and splitting the source is not offered as a remedy.
+    [Fact]
+    public async Task Source_that_cannot_be_split_says_nothing_was_sent_and_splitting_will_not_help()
+    {
+        _host.Ai.ThrowOnceWhenPromptContains(AnalysisMarker,
+            new AiSourceCannotBeSplitException("Groq", "The requirement source cannot be split for Groq ...",
+                inputBudget: 4000, reservedTokens: 5712));
+
+        var (status, body) = await AnalyzeAsync();
+
+        Assert.Equal(502, status);
+        Assert.Equal("ai_request_rejected", body!["code"]!.GetValue<string>());
+        Assert.False(body["retryable"]!.GetValue<bool>());
+        Assert.Equal("The requirement source cannot be sent to Groq.", body["title"]!.GetValue<string>());
+        Assert.Equal(
+            "Groq's configured input budget of 4,000 tokens leaves too little room for source text after " +
+            "the ~5,712 tokens of instructions and context every request must carry. " +
+            "No request was sent to Groq and nothing was saved. Splitting the requirement source will not help: " +
+            "use an AI provider without this limit, or ask an administrator to review Ai:Groq:MaxRequestTokens.",
+            body["detail"]!.GetValue<string>());
+        Assert.Equal("Groq", body["provider"]!.GetValue<string>());
+        Assert.False(body["sentToProvider"]!.GetValue<bool>());
+        Assert.Equal(4000, body["inputBudget"]!.GetValue<int>());
+        Assert.Equal(5712, body["reservedTokens"]!.GetValue<int>());
+        Assert.Equal(0, await ArtifactCountAsync());
+    }
+
+    // A rejection Groq itself returned (HTTP 413) keeps the provider-rejection heading and Groq's reason.
+    [Fact]
+    public async Task Genuine_groq_rejection_keeps_the_provider_rejected_heading()
+    {
+        _host.Ai.ThrowOnceWhenPromptContains(AnalysisMarker,
+            new AiProviderException(AiFailureKind.RequestRejected, "Groq", "Groq rejected the request.",
+                HttpStatusCode.RequestEntityTooLarge, "Request too large for model."));
+
+        var (status, body) = await AnalyzeAsync();
+
+        Assert.Equal(502, status);
+        Assert.Equal("ai_request_rejected", body!["code"]!.GetValue<string>());
+        Assert.Equal("The AI provider rejected the request.", body["title"]!.GetValue<string>());
+        Assert.Equal("Request too large for model.", body["detail"]!.GetValue<string>());
+        Assert.Null(body["sentToProvider"]);
+    }
+
     private sealed class ThrowingClient(Exception exception) : IAiChatClient
     {
         public string ModelName => "throwing";
@@ -139,6 +272,32 @@ public class AiErrorHandlingTests : IAsyncLifetime
         Assert.Equal("Gemini rate limit reached.", body!["title"]!.GetValue<string>());
         Assert.Equal("Please wait and try again.", body["detail"]!.GetValue<string>());
         Assert.Null(body["retryAfterSeconds"]);
+        Assert.Null(body["rateLimitType"]); // no limit named by the provider: none reported
+    }
+
+    // Gemini skipped (quota cool-down), Groq's daily token limit hit: the fallback's combined error
+    // keeps Groq's own failure as its inner exception, and the limit it named is what the user reads.
+    [Fact]
+    public async Task Fallback_rate_limit_names_the_limit_the_fallback_provider_reported()
+    {
+        var groq = new AiProviderException(AiFailureKind.RateLimited, "Groq",
+            "Groq daily quota exhausted. (HTTP 429 rate_limit_exceeded: Rate limit reached for model `openai/gpt-oss-120b` in organization `org_[redacted]` on tokens per day (TPD))",
+            HttpStatusCode.TooManyRequests, "Rate limit reached ... on tokens per day (TPD)", quotaExhausted: true, rateLimitType: "TPD");
+        _host.Ai.ThrowOnceWhenPromptContains(AnalysisMarker,
+            new AiProviderException(AiFailureKind.RateLimited, "Gemini and Groq", $"Gemini was skipped. Fallback Groq also failed: {groq.Message}",
+                HttpStatusCode.TooManyRequests, groq.ProviderMessage, inner: groq, quotaExhausted: true));
+
+        var (status, body) = await AnalyzeAsync();
+
+        Assert.Equal(429, status);
+        Assert.Equal("Gemini and Groq rate limit reached.", body!["title"]!.GetValue<string>());
+        Assert.Equal(
+            "Groq reported that its tokens-per-day limit (TPD) was reached. " +
+            "The AI usage quota appears to be used up for now (for example a daily free-tier limit). Please wait and try again later.",
+            body["detail"]!.GetValue<string>());
+        Assert.Equal("TPD", body["rateLimitType"]!.GetValue<string>());
+        Assert.True(body["quotaExhausted"]!.GetValue<bool>());
+        Assert.Equal(0, await ArtifactCountAsync());
     }
 
     [Fact]

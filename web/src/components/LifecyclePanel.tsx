@@ -6,7 +6,7 @@ import { projectsApi } from '../api/projects';
 import { REVIEW_DECISION, TRANSITION_KIND, TRANSITION_STATE, type LifecycleCheck, type Project, type ProjectLifecycleState, type StageTransition } from '../api/types';
 import { useLifecyclePolicy, useProjectLifecycle } from '../hooks/useLifecycle';
 import { personLabel, useMemberNames } from '../hooks/useMemberNames';
-import { LAST_STAGE, latestRejection, lifecycleProgress, LIFECYCLE_STAGES, roleLabel, stageLabel } from '../lib/lifecycle';
+import { LAST_STAGE, latestRejection, lifecycleProgress, LIFECYCLE_STAGES, roleLabel, stageLabel, submissionEvidenceNote } from '../lib/lifecycle';
 import { apiErrorText, failingChecksOf } from '../lib/errors';
 import { formatRelativeTime } from '../lib/format';
 import { useToast } from '../context/ToastContext';
@@ -527,6 +527,11 @@ function History({ history, userId, names }: { history: StageTransition[]; userI
             {t.isOverride && <span className="status-pill tone-danger">Override: {t.overrideReason}</span>}
             {t.kind === TRANSITION_KIND.Rollback && t.requestNote && <span className="muted">Reason: {t.requestNote}</span>}
             {t.state === TRANSITION_STATE.Rejected && t.decisionReason && <span className="muted">Reason: {t.decisionReason}</span>}
+            {submissionEvidenceNote(t) && (
+              <span className="muted" role="note">
+                {submissionEvidenceNote(t)}
+              </span>
+            )}
           </li>
         ))}
       </ol>

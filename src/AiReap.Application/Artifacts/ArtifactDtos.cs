@@ -63,7 +63,9 @@ public record UpdateArtifactRequest(
     JsonElement? Data,
     string? Reason);
 
-public record UpdateArtifactStatusRequest(ArtifactStatus Status, string? Comment);
+// Version (S1): the version the reviewer decided on. When given, an approval or rejection of any other
+// version is refused (409); omitted, the decision applies to the current version, as before.
+public record UpdateArtifactStatusRequest(ArtifactStatus Status, string? Comment, int? Version = null);
 
 public record ClarificationAnswerRequest(string Answer, bool NotApplicable);
 

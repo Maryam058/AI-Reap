@@ -82,9 +82,11 @@ public class GroqRequestBudgetTests
     });
 
     // Wired exactly as DependencyInjection wires it: Gemini resilient (no 429 retry), Groq
-    // resilient inside the request budget, both inside FallbackAiChatClient.
+    // resilient inside the request budget, both inside FallbackAiChatClient. maxChunkedParts 0 = no
+    // part limit (the split/merge tests); tests of Ai:Groq:MaxChunkedParts pass the production default.
     internal static (FallbackAiChatClient Client, GroqAiChatClientTests.FakeHandler GeminiHttp, GroqAiChatClientTests.FakeHandler GroqHttp) BuildStack(
-        Func<HttpRequestMessage, HttpResponseMessage> geminiRespond, Func<HttpRequestMessage, HttpResponseMessage> groqRespond)
+        Func<HttpRequestMessage, HttpResponseMessage> geminiRespond, Func<HttpRequestMessage, HttpResponseMessage> groqRespond,
+        int maxChunkedParts = 0)
     {
         var geminiHttp = new GroqAiChatClientTests.FakeHandler(geminiRespond);
         var groqHttp = new GroqAiChatClientTests.FakeHandler(groqRespond);
@@ -97,7 +99,8 @@ public class GroqRequestBudgetTests
             new ResilientAiChatClient(gemini, "Gemini", resilience.WithoutRateLimitRetry(), NullLogger.Instance, NoDelay), "Gemini",
             new RequestBudgetAiChatClient(
                 new ResilientAiChatClient(groq, "Groq", resilience, NullLogger.Instance, NoDelay), "Groq",
-                "Ai:Groq:MaxRequestTokens", MaxRequestTokens, ReservedOutputTokens, NullLogger.Instance), "Groq",
+                "Ai:Groq:MaxRequestTokens", MaxRequestTokens, ReservedOutputTokens, NullLogger.Instance,
+                maxChunkedParts, "Ai:Groq:MaxChunkedParts"), "Groq",
             new AiProviderCooldown(), TimeSpan.FromMinutes(10), NullLogger.Instance);
         return (client, geminiHttp, groqHttp);
     }

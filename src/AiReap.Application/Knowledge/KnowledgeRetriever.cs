@@ -17,6 +17,11 @@ public record RetrievalResult(IReadOnlyList<RetrievedChunk> Chunks, int StaleChu
 public interface IKnowledgeRetriever
 {
     Task<RetrievalResult> RetrieveAsync(Guid projectId, string query, int topK, CancellationToken cancellationToken = default);
+
+    // The topK largest chunks RetrieveAsync could return for any query (embedded with the current
+    // model), largest first - without embedding a query, so no embedding provider is called. Used
+    // by the dry-run AI plan as the upper bound of the excerpts a generation request may carry.
+    Task<IReadOnlyList<RetrievedChunk>> LargestCandidatesAsync(Guid projectId, int topK, CancellationToken cancellationToken = default);
 }
 
 // §26 — semantic retrieval over one project's document chunks (the vector store is DocumentChunk
@@ -68,6 +73,22 @@ public class KnowledgeRetriever : IKnowledgeRetriever
             .ToList();
 
         return new RetrievalResult(scored, stale, true);
+    }
+
+    public async Task<IReadOnlyList<RetrievedChunk>> LargestCandidatesAsync(Guid projectId, int topK, CancellationToken cancellationToken = default)
+    {
+        var model = _embeddingClient.ModelName;
+        var chunks = await _db.DocumentChunks
+            .Where(c => c.Document!.ProjectId == projectId && c.Embedding != null && c.EmbeddingModel == model)
+            .Select(c => new { c.ChunkIndex, c.ChunkText, DocumentName = c.Document!.FileName })
+            .ToListAsync(cancellationToken);
+
+        return chunks
+            .Select(c => new RetrievedChunk(c.DocumentName, c.ChunkIndex, c.ChunkText, 0f))
+            .OrderByDescending(c => PromptBudgetReducer.EstimateTokens(FormatExcerpts([c])))
+            .ThenBy(c => c.Reference, StringComparer.Ordinal)
+            .Take(topK)
+            .ToList();
     }
 
     // The labelled excerpt block given to a model; labels are what it must cite.

@@ -36,7 +36,9 @@ public class DesignController : ControllerBase
     {
         try
         {
-            return Ok(await _solutionDesignService.GenerateAsync(id, cancellationToken));
+            var (design, created) = await _solutionDesignService.GenerateWithOutcomeAsync(id, cancellationToken);
+            GenerationCountHeaders.Write(Response, created ? 1 : 0, created ? 0 : 1);
+            return Ok(design);
         }
         catch (KeyNotFoundException)
         {
@@ -51,7 +53,9 @@ public class DesignController : ControllerBase
     {
         try
         {
-            return Ok(await _databaseDesignService.GenerateAsync(id, cancellationToken));
+            var result = await _databaseDesignService.GenerateAsync(id, cancellationToken);
+            GenerationCountHeaders.Write(Response, result);
+            return Ok(result);
         }
         catch (KeyNotFoundException)
         {
@@ -66,7 +70,9 @@ public class DesignController : ControllerBase
     {
         try
         {
-            return Ok(await _apiDesignService.GenerateAsync(id, cancellationToken));
+            var result = await _apiDesignService.GenerateAsync(id, cancellationToken);
+            GenerationCountHeaders.Write(Response, result);
+            return Ok(result);
         }
         catch (KeyNotFoundException)
         {
@@ -81,7 +87,9 @@ public class DesignController : ControllerBase
     {
         try
         {
-            return Ok(await _implementationPlanningService.GenerateAsync(id, cancellationToken));
+            var result = await _implementationPlanningService.GenerateAsync(id, cancellationToken);
+            GenerationCountHeaders.Write(Response, result);
+            return Ok(result);
         }
         catch (KeyNotFoundException)
         {

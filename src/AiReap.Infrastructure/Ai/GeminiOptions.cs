@@ -17,6 +17,23 @@ public class GeminiOptions
     // Requirement generation returns long JSON documents; too low a limit truncates them.
     public int MaxOutputTokens { get; set; } = 16384;
 
+    // Per-attempt timeout for Gemini calls, replacing Ai:Resilience:TimeoutSeconds for Gemini only.
+    // A large requirement source (tens of thousands of input tokens, a long JSON answer plus
+    // thinking) can legitimately take longer than the shared 120s; Groq's small budgeted requests
+    // keep the shared value. 0 uses Ai:Resilience:TimeoutSeconds.
+    public int TimeoutSeconds { get; set; } = 300;
+
+    // Total attempts when a Gemini call times out. 1 = no resend: Gemini has usually processed (and
+    // counted against the quota) a request it was still working on, so resending a long request
+    // spends the quota twice; with a fallback configured the call goes to it instead. 503s, network
+    // errors and 429s keep their Ai:Resilience retry rules. 0 uses Ai:Resilience:MaxAttempts.
+    public int MaxTimeoutAttempts { get; set; } = 1;
+
+    // Dry-run AI plan only (AiPlanService): requirement generation from a source estimated above
+    // this many tokens is flagged as at risk of hitting MaxOutputTokens or TimeoutSeconds when sent
+    // to Gemini whole. A size heuristic, not a measurement; it never blocks a request. 0 disables.
+    public int LargeGenerationWarningTokens { get; set; } = 30000;
+
     // Null sends no temperature, so the model default applies. Google advises keeping Gemini 3 models
     // at their default (1.0): lower values can cause looping or degraded output.
     public double? Temperature { get; set; }

@@ -63,6 +63,10 @@ public static class DependencyInjection
         services.AddSingleton<StubAiChatClient>();
         services.AddSingleton<AiProviderCooldown>();
         services.AddScoped<IAiChatClient>(ResolveAiChatClient);
+        services.AddScoped<IAiRouteInspector, AiRouteInspector>();
+        services.AddSingleton<AiReap.Application.Ai.Pipeline.IAiBatchSettings, AiBatchSettings>();
+        services.Configure<CopilotOptions>(configuration.GetSection(CopilotOptions.SectionName));
+        services.AddSingleton<AiReap.Application.Knowledge.ICopilotSettings, CopilotSettings>();
         services.AddScoped<IAiHealthCheckService, AiHealthCheckService>();
         services.AddScoped<ISystemSettingsService, SystemSettingsService>();
 
@@ -193,9 +197,19 @@ public static class DependencyInjection
 
     // A cloud client as it is used: resilience around it, plus - for Groq, whose free tier caps the
     // size of one request - the request budget outside that, so a prompt is condensed once and every
-    // retry reuses it. Gemini gets no budget: its requests are sent exactly as built.
+    // retry reuses it. Gemini gets no budget: its requests are sent exactly as built, under its own
+    // per-attempt timeout and timeout-retry limit (Ai:Gemini:TimeoutSeconds / MaxTimeoutAttempts).
     private static IAiChatClient Wrap(IServiceProvider sp, IAiChatClient client, string name, AiResilienceOptions? resilience = null)
     {
+        if (name == AiOptions.Gemini)
+        {
+            var gemini = sp.GetRequiredService<IOptions<GeminiOptions>>().Value;
+            var shared = resilience ?? sp.GetRequiredService<IOptions<AiResilienceOptions>>().Value;
+            return Resilient(sp, client, name, shared.WithTimeout(
+                gemini.TimeoutSeconds > 0 ? gemini.TimeoutSeconds : shared.TimeoutSeconds,
+                Math.Max(0, gemini.MaxTimeoutAttempts)));
+        }
+
         if (name != AiOptions.Groq)
         {
             return Resilient(sp, client, name, resilience);
@@ -207,7 +221,8 @@ public static class DependencyInjection
         return new RequestBudgetAiChatClient(
             resilient, name, $"{GroqOptions.SectionName}:{nameof(GroqOptions.MaxRequestTokens)}",
             groq.MaxRequestTokens, groq.ReservedOutputTokens,
-            sp.GetRequiredService<ILoggerFactory>().CreateLogger<RequestBudgetAiChatClient>());
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<RequestBudgetAiChatClient>(),
+            groq.MaxChunkedParts, $"{GroqOptions.SectionName}:{nameof(GroqOptions.MaxChunkedParts)}");
     }
 
     private static bool IsCloudProvider(string name, out string canonical)

@@ -16,7 +16,7 @@ import {
   type StageTransition,
 } from '../api/types';
 import { personLabel, useMemberNames } from '../hooks/useMemberNames';
-import { LIFECYCLE_STAGES, roleLabel, stageLabel } from '../lib/lifecycle';
+import { LIFECYCLE_STAGES, roleLabel, stageLabel, submissionEvidenceNote } from '../lib/lifecycle';
 import {
   artifactsById,
   artifactsCreatedIn,
@@ -319,6 +319,7 @@ function allTransitions(review: LifecycleReview): StageTransition[] {
 }
 
 function TransitionRow({ t, who }: { t: StageTransition; who: Who }) {
+  const evidenceNote = submissionEvidenceNote(t);
   const from = t.fromStatus == null ? null : stageLabel(t.fromStatus);
   const to = stageLabel(t.toStatus);
   const gated = !!t.decidedByUserId && t.decidedByUserId !== t.requestedByUserId;
@@ -377,6 +378,11 @@ function TransitionRow({ t, who }: { t: StageTransition; who: Who }) {
           </div>
         ))}
       </dl>
+      {evidenceNote && (
+        <div className="alert alert-info" role="note">
+          {evidenceNote}
+        </div>
+      )}
     </li>
   );
 }

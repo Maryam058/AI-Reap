@@ -15,10 +15,31 @@ public sealed class AiResponseValidator
     private readonly HashSet<string>? _knownCodes;
     private readonly HashSet<string>? _knownSourceReferences;
 
-    public AiResponseValidator(IEnumerable<string>? knownArtifactCodes = null, IEnumerable<string>? knownSourceReferences = null)
+    private readonly SourceIdScope? _sourceIds;
+
+    public AiResponseValidator(IEnumerable<string>? knownArtifactCodes = null, IEnumerable<string>? knownSourceReferences = null,
+        SourceIdScope? sourceIds = null)
     {
         _knownCodes = knownArtifactCodes?.ToHashSet(StringComparer.OrdinalIgnoreCase);
         _knownSourceReferences = knownSourceReferences?.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _sourceIds = sourceIds;
+    }
+
+    // Requirement IDs of the source (SrsIdExtractor): a requirement's own sourceIds must appear in
+    // the text it was generated from; its dependsOnSourceIds anywhere in the source. Not checked
+    // when the caller gives no scope.
+    public void SourceIdsExist(List<string>? ids, string path, bool anywhereInSource = false)
+    {
+        if (_sourceIds is null || ids is null) return;
+        var known = anywhereInSource ? _sourceIds.InSource : _sourceIds.InPart;
+        foreach (var id in ids)
+        {
+            if (string.IsNullOrWhiteSpace(id) || !known.Contains(id.Trim()))
+            {
+                Fail($"{path} cites '{Truncate(id)}', which does not appear in the requirement source text {(anywhereInSource ? "" : "provided ")}" +
+                    "- cite only requirement IDs written in that text.");
+            }
+        }
     }
 
     // §26 citations ("notes.pdf#3") must point at an excerpt the model was actually given.
@@ -111,6 +132,18 @@ public sealed class AiResponseValidator
             {
                 Fail($"{path} references '{Truncate(code)}', which is not one of the artifacts provided.");
             }
+        }
+    }
+
+    // A4b — an artifact that must trace to the requirements it was given cites at least one of them.
+    // Only when some were given: with none known (a source without FRs) an empty list stays valid.
+    // Which codes are cited is CodesExist's check; this only rejects citing nothing.
+    public void CodesRequired(List<string>? codes, string path)
+    {
+        if (_knownCodes is not { Count: > 0 }) return;
+        if (codes is null || codes.All(string.IsNullOrWhiteSpace))
+        {
+            Fail($"{path} must cite at least one of the artifacts provided.");
         }
     }
 

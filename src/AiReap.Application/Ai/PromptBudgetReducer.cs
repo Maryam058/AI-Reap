@@ -19,8 +19,9 @@ public sealed record PromptReduction(
 // not afford anyway.
 //
 // A prompt that already fits is returned byte-for-byte unchanged. Otherwise, in order:
-//   1. lossless clean-up: whitespace runs, duplicated passages, and page headers/footers repeated
-//      throughout an extracted document;
+//   1. lossless clean-up: whitespace runs, a passage repeated directly after itself, repeated
+//      boilerplate passages, and page headers/footers repeated throughout an extracted document -
+//      never a repeated requirement statement, requirement ID or table cell (IsBoilerplate);
 //   2. relevance selection over the source text: passages carrying requirement signals (modal
 //      verbs, rules, numbers, list items, headings, and terms shared with the derived-artifact
 //      context) are kept first; retrieved document excerpts come after the source text, in their
@@ -159,17 +160,31 @@ public static partial class PromptBudgetReducer
         var blocks = text.Split("\n\n", StringSplitOptions.RemoveEmptyEntries);
         var classified = blocks.Select(b => (Text: b, Kind: Classify(b))).ToList();
 
-        // Lines repeated three or more times across the source text are page headers/footers left
-        // by document extraction; keep only their first occurrence.
-        var lineCounts = classified.Where(b => b.Kind == PassageKind.Source)
-            .SelectMany(b => b.Text.Split('\n'))
-            .Select(l => l.Trim())
-            .Where(l => l.Length is > 0 and <= 120)
-            .GroupBy(l => l, StringComparer.OrdinalIgnoreCase)
-            .Where(g => g.Count() >= 3)
-            .ToDictionary(g => g.Key, _ => false, StringComparer.OrdinalIgnoreCase);
+        // Page headers/footers left by document extraction: a line repeated three or more times,
+        // found only where page furniture sits (a line of its own, or the first or last line of a
+        // block), that IsBoilerplate. Only its first occurrence is kept. A repeated requirement
+        // statement, ID or table cell is content, however often it repeats, and is never removed.
+        var lineStats = new Dictionary<string, (int Count, bool OnlyAtEdges)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (blockText, _) in classified.Where(b => b.Kind == PassageKind.Source))
+        {
+            var lines = blockText.Split('\n');
+            for (var i = 0; i < lines.Length; i++)
+            {
+                var key = lines[i].Trim();
+                if (key.Length is 0 or > 120) continue;
+                var atEdge = i == 0 || i == lines.Length - 1;
+                lineStats[key] = lineStats.TryGetValue(key, out var stats)
+                    ? (stats.Count + 1, stats.OnlyAtEdges && atEdge)
+                    : (1, atEdge);
+            }
+        }
+
+        var lineCounts = lineStats
+            .Where(s => s.Value.Count >= 3 && s.Value.OnlyAtEdges && IsBoilerplate(s.Key))
+            .ToDictionary(s => s.Key, _ => false, StringComparer.OrdinalIgnoreCase);
 
         var seenBlocks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string? previousSourceBlock = null;
         var passages = new List<Passage>();
         foreach (var (blockText, kind) in classified)
         {
@@ -183,9 +198,22 @@ public static partial class PromptBudgetReducer
                     lineCounts[key] = true;
                     return !seen;
                 }));
-                if (block.Trim().Length == 0 || !seenBlocks.Add(block.Trim()))
+
+                var blockKey = block.Trim();
+                if (blockKey.Length == 0)
                 {
-                    continue; // duplicate passage (or nothing left after removing repeated headers)
+                    continue; // nothing left after removing repeated page headers
+                }
+
+                // A repeated passage is dropped only when it adds nothing: a copy directly after
+                // itself (an extraction or paste glitch), or boilerplate. The same requirement
+                // stated again under another section is kept there too.
+                var adjacentCopy = string.Equals(previousSourceBlock, blockKey, StringComparison.OrdinalIgnoreCase);
+                previousSourceBlock = blockKey;
+                if (!seenBlocks.Add(blockKey)
+                    && ((adjacentCopy && WordCount(blockKey) >= MinBoilerplateWords && !LooksTabular(blockKey)) || IsBoilerplate(blockKey)))
+                {
+                    continue;
                 }
             }
 
@@ -206,6 +234,23 @@ public static partial class PromptBudgetReducer
 
         return passages;
     }
+
+    // Fewer words than this and a repeated line or passage is treated as content (a table cell such
+    // as "Yes", "High" or "Line manager"), never as a page header.
+    private const int MinBoilerplateWords = 3;
+
+    // Text that may be removed as a repeat: no requirement wording, no requirement ID, not a table
+    // row, and long enough not to be a table cell. Anything else that repeats is kept.
+    private static bool IsBoilerplate(string text) =>
+        !RequirementSignal().IsMatch(text)
+        && SrsIdExtractor.Extract(text).Count == 0
+        && !LooksTabular(text)
+        && WordCount(text) >= MinBoilerplateWords;
+
+    private static bool LooksTabular(string text) => text.IndexOfAny(['|', '\t']) >= 0;
+
+    private static int WordCount(string text) =>
+        text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
 
     private static PassageKind Classify(string block)
     {

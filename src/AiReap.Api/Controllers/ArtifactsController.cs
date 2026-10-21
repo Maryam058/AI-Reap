@@ -185,6 +185,7 @@ public class ArtifactsController : ControllerBase
     public async Task<ActionResult> GenerateAcceptanceCriteria(Guid id, CancellationToken cancellationToken)
     {
         var created = await _userStoryService.GenerateAcceptanceCriteriaAsync(id, cancellationToken);
+        GenerationCountHeaders.Write(Response, created);
         return created is null ? NotFound("Artifact not found or is not a UserStory.") : Ok(created);
     }
 
@@ -194,6 +195,7 @@ public class ArtifactsController : ControllerBase
     public async Task<ActionResult> GenerateTestCases(Guid id, CancellationToken cancellationToken)
     {
         var created = await _testGenerationService.GenerateAsync(id, cancellationToken);
+        GenerationCountHeaders.Write(Response, created);
         return created is null ? NotFound("Artifact not found or is not a FunctionalRequirement.") : Ok(created);
     }
 }

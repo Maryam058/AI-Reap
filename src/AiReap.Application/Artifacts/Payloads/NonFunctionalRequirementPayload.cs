@@ -20,4 +20,28 @@ public class NonFunctionalRequirementPayload
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTime? ConfirmedAt { get; set; }
+
+    // Requirement IDs written in the requirement source that this NFR comes from, and the source
+    // section it sits under (see FunctionalRequirementPayload).
+    public List<string> SourceIds { get; set; } = new();
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SourceSection { get; set; }
+
+    // P0-2 — origin and evidence, as on FunctionalRequirementPayload (the claim checked for
+    // UnsupportedNumbers is the description and target value).
+    public string? RequirementOrigin { get; set; }
+    public string? DerivationNote { get; set; }
+    public List<string> AssumedClarifications { get; set; } = new();
+    public List<EvidenceQuotePayload> Evidence { get; set; } = new();
+    public string? EvidenceStatus { get; set; }
+    public List<string> UnsupportedNumbers { get; set; } = new();
+    public string? EvidenceCheck { get; set; }
+
+    // TargetOrigin is the model's claim about the target, kept as given: "stated" | "proposed" | null.
+    // TargetSupport is the server's check of a "stated" claim: "quote_found" only when a verified SRS
+    // quote contains the target's numbers and units, else "not_supported"; null when not claimed
+    // stated. Neither changes AssumptionStatus: every target still needs a human confirmation.
+    public string? TargetOrigin { get; set; }
+    public string? TargetSupport { get; set; }
 }

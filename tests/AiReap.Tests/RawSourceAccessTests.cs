@@ -141,6 +141,8 @@ public class RawSourceAccessTests : IAsyncLifetime
         var (cs, answer) = await _dev.PostAsync($"/api/projects/{f.ProjectId}/copilot/ask", new { question = DocumentText.Replace("QUILLDOC-4412 ", "") });
         Assert.Equal(200, cs);
         Assert.Empty(answer!["citations"]!.AsArray());
+        // The context report says nothing about documents to a caller who may not read them.
+        Assert.Null(answer["context"]!["excerptsOmitted"]);
         Assert.DoesNotContain("QUILLDOC-4412", _host.Ai.UserPrompts[^1]);
         Assert.DoesNotContain(SourceMarker, _host.Ai.UserPrompts[^1]);
         AssertNoRawSource(answer, "POST copilot/ask");

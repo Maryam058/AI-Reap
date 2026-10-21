@@ -94,7 +94,8 @@ public class AuditTrailService : IAuditTrailService
                 artifactCode = artifact.Code,
                 artifactType = artifact.ArtifactType.ToString(),
                 title = first?.Title ?? artifact.Title,
-                data = ArtifactJson.ToCamelCaseElement(first?.DataSnapshotJson ?? artifact.DataJson)
+                // S2/P0-2 — requirement evidence without its quote text (RequirementEvidenceFields).
+                data = ArtifactJson.ToCamelCaseElement(RequirementEvidenceFields.RedactForRestrictedCaller(first?.DataSnapshotJson ?? artifact.DataJson))
             }, JsonOptions);
         }
 

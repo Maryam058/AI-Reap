@@ -9,6 +9,8 @@ import { useAuth } from '../auth/AuthContext';
 import { apiErrorText } from '../lib/errors';
 import { useDisclosure, type DisclosureRequest } from '../lib/disclosure';
 import { testCaseReviewNote } from '../lib/testCaseReview';
+import { canGenerateDownstream } from '../lib/downstreamGeneration';
+import { evidenceSummary, originLabel, quoteLabel, targetLabel, unsupportedNumbersLabel, type EvidenceLabel } from '../lib/evidence';
 import {
   ARTIFACT_PRIORITY_LABELS,
   ARTIFACT_STATUS,
@@ -23,6 +25,7 @@ import {
   type FunctionalRequirementData,
   type ImplementationTaskData,
   type NonFunctionalRequirementData,
+  type RequirementEvidenceData,
   type TestCaseData,
   type UserStoryData,
 } from '../api/types';
@@ -35,9 +38,9 @@ interface Props {
   canEdit: boolean;
   token: string | null;
   // §24 — review decisions; the comment is recorded with the decision (required, as the reason, to
-  // reject). Resolve to whether the decision was recorded.
-  onApprove: (id: string, comment?: string) => Promise<boolean>;
-  onReject: (id: string, comment?: string) => Promise<boolean>;
+  // reject) and made on `version`, the version shown (S1). Resolve to whether the decision was recorded.
+  onApprove: (id: string, comment: string | undefined, version: number) => Promise<boolean>;
+  onReject: (id: string, comment: string | undefined, version: number) => Promise<boolean>;
   // §24 — the other human workflow moves (submit for review, return to draft, reopen review).
   onChangeStatus?: (id: string, status: number) => Promise<void>;
   onSaved: () => void;
@@ -169,7 +172,7 @@ export function ArtifactCard({
     setReviewError(null);
     setBusy(true);
     try {
-      const recorded = await (approve ? onApprove : onReject)(artifact.id, trimmedComment || undefined);
+      const recorded = await (approve ? onApprove : onReject)(artifact.id, trimmedComment || undefined, artifact.currentVersion);
       if (recorded) {
         setReviewComment('');
         setReviewsRecorded((n) => n + 1);
@@ -318,13 +321,13 @@ export function ArtifactCard({
               Confirm target
             </button>
           )}
-          {artifact.artifactType === ARTIFACT_TYPE_VALUES.UserStory && onGenerateAcceptanceCriteria && (
+          {artifact.artifactType === ARTIFACT_TYPE_VALUES.UserStory && onGenerateAcceptanceCriteria && canGenerateDownstream(artifact.status) && (
             <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act(onGenerateAcceptanceCriteria)}>
               <IconSparkles width={14} height={14} />
               Generate acceptance criteria
             </button>
           )}
-          {artifact.artifactType === ARTIFACT_TYPE_VALUES.FunctionalRequirement && onGenerateTestCases && (
+          {artifact.artifactType === ARTIFACT_TYPE_VALUES.FunctionalRequirement && onGenerateTestCases && canGenerateDownstream(artifact.status) && (
             <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act(onGenerateTestCases)}>
               <IconSparkles width={14} height={14} />
               Generate test cases
@@ -439,6 +442,7 @@ function FunctionalRequirementDetails({ data }: { data: FunctionalRequirementDat
       <Detail label="Expected result" value={data.expectedResult} />
       {data.dependencies?.length > 0 && <Detail label="Dependencies" value={data.dependencies.join(', ')} />}
       {(data.sourceReferences?.length ?? 0) > 0 && <Detail label="Sources" value={data.sourceReferences!.join(', ')} />}
+      <RequirementEvidenceDetails data={data} />
     </>
   );
 }
@@ -458,6 +462,51 @@ function NonFunctionalRequirementDetails({ data }: { data: NonFunctionalRequirem
             {data.assumptionStatus === 'proposed_assumption' ? 'Proposed assumption — needs confirmation' : 'Target confirmed'}
           </span>
         </p>
+      )}
+      <RequirementEvidenceDetails data={data} target={targetLabel(data)} />
+    </>
+  );
+}
+
+function EvidencePill({ label }: { label: EvidenceLabel }) {
+  return <span className={`status-pill tone-${label.tone}`}>{label.text}</span>;
+}
+
+// P0-2 — origin, evidence and (NFR) target labels, and the quotes with the server's result for each.
+// "Found" means only that the quoted words are in the cited text. A user who may not read raw sources
+// gets the results without the quote text (quoteWithheld).
+function RequirementEvidenceDetails({ data, target }: { data: RequirementEvidenceData; target?: EvidenceLabel | null }) {
+  const origin = originLabel(data.requirementOrigin);
+  const numbers = unsupportedNumbersLabel(data.unsupportedNumbers);
+  const quotes = data.evidence ?? [];
+  return (
+    <>
+      <p className="detail-row">
+        <span className="detail-label">Evidence</span>
+        <span className="detail-value">
+          {origin && <EvidencePill label={origin} />} <EvidencePill label={evidenceSummary(data)} /> {target && <EvidencePill label={target} />}
+        </span>
+      </p>
+      <Detail label="Derivation" value={data.derivationNote} />
+      {(data.assumedClarifications?.length ?? 0) > 0 && <Detail label="Assumes" value={data.assumedClarifications!.join(', ')} />}
+      {numbers && (
+        <p className="detail-row">
+          <span className="detail-label">Numbers</span>
+          <span className="detail-value"><span className="status-pill tone-warning">{numbers}</span></span>
+        </p>
+      )}
+      {quotes.length > 0 && (
+        <details className="work-record-history">
+          <summary>Evidence quotes ({quotes.length})</summary>
+          <ul>
+            {quotes.map((q, i) => (
+              <li key={i}>
+                <EvidencePill label={quoteLabel(q)} />{' '}
+                {q.quoteWithheld ? <em>Quote text withheld for your role</em> : <q>{q.quote}</q>}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
     </>
   );

@@ -56,7 +56,8 @@ public sealed class ServicesAs : IDisposable
             var r = NewRequest();
             return new ProjectLifecycleService(r.Db, _user, r.Access, EvidenceFor(r.Db, r.Sp),
                 new LifecycleNotifications(r.Db, r.Sp.GetRequiredService<IUserRoleDirectory>()),
-                new ExitCheckGuidanceService(r.Db, r.Sp.GetRequiredService<IUserRoleDirectory>(), _user));
+                new ExitCheckGuidanceService(r.Db, r.Sp.GetRequiredService<IUserRoleDirectory>(), _user),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<ProjectLifecycleService>.Instance);
         }
     }
 

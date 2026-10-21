@@ -87,12 +87,35 @@ public class ArtifactService : IArtifactService
             throw new RequestValidationException("Title cannot be empty.");
         }
 
+        // G3 D1/P3 — an FR/NFR's data must be an object, and a derived/assumed origin needs a note.
+        if (request.Data is { } requirementData && RequirementEvidenceFields.Applies(artifact.ArtifactType))
+        {
+            RequirementOriginEdit.Validate(artifact.ArtifactType, artifact.DataJson, requirementData);
+        }
+
         string? newData;
         bool dataChanged;
         if (request.Data is { } data && artifact.ArtifactType == ArtifactType.NonFunctionalRequirement)
         {
             // REAP-045 — an edit never decides the NFR's confirmation; the client's value is ignored.
             var sanitized = NfrAssumption.SanitizeEdit(artifact.DataJson, data);
+
+            // P0-2 — nor its evidence results (RequirementEvidenceFields).
+            if (RequirementEvidenceFields.Involved(artifact.DataJson, sanitized))
+            {
+                sanitized = RequirementEvidenceFields.SanitizeEdit(artifact.DataJson, sanitized, artifact.ArtifactType);
+            }
+
+            newData = sanitized.ToJsonString();
+            dataChanged = !JsonNode.DeepEquals(sanitized, JsonNode.Parse(artifact.DataJson));
+        }
+        else if (request.Data is { ValueKind: JsonValueKind.Object } frData
+                 && artifact.ArtifactType == ArtifactType.FunctionalRequirement
+                 && JsonNode.Parse(frData.GetRawText()) is JsonObject edited
+                 && RequirementEvidenceFields.Involved(artifact.DataJson, edited))
+        {
+            // P0-2 — an FR's evidence and its results are server-owned; anything else is stored as sent.
+            var sanitized = RequirementEvidenceFields.SanitizeEdit(artifact.DataJson, edited, artifact.ArtifactType);
             newData = sanitized.ToJsonString();
             dataChanged = !JsonNode.DeepEquals(sanitized, JsonNode.Parse(artifact.DataJson));
         }
@@ -137,7 +160,8 @@ public class ArtifactService : IArtifactService
     // approves the new one.
     //
     // Changing approved content also raises §22 impact notices on everything downstream (stories,
-    // criteria, APIs, entities, tasks, tests) - flagged for review, never modified.
+    // criteria, APIs, entities, tasks, tests) - flagged for review, never modified. The change,
+    // its new version and its notices are written by one save: all of them or none.
     private async Task ApplyHumanContentChangeAsync(Artifact artifact, string? reason, CancellationToken cancellationToken)
     {
         var wasApproved = ArtifactStatusTransitions.IsApprovedOrLater(artifact.Status);
@@ -149,12 +173,13 @@ public class ArtifactService : IArtifactService
                 : $"{reason} (edited after approval of v{artifact.ApprovedVersion ?? artifact.CurrentVersion}; re-review required)";
         }
 
-        await SaveNewVersionAsync(artifact, reason, ArtifactOrigin.Human, cancellationToken);
-
+        AddNewVersion(artifact, reason, ArtifactOrigin.Human);
         if (wasApproved)
         {
-            await _impactAnalysis.RaiseNoticesForChangeAsync(artifact, cancellationToken);
+            await _impactAnalysis.StageNoticesForChangeAsync(artifact, cancellationToken);
         }
+
+        await ArtifactConcurrency.SaveAsync(_db, cancellationToken);
     }
 
     public async Task<ArtifactResponse?> UpdateStatusAsync(Guid id, UpdateArtifactStatusRequest request, CancellationToken cancellationToken = default)
@@ -167,6 +192,14 @@ public class ArtifactService : IArtifactService
 
         await _projectAccess.EnsureMemberAsync(artifact.ProjectId, cancellationToken);
 
+        // S1 - a decision is about the version the reviewer saw. Checked before anything changes.
+        if (request.Status is ArtifactStatus.Approved or ArtifactStatus.Rejected
+            && request.Version is { } version && version != artifact.CurrentVersion)
+        {
+            throw new ConflictException(
+                $"v{version} is not the current version of {artifact.Code} (v{artifact.CurrentVersion}). {ArtifactConcurrency.ChangedMessage}");
+        }
+
         // Throws InvalidArtifactStatusTransitionException (-> 409) for anything off the state machine,
         // including Implemented/Verified, which only the system derives.
         ArtifactStatusTransitions.EnsureHumanTransition(artifact.Status, request.Status);
@@ -175,6 +208,30 @@ public class ArtifactService : IArtifactService
         if (request.Status == ArtifactStatus.Rejected && string.IsNullOrWhiteSpace(request.Comment))
         {
             throw new RequestValidationException("A reason is required to reject an artifact.");
+        }
+
+        // G3 — the same evidence and NFR-target rule as the Design and Testing gates. This request has
+        // no override field (Comment is not one), so the refusal is final until the cause is resolved.
+        // Checked before anything changes, so a refusal touches no data.
+        if (request.Status == ArtifactStatus.Approved && RequirementApprovalEvidence.Applies(artifact.ArtifactType))
+        {
+            var evidence = RequirementApprovalEvidence.Assess(artifact.ArtifactType, artifact.DataJson);
+            if (evidence.Blocks)
+            {
+                throw new ConflictException(RequirementApprovalEvidence.ApprovalRefusal(artifact.Code, evidence));
+            }
+
+            // G3 P2 — separation of duties, whatever roles the caller holds: the requirement's author
+            // (who created or generated it) may not approve it. Later editors are not its author.
+            if (string.IsNullOrWhiteSpace(artifact.CreatedByUserId))
+            {
+                throw new ConflictException($"{artifact.Code} has no recorded author, so it cannot be shown that its approver is someone else; it cannot be approved.");
+            }
+
+            if (artifact.CreatedByUserId == _currentUser.UserId)
+            {
+                throw new UnauthorizedAccessException($"You cannot approve {artifact.Code}: you are its author. Another Business Analyst, Reviewer or Administrator must approve it.");
+            }
         }
 
         artifact.Status = request.Status;
@@ -214,14 +271,15 @@ public class ArtifactService : IArtifactService
             }
         }
 
-        await _db.SaveChangesAsync(cancellationToken);
-
         // §8 — approving an answered clarification question is the human-acceptance signal
-        // that closes it out: Answered -> Resolved.
+        // that closes it out: Answered -> Resolved. Saved with the approval (S1): a lost race
+        // writes neither.
         if (request.Status == ArtifactStatus.Approved && artifact.ArtifactType == ArtifactType.ClarificationQuestion)
         {
-            await ResolveClarificationIfAnsweredAsync(artifact, cancellationToken);
+            ResolveClarificationIfAnswered(artifact);
         }
+
+        await ArtifactConcurrency.SaveAsync(_db, cancellationToken);
 
         // Implemented/Verified are no longer derived from approving a task or test case - approval
         // only accepts the plan. They follow recorded work instead (ArtifactWorkService).
@@ -234,7 +292,7 @@ public class ArtifactService : IArtifactService
     // artifact itself was approved. No reversion path if the artifact is later rejected - same
     // pattern as the FR auto-promotion above having no demotion (known limitation, documented
     // not hidden, rather than half-built).
-    private async Task ResolveClarificationIfAnsweredAsync(Artifact artifact, CancellationToken cancellationToken)
+    private void ResolveClarificationIfAnswered(Artifact artifact)
     {
         var payload = JsonSerializer.Deserialize<ClarificationQuestionPayload>(
             artifact.DataJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new ClarificationQuestionPayload();
@@ -248,9 +306,8 @@ public class ArtifactService : IArtifactService
         // Approved status and becomes the approved version.
         payload.ClarificationStatus = "Resolved";
         artifact.DataJson = JsonSerializer.Serialize(payload);
-        await SaveNewVersionAsync(artifact, "Clarification approved as resolved", ArtifactOrigin.Human, cancellationToken);
+        AddNewVersion(artifact, "Clarification approved as resolved", ArtifactOrigin.Human);
         artifact.ApprovedVersion = artifact.CurrentVersion;
-        await _db.SaveChangesAsync(cancellationToken);
     }
 
     public async Task<ArtifactResponse?> AnswerClarificationAsync(Guid id, ClarificationAnswerRequest request, CancellationToken cancellationToken = default)
@@ -359,7 +416,7 @@ public class ArtifactService : IArtifactService
 
         return versions.Select(v => new ArtifactVersionResponse(
             v.VersionNumber,
-            ArtifactJson.ToCamelCaseElement(v.DataSnapshotJson),
+            ArtifactJson.ToCamelCaseElement(DataFor(v.DataSnapshotJson)),
             v.ChangedByUserId,
             v.ChangedAt,
             v.Reason,
@@ -531,7 +588,19 @@ public class ArtifactService : IArtifactService
             RelationshipType = RelationshipType.DependsOn,
             CreatedAt = DateTime.UtcNow
         });
-        await _db.SaveChangesAsync(cancellationToken);
+
+        // A concurrent request adding the same link passes the check above too; the second insert then
+        // hits the relationship's unique index. Answered like the check: 409, nothing saved. Any other
+        // database failure propagates unchanged.
+        try
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex) when (ArtifactPersistence.IsUniqueViolationOn(ex, TraceabilityService.ObjectiveLinkIndex))
+        {
+            ArtifactPersistence.Undo(_db);
+            throw new ConflictException($"{story.Code} already depends on {target.Code}.");
+        }
 
         return new ArtifactRelationshipResponse(target.Id, target.Code, target.Title, target.ArtifactType, RelationshipType.DependsOn, true);
     }
@@ -562,7 +631,21 @@ public class ArtifactService : IArtifactService
         }
 
         _db.ArtifactRelationships.RemoveRange(links);
-        await _db.SaveChangesAsync(cancellationToken);
+
+        // A concurrent request removed the link first: the DELETE affected no row. Relationships carry
+        // no concurrency token and the unique index allows one such link per pair, so that is the only
+        // way this save reports a concurrency conflict. Answered as for a link that is already gone
+        // (false -> 404); any other database failure propagates unchanged.
+        try
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            ArtifactPersistence.Undo(_db);
+            return false;
+        }
+
         return true;
     }
 
@@ -584,7 +667,15 @@ public class ArtifactService : IArtifactService
         return _currentUser.CanSee(artifact.ArtifactType, artifact.Status);
     }
 
+    // S1 - the version number is the artifact's concurrency token: two changes made from the same
+    // version cannot both be saved, so they cannot both mint version N+1.
     private async Task SaveNewVersionAsync(Artifact artifact, string? reason, ArtifactOrigin changeOrigin, CancellationToken cancellationToken)
+    {
+        AddNewVersion(artifact, reason, changeOrigin);
+        await ArtifactConcurrency.SaveAsync(_db, cancellationToken);
+    }
+
+    private void AddNewVersion(Artifact artifact, string? reason, ArtifactOrigin changeOrigin)
     {
         artifact.CurrentVersion += 1;
         artifact.UpdatedByUserId = _currentUser.UserId;
@@ -604,9 +695,17 @@ public class ArtifactService : IArtifactService
             Reason = reason,
             Origin = changeOrigin
         });
-
-        await _db.SaveChangesAsync(cancellationToken);
     }
 
-    private static ArtifactResponse ToResponse(Artifact artifact) => ArtifactResponseMapper.ToResponse(artifact);
+    // S2/P0-2 — a caller who may not read raw sources gets requirement evidence without its quote text.
+    private ArtifactResponse ToResponse(Artifact artifact)
+    {
+        var response = ArtifactResponseMapper.ToResponse(artifact);
+        return _currentUser.CanReadRawSources() || !RequirementEvidenceFields.Applies(artifact.ArtifactType)
+            ? response
+            : response with { Data = ArtifactJson.ToCamelCaseElement(RequirementEvidenceFields.RedactForRestrictedCaller(artifact.DataJson)) };
+    }
+
+    private string DataFor(string dataJson) =>
+        _currentUser.CanReadRawSources() ? dataJson : RequirementEvidenceFields.RedactForRestrictedCaller(dataJson);
 }

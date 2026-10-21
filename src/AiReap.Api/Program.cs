@@ -52,6 +52,11 @@ builder.Services.AddScoped<IArtifactService, ArtifactService>();
 builder.Services.AddScoped<IRequirementAnalysisService, RequirementAnalysisService>();
 builder.Services.AddScoped<IClarificationService, ClarificationService>();
 builder.Services.AddScoped<IRequirementGenerationService, RequirementGenerationService>();
+builder.Services.AddScoped<IAiPlanService, AiPlanService>();
+builder.Services.AddScoped<IAiChunkRunService, AiChunkRunService>();
+// Batched runs reach each operation through the service that owns it (same prompt, rules, persistence).
+builder.Services.AddScoped<IChunkRunOperation>(sp => (RequirementAnalysisService)sp.GetRequiredService<IRequirementAnalysisService>());
+builder.Services.AddScoped<IChunkRunOperation>(sp => (RequirementGenerationService)sp.GetRequiredService<IRequirementGenerationService>());
 builder.Services.AddScoped<IUserStoryService, UserStoryService>();
 builder.Services.AddScoped<IBusinessRuleService, BusinessRuleService>();
 builder.Services.AddScoped<IRequirementQualityService, RequirementQualityService>();

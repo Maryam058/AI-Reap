@@ -193,6 +193,33 @@ public static partial class SourceChunker
         return sb.ToString();
     }
 
+    // The heading each part sits under: the part's own first line when that is a heading, else
+    // the last heading of an earlier part (null before the first heading). Deterministic, so a
+    // part's section is the same however often the source is planned.
+    public static IReadOnlyList<string?> SectionAnchors(IReadOnlyList<string> parts)
+    {
+        var anchors = new List<string?>(parts.Count);
+        string? current = null;
+        foreach (var part in parts)
+        {
+            var lines = part.Split('\n');
+            var first = lines.FirstOrDefault(l => l.Trim().Length > 0)?.Trim();
+            anchors.Add(first is not null && IsHeading(first) ? first : current);
+            foreach (var line in lines)
+            {
+                if (IsHeading(line))
+                {
+                    current = line.Trim();
+                }
+            }
+        }
+
+        return anchors;
+    }
+
+    // Whether a line reads as a section heading (the boundaries Split prefers).
+    public static bool IsSectionHeading(string line) => IsHeading(line);
+
     private static bool IsHeading(string line)
     {
         var trimmed = line.Trim();

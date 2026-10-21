@@ -1,3 +1,4 @@
+using AiReap.Application.Ai;
 using AiReap.Application.Common;
 using AiReap.Application.Persistence;
 using AiReap.Domain.Entities;
@@ -67,6 +68,26 @@ public class RequirementSourceService : IRequirementSourceService
         }
 
         return ToResponse(source);
+    }
+
+    // P0-4 — read-only, computed now from the source text and the FRs/NFRs currently saved for it, so
+    // it is right after a reload, a re-run or a human edit. S2: its ID lists come from the raw source,
+    // so a caller who may not read raw sources is refused, as for the source itself.
+    public async Task<SourceIdCoverage?> GetSourceIdCoverageAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var source = await _db.RequirementSources.AsNoTracking().FirstOrDefaultAsync(s => s.Id == id, cancellationToken);
+        if (source is null)
+        {
+            return null;
+        }
+
+        await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
+        if (!_currentUser.CanReadRawSources())
+        {
+            throw new UnauthorizedAccessException("Requirement source coverage is not available to your role; use the approved requirements.");
+        }
+
+        return await SourceIdCoverage.ForSourceAsync(_db, source, cancellationToken);
     }
 
     private static RequirementSourceResponse ToResponse(RequirementSource source) => new(

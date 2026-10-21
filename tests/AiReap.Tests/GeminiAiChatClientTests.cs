@@ -635,4 +635,78 @@ public class ResilientAiChatClientTests
         Assert.Equal("{\"ok\":true}", await client.CompleteAsync("s", "u"));
         Assert.Equal(2, inner.Calls);
     }
+
+    // ---- Ai:Gemini:TimeoutSeconds / MaxTimeoutAttempts (AiResilienceOptions.WithTimeout) ----------
+
+    private static ResilientAiChatClient WrapWithTimeoutLimit(IAiChatClient inner, int timeoutSeconds, int maxTimeoutAttempts) =>
+        new(inner, "Gemini",
+            new AiResilienceOptions { MaxAttempts = 3, BaseDelayMilliseconds = 0, MaxDelaySeconds = 0 }.WithTimeout(timeoutSeconds, maxTimeoutAttempts),
+            NullLogger.Instance, (_, _) => Task.CompletedTask);
+
+    // A request that used up its whole timeout is not resent: the provider has usually processed (and
+    // charged) it, and FallbackAiChatClient falls back on the Timeout instead.
+    [Fact]
+    public async Task A_timed_out_attempt_is_not_resent_when_MaxTimeoutAttempts_is_1()
+    {
+        var inner = new ScriptedClient(async ct => { await Task.Delay(Timeout.Infinite, ct); return ""; }, Ok());
+        var client = WrapWithTimeoutLimit(inner, timeoutSeconds: 1, maxTimeoutAttempts: 1);
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"));
+
+        Assert.Equal(AiFailureKind.Timeout, ex.Kind);
+        Assert.Equal("Gemini did not respond within 1s.", ex.Message);
+        Assert.Equal(1, inner.Calls);
+    }
+
+    // The provider's own deadline (504 DEADLINE_EXCEEDED -> Timeout) follows the same rule.
+    [Fact]
+    public async Task A_provider_reported_timeout_is_not_resent_when_MaxTimeoutAttempts_is_1()
+    {
+        var inner = new ScriptedClient(Fail(AiFailureKind.Timeout), Ok());
+        var client = WrapWithTimeoutLimit(inner, timeoutSeconds: 30, maxTimeoutAttempts: 1);
+
+        Assert.Equal(AiFailureKind.Timeout, (await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"))).Kind);
+        Assert.Equal(1, inner.Calls);
+    }
+
+    // Only timeouts are limited: 503s and network errors keep Ai:Resilience:MaxAttempts.
+    [Fact]
+    public async Task Outages_are_still_retried_up_to_MaxAttempts_under_a_timeout_limit()
+    {
+        var inner = new ScriptedClient(Fail(AiFailureKind.Unavailable), Fail(AiFailureKind.Unavailable), Ok());
+        var client = WrapWithTimeoutLimit(inner, timeoutSeconds: 30, maxTimeoutAttempts: 1);
+
+        Assert.Equal("{\"ok\":true}", await client.CompleteAsync("s", "u"));
+        Assert.Equal(3, inner.Calls);
+    }
+
+    // 0 keeps the previous behavior: timeouts retried like any transient failure.
+    [Fact]
+    public async Task MaxTimeoutAttempts_0_retries_timeouts_up_to_MaxAttempts_as_before()
+    {
+        var inner = new ScriptedClient(Fail(AiFailureKind.Timeout), Fail(AiFailureKind.Timeout), Ok());
+        var client = WrapWithTimeoutLimit(inner, timeoutSeconds: 30, maxTimeoutAttempts: 0);
+
+        Assert.Equal("{\"ok\":true}", await client.CompleteAsync("s", "u"));
+        Assert.Equal(3, inner.Calls);
+    }
+
+    [Fact]
+    public void WithTimeout_replaces_only_the_timeout_settings()
+    {
+        var shared = new AiResilienceOptions
+        {
+            TimeoutSeconds = 120, MaxAttempts = 3, BaseDelayMilliseconds = 1000, MaxDelaySeconds = 20,
+            MaxRetryAfterSeconds = 30, MaxRateLimitAttempts = 1
+        };
+
+        var gemini = shared.WithTimeout(300, 1);
+
+        Assert.Equal((300, 1), (gemini.TimeoutSeconds, gemini.MaxTimeoutAttempts));
+        Assert.Equal((3, 1000, 20, 30, 1), (gemini.MaxAttempts, gemini.BaseDelayMilliseconds, gemini.MaxDelaySeconds,
+            gemini.MaxRetryAfterSeconds, gemini.MaxRateLimitAttempts));
+        Assert.Equal((120, 0), (shared.TimeoutSeconds, shared.MaxTimeoutAttempts)); // the shared settings are untouched
+        Assert.Equal(1, gemini.WithoutRateLimitRetry().MaxTimeoutAttempts);
+        Assert.Equal(1, gemini.WithRateLimitAttempts(4).MaxTimeoutAttempts);
+    }
 }

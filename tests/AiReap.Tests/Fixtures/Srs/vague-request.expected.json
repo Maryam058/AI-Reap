@@ -1,0 +1,23 @@
+{
+  "fixture": "vague-request.srs.txt",
+  "synthetic": true,
+  "requirements": [],
+  "allowedDerived": [
+    { "key": "AD-01", "keywords": ["book", "room"] },
+    { "key": "AD-02", "keywords": ["busy"] }
+  ],
+  "nonRequirements": [
+    { "key": "N-01", "anchorQuote": "We are a small community clinic", "keywords": ["small community clinic"] }
+  ],
+  "contradictions": [],
+  "gaps": [
+    { "key": "G1", "anchorQuotes": ["We need an app so staff can book rooms quickly"],
+      "keywordGroups": [["who", "role", "roles", "user", "users", "staff"], ["book", "booking", "access", "permission", "permissions"]] },
+    { "key": "G2", "anchorQuotes": ["It must be fast and easy to use"],
+      "keywordGroups": [["fast", "speed", "performance", "response time", "quickly"], ["seconds", "measure", "measurable", "target", "how fast"]] },
+    { "key": "G3", "anchorQuotes": ["Managers should be able to see how busy the rooms are"],
+      "keywordGroups": [["busy", "utilisation", "utilization", "occupancy"], ["report", "reports", "dashboard", "measure", "show", "see"]] }
+  ],
+  "duplicates": [],
+  "sourceIds": { "defined": [], "mentionedOnly": [] }
+}

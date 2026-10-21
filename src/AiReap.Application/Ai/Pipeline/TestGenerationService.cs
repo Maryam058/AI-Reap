@@ -12,12 +12,20 @@ namespace AiReap.Application.Ai.Pipeline;
 
 public class TestGenerationService : ITestGenerationService
 {
-    private const string PromptTemplateVersion = "TestCaseGeneration-v1";
+    // v2 (A4b Phase 3) = v1's prompt unchanged as a prefix, plus the FR's inputs, origin and evidence
+    // results (FunctionalRequirementContext) and the rule against invented or unconfirmed limits.
+    private const string PromptTemplateVersion = "TestCaseGeneration-v2";
 
     private const string SystemPrompt = """
         You are a QA engineer (§20 of an SDLC automation spec). Given a functional requirement,
         write test cases covering positive, negative, boundary, permission/security, and
         validation scenarios as appropriate - do not force a category that doesn't apply.
+
+        Never invent a numerical limit (an amount, duration, size or count): use one only if it is
+        written in the requirement. A number listed under "Numbers not found in verified quotes" is
+        unconfirmed - do not test it as a confirmed rule; say in the test case that the value is to
+        be confirmed. "Evidence status" says only whether the requirement's quotes were found in the
+        source text, not whether the requirement is correct.
 
         Respond with ONLY a single JSON object, no markdown fences, no commentary:
         {
@@ -54,25 +62,57 @@ public class TestGenerationService : ITestGenerationService
         }
 
         await _projectAccess.EnsureMemberAsync(fr.ProjectId, cancellationToken);
+        GenerationInputs.EnsureTestCaseTarget(fr);
 
-        var frPayload = JsonSerializer.Deserialize<FunctionalRequirementPayload>(
-            fr.DataJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new FunctionalRequirementPayload();
+        var frPayload = FunctionalRequirementContext.Read(fr);
 
         var userPrompt =
             $"{fr.Code}: {fr.Title}\nActor: {frPayload.Actor}\nPreconditions: {frPayload.Preconditions}\n" +
-            $"Processing: {frPayload.Processing}\nExpected result: {frPayload.ExpectedResult}";
+            $"Processing: {frPayload.Processing}\nExpected result: {frPayload.ExpectedResult}" +
+            FunctionalRequirementContext.EvidenceLines(frPayload);
 
-        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<TestCaseAiResponse>(
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseLosslessAsync<TestCaseAiResponse>(
             _chatClient, _logger, "TestCaseGeneration", fr.Id.ToString(), SystemPrompt, userPrompt, cancellationToken);
 
+        // G2 — one save of the test cases not already saved for this requirement (ArtifactFingerprints,
+        // scoped to the FR: the same wording under another FR is a different test case). Existing test
+        // cases are never changed.
+        var testArtifacts = new List<Artifact>();
+        var skipped = 0;
+        await ArtifactPersistence.SaveAsync(_db, async ct =>
+            (testArtifacts, skipped) = await PrepareTestCasesAsync(fr, parsed, rawResponse, ct), cancellationToken);
+
+        if (skipped > 0)
+        {
+            _logger.LogInformation(
+                "{Operation} for {Input}: {Created} created, {Skipped} already existed and were not saved again.",
+                "TestCaseGeneration", fr.Id, testArtifacts.Count, skipped);
+        }
+
+        return new GeneratedArtifacts(testArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList(), skipped);
+    }
+
+    // The test cases of the response not already saved for the FR, added to the context with their
+    // versions, fingerprints, links and audit rows - not saved here.
+    private async Task<(List<Artifact> Created, int Skipped)> PrepareTestCasesAsync(
+        Artifact fr, TestCaseAiResponse parsed, string rawResponse, CancellationToken cancellationToken)
+    {
         var now = DateTime.UtcNow;
-        var codes = await ArtifactCodeGenerator.ReserveCodesAsync(_db, fr.ProjectId, ArtifactType.TestCase, parsed.TestCases.Count, cancellationToken);
+        var children = await _db.ArtifactRelationships
+            .Where(r => r.SourceArtifactId == fr.Id && r.RelationshipType == RelationshipType.TestedBy)
+            .Select(r => r.TargetArtifactId)
+            .ToListAsync(cancellationToken);
+        var existing = await ArtifactFingerprints.ExistingForParentAsync(
+            _db, fr.RequirementSourceId, ArtifactType.TestCase, fr.Id, children, cancellationToken);
+        var fresh = ArtifactFingerprints.Fresh(parsed.TestCases, ArtifactType.TestCase,
+            t => ArtifactFingerprints.ForTestCase(fr.Id, t.Preconditions, t.Steps, t.ExpectedResult), existing, out var skipped);
+        var codes = await ArtifactCodeGenerator.ReserveCodesAsync(_db, fr.ProjectId, ArtifactType.TestCase, fresh.Count, cancellationToken);
 
         var testArtifacts = new List<Artifact>();
 
-        for (var i = 0; i < parsed.TestCases.Count; i++)
+        for (var i = 0; i < fresh.Count; i++)
         {
-            var item = parsed.TestCases[i];
+            var item = fresh[i].Item;
             var payload = new TestCasePayload
             {
                 Preconditions = item.Preconditions,
@@ -100,6 +140,10 @@ public class TestGenerationService : ITestGenerationService
 
             _db.Artifacts.Add(artifact);
             _db.ArtifactVersions.Add(GenerationSupport.InitialVersion(artifact, "AI test case generation", _currentUser.UserId, now));
+            if (ArtifactFingerprints.TryRecord(artifact, fresh[i].Fingerprint, now) is { } fingerprint)
+            {
+                _db.ArtifactFingerprints.Add(fingerprint);
+            }
 
             // FR "is tested by" the new TestCase — source is the FR, per ADR-002's TestedBy semantics.
             _db.ArtifactRelationships.Add(new ArtifactRelationship
@@ -119,9 +163,7 @@ public class TestGenerationService : ITestGenerationService
             _chatClient.ModelName, fr.Id.ToString(), rawResponse, now,
             testArtifacts.Select(a => a.Id).ToList());
 
-        await _db.SaveChangesAsync(cancellationToken);
-
-        return testArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList();
+        return (testArtifacts, skipped);
     }
 
     private class TestCaseAiResponse : IValidatableAiResponse

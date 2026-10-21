@@ -755,6 +755,142 @@ pre {
   gap: 0.5rem;
 }
 
+/* Dry-run AI plan under the Analyze / Generate buttons (AiPlanSummary). */
+.ai-plan {
+  flex-basis: 100%;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  border-left: 3px solid var(--border-strong);
+  padding: 0.35rem 0.6rem;
+  border-radius: var(--radius-sm);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ai-plan-muted {
+  margin: 0;
+  border-left-color: var(--border);
+}
+
+.ai-plan-ok {
+  border-left-color: var(--success);
+}
+
+.ai-plan-warn {
+  border-left-color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.ai-plan-block {
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.ai-plan-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.ai-plan-chip {
+  font-weight: 600;
+  font-size: 0.72rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+}
+
+.ai-plan-chip-ok {
+  color: var(--success-strong);
+  background: var(--success-soft);
+}
+
+.ai-plan-chip-warn {
+  color: var(--warning-strong);
+  background: var(--surface);
+}
+
+.ai-plan-chip-block {
+  color: var(--danger-strong);
+  background: var(--surface);
+}
+
+.ai-plan-label {
+  color: var(--muted);
+}
+
+.ai-plan-providers,
+.ai-plan-details ul {
+  margin: 0.3rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.ai-plan-summary {
+  margin: 0.3rem 0 0;
+  color: var(--text);
+}
+
+.ai-plan-details {
+  margin-top: 0.25rem;
+}
+
+.ai-plan-details summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.ai-plan-caveats {
+  color: var(--muted);
+}
+
+/* Batched AI run under the AI plan (AiRunPanel). */
+.ai-run {
+  flex-basis: 100%;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ai-run-head,
+.ai-run-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.ai-run-text {
+  margin: 0;
+}
+
+.ai-run progress {
+  width: 100%;
+  height: 0.4rem;
+}
+
+.ai-run-error {
+  margin: 0;
+  color: var(--danger-strong);
+}
+
+.ai-run-failed,
+.ai-run-superseded {
+  border-color: var(--danger);
+}
+
+.ai-run-committed {
+  border-color: var(--success);
+}
+
 /* ---- AI result panels ---- */
 
 .req-ai-panel {
@@ -874,6 +1010,39 @@ pre {
   margin-top: 0.9rem;
   padding-top: 0.75rem;
   border-top: 1px dashed var(--border);
+}
+
+.req-notes .req-notes-toggle .detail-label {
+  margin-bottom: 0;
+}
+
+.req-notes-text {
+  margin: 0.35rem 0 0;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.req-show-more {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.4rem;
+  border: none;
+  background: none;
+  color: var(--primary);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.req-show-more:hover {
+  text-decoration: underline;
+}
+
+.req-show-more:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm, 4px);
 }
 
 /* ---- Sections & cards ---- */

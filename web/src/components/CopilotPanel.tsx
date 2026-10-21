@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { copilotApi } from '../api/copilot';
 import type { CopilotAnswer } from '../api/types';
+import { copilotContextNotice, DEFAULT_MAX_QUESTION_CHARS, effectiveMaxQuestionChars, questionLengthError } from '../lib/copilotContext';
 import { apiErrorText } from '../lib/errors';
 import { IconAlert, IconSparkles } from './icons';
 
@@ -19,9 +20,27 @@ export function CopilotPanel({ projectId, contextLabel }: { projectId: string; c
   const [answer, setAnswer] = useState<{ q: string; a: CopilotAnswer } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [maxChars, setMaxChars] = useState(DEFAULT_MAX_QUESTION_CHARS);
+
+  // The server's configured limit; the default stands if it cannot be read (the server enforces it anyway).
+  useEffect(() => {
+    let active = true;
+    copilotApi
+      .limits(projectId, token)
+      .then((limits) => {
+        if (active) setMaxChars(effectiveMaxQuestionChars(limits.maxQuestionChars));
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [projectId, token]);
+
+  const lengthError = questionLengthError(question, maxChars);
+  const notice = answer ? copilotContextNotice(answer.a.context) : null;
 
   const ask = async (text: string) => {
-    if (!text.trim() || busy) return;
+    if (!text.trim() || busy || questionLengthError(text, maxChars)) return;
     setBusy(true);
     setError(null);
     try {
@@ -52,12 +71,27 @@ export function CopilotPanel({ projectId, contextLabel }: { projectId: string; c
         <label className="sr-only" htmlFor="copilot-q">
           Ask the project copilot
         </label>
-        <input id="copilot-q" type="text" placeholder="Ask about gaps, coverage or recent changes…" value={question} onChange={(e) => setQuestion(e.target.value)} />
-        <button type="submit" className="btn btn-primary" disabled={!question.trim() || busy}>
+        <input
+          id="copilot-q"
+          type="text"
+          placeholder="Ask about gaps, coverage or recent changes…"
+          value={question}
+          aria-invalid={lengthError ? true : undefined}
+          aria-describedby={lengthError ? 'copilot-q-length' : undefined}
+          onChange={(e) => setQuestion(e.target.value)}
+        />
+        <button type="submit" className="btn btn-primary" disabled={!question.trim() || busy || !!lengthError}>
           <IconSparkles width={15} height={15} />
           {busy ? 'Thinking…' : 'Ask'}
         </button>
       </form>
+
+      {lengthError && (
+        <div id="copilot-q-length" className="alert alert-warning" role="alert">
+          <IconAlert width={16} height={16} />
+          <span>{lengthError}</span>
+        </div>
+      )}
 
       <div className="copilot-suggestions" aria-label="Suggested questions">
         {SUGGESTIONS.map((s) => (
@@ -89,6 +123,12 @@ export function CopilotPanel({ projectId, contextLabel }: { projectId: string; c
         <article className="copilot-answer" aria-live="polite">
           <div className="copilot-q">{answer.q}</div>
           <p>{answer.a.answer}</p>
+
+          {notice && (
+            <div className="alert alert-info" role="note">
+              <span>{notice}</span>
+            </div>
+          )}
 
           {answer.a.relatedArtifactCodes.length > 0 && (
             <div className="copilot-related">

@@ -1,0 +1,10 @@
+{
+  "_note": "SYNTHETIC scorer test input - hand-written. Finds only the deposit gap (G1), asks it twice, misses both contradictions, and adds irrelevant questions.",
+  "requirements": [],
+  "clarifications": [
+    { "topic": "Deposit", "question": "What is the deposit amount?", "reason": "" },
+    { "topic": "Deposit amount", "question": "What is the deposit amount ?", "reason": "" },
+    { "topic": "Colour scheme", "question": "Which colours should the booking screen use?", "reason": "" },
+    { "topic": "Booking", "question": "Should bookings be cancellable?", "reason": "" }
+  ]
+}

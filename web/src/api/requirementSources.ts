@@ -1,11 +1,14 @@
 import { ApiError, apiClient } from './client';
 import type {
+  AiPlanOperation,
+  AiPlanResult,
   AnalyzeRequirementResult,
   ArtifactSummary,
   CreateRequirementSourceRequest,
   GenerateRequirementsResult,
   QualityFinding,
   RequirementSource,
+  SourceIdCoverage,
 } from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:5299';
@@ -38,6 +41,15 @@ export const requirementSourcesApi = {
 
   analyze: (sourceId: string, token: string | null) =>
     apiClient.post<AnalyzeRequirementResult>(`/api/requirement-sources/${sourceId}/analyze`, {}, token),
+
+  // Dry run: how each configured AI provider would take this source. Contacts no AI provider.
+  aiPlan: (sourceId: string, operation: AiPlanOperation, token: string | null) =>
+    apiClient.get<AiPlanResult>(`/api/requirement-sources/${sourceId}/ai-plan?operation=${operation}`, token),
+
+  // P0-4 — which requirement IDs in the source no saved, non-rejected FR/NFR cites. Read-only; refused
+  // (403) to a user who may not read raw sources.
+  sourceIdCoverage: (sourceId: string, token: string | null) =>
+    apiClient.get<SourceIdCoverage>(`/api/requirement-sources/${sourceId}/source-id-coverage`, token),
 
   getClarificationQuestions: (sourceId: string, token: string | null) =>
     apiClient.get<ArtifactSummary[]>(`/api/requirement-sources/${sourceId}/clarification-questions`, token),

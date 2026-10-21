@@ -56,6 +56,14 @@ public class AnalysisAgent : IAgent
             produced.AddRange(generated.NonFunctionalRequirements.Select(AgentSupport.ToRef));
         }
 
+        // R1 — requirements that were all rejected leave nothing to build rules, stories or criteria on;
+        // the stage stops rather than generating them from the raw source alone.
+        if (await GenerationInputs.AllFunctionalRequirementsRejectedAsync(_db, sourceId, cancellationToken))
+        {
+            throw new InvalidOperationException(
+                GenerationInputs.AllRejectedMessage("build business rules, user stories or acceptance criteria on"));
+        }
+
         if (!await AgentSupport.ExistsAsync(_db, sourceId, ArtifactType.BusinessRule, cancellationToken))
         {
             produced.AddRange((await _businessRules.GenerateAsync(sourceId, cancellationToken)).Select(AgentSupport.ToRef));
@@ -69,7 +77,10 @@ public class AnalysisAgent : IAgent
         var stories = await AgentSupport.LoadAsync(_db, sourceId, ArtifactType.UserStory, cancellationToken);
         var storiesWithCriteria = await AgentSupport.TargetsOfAsync(
             _db, ArtifactType.AcceptanceCriterion, RelationshipType.DerivedFrom, context.ProjectId, cancellationToken);
-        foreach (var story in stories.Where(s => !storiesWithCriteria.Contains(s.Id)))
+        var pending = stories.Where(s => !storiesWithCriteria.Contains(s.Id)).ToList();
+        var linkedFrs = await GenerationInputs.LinkedFunctionalRequirementsAsync(_db, pending.Select(s => s.Id).ToList(), cancellationToken);
+        // A rejected story, or one whose requirements are all rejected, is not built on (GenerationInputs).
+        foreach (var story in pending.Where(s => GenerationInputs.CanGenerateAcceptanceCriteria(s, linkedFrs[s.Id].ToList())))
         {
             var criteria = await _stories.GenerateAcceptanceCriteriaAsync(story.Id, cancellationToken);
             if (criteria is not null)

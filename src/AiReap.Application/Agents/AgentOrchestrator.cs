@@ -267,7 +267,9 @@ public class AgentOrchestrator : IAgentOrchestrator
         }
 
         stage.FinishedAt = DateTime.UtcNow;
-        await _db.SaveChangesAsync(cancellationToken);
+        // The stage row's rowversion also guards this save: if someone else acted on the step while it
+        // ran, this is refused with the same conflict as a lost claim. Not retried - the step has run.
+        await SaveClaimAsync(cancellationToken);
     }
 
     private Task<bool> HasActiveRunAsync(Guid requirementSourceId, CancellationToken cancellationToken) =>
