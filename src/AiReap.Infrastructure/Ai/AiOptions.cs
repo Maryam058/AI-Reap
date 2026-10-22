@@ -1,10 +1,10 @@
 namespace AiReap.Infrastructure.Ai;
 
-// Selects which IAiChatClient implementation AddInfrastructure wires up (see ADR-001 §1).
-// "Gemini" (default) is the primary cloud LLM and "Groq" the automatic fallback used when Gemini is
-// rate-limited, out of quota or temporarily unavailable; "Anthropic" remains a selectable
-// implementation of the same seam but is not required. Extends the existing provider-selection
-// mechanism in DependencyInjection.ResolveAiChatClient rather than adding a second one.
+// Selects the chat provider AddInfrastructure wires up (see ADR-001 §1 and docs/CLAUDE_SETUP.md).
+// Anthropic Claude is the only chat provider: "Anthropic" (the default) is the only accepted value.
+// Gemini and Groq are no longer chat providers and never serve a chat request, as primary or as
+// fallback; a configuration still naming them fails with an actionable error instead of being
+// silently honored or silently replaced. Embeddings are selected separately (EmbeddingProvider).
 public class AiOptions
 {
     public const string SectionName = "Ai";
@@ -12,15 +12,21 @@ public class AiOptions
     public const string Gemini = "Gemini";
     public const string Groq = "Groq";
     public const string Anthropic = "Anthropic";
+    public const string OpenAI = "OpenAI";
+    public const string Stub = "Stub";
 
-    public string Provider { get; set; } = Gemini;
+    public string Provider { get; set; } = Anthropic;
 
-    // Used automatically (no config change needed) when the primary provider fails with a rate
-    // limit, exhausted quota, 5xx/network error or timeout. Blank or "None" disables fallback.
-    public string? FallbackProvider { get; set; } = Groq;
+    // Retired. There is no chat fallback: blank or "None" is the only meaningful value. Any other
+    // value is ignored with a warning (never used to route a request).
+    public string? FallbackProvider { get; set; }
 
-    // After the primary answers 429, requests go straight to the fallback for the provider's
-    // retry delay (or this long, for a daily/zero-limit quota with no delay given), capped here -
-    // so an exhausted daily quota isn't probed again on every call.
+    // Retired with the Gemini/Groq fallback; kept so existing configuration still binds.
     public int PrimaryCooldownSeconds { get; set; } = 600;
+
+    // §26 RAG embeddings, chosen independently of the chat provider so moving chat to Claude never
+    // changes which embedding model is used (DocumentChunk.EmbeddingModel is what retrieval filters
+    // on). Blank = automatic: Gemini when Ai:Gemini:ApiKey is usable, else OpenAI when
+    // Ai:OpenAI:ApiKey is set, else the deterministic stub. Explicit values: "Gemini", "OpenAI", "Stub".
+    public string? EmbeddingProvider { get; set; }
 }

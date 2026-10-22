@@ -1,5 +1,11 @@
 # Gemini setup and live verification
 
+> **Superseded for chat (2026-10-21).** Anthropic Claude is now the only chat provider and Gemini/Groq
+> are no longer used for chat or as a chat fallback — see [`CLAUDE_SETUP.md`](CLAUDE_SETUP.md). The
+> `GeminiAiChatClient`/`GroqAiChatClient` classes remain in the codebase but are not registered. Gemini is
+> still used for **embeddings** (`gemini-embedding-001`) when `Ai:Gemini:ApiKey` is set. The rest of this
+> document describes the previous chat setup and is kept for reference.
+
 AI-REAP's primary LLM is **Google Gemini**, with **Groq** as an automatic fallback, both reached
 through the same `IAiChatClient` seam every generator uses (`GeminiAiChatClient` selected by
 `Ai:Provider = Gemini`; `GroqAiChatClient` by `Ai:FallbackProvider = Groq`). Nothing outside

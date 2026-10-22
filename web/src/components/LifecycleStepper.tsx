@@ -50,6 +50,12 @@ export function LifecycleStepper({
               <span className="sdlc-label">{s.label}</span>
               <span className="sdlc-state">{stateText}</span>
               {owner && !compact && <span className="lc-owner">{roleLabel(owner)}</span>}
+              {/* Text stand-in for the gate lock where narrow layouts hide it. */}
+              {!compact && isGatedStage(s.status) && (
+                <span className="lc-gate-text" aria-hidden="true">
+                  Reviewer approval to leave
+                </span>
+              )}
             </span>
           </>
         );
@@ -75,6 +81,34 @@ export function LifecycleStepper({
         );
       })}
     </ol>
+  );
+}
+
+/** Key to the stepper's markers, for readers who don't know what the check, dot and lock mean. */
+export function LifecycleLegend() {
+  return (
+    <ul className="lc-legend" aria-label="Lifecycle key">
+      <li>
+        <span className="lc-legend-mark completed" aria-hidden="true">
+          <IconCheck width={9} height={9} strokeWidth={3.5} />
+        </span>
+        Completed
+      </li>
+      <li>
+        <span className="lc-legend-mark current" aria-hidden="true" />
+        Current stage
+      </li>
+      <li>
+        <span className="lc-legend-mark upcoming" aria-hidden="true" />
+        Upcoming
+      </li>
+      <li>
+        <span className="lc-legend-mark gated" aria-hidden="true">
+          <IconLock width={9} height={9} />
+        </span>
+        Reviewer approval needed to leave this stage
+      </li>
+    </ul>
   );
 }
 

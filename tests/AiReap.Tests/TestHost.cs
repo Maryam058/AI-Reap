@@ -228,14 +228,18 @@ public class TestHost : IAsyncDisposable
 
             b.UseSetting("ConnectionStrings:Default", connectionString);
 
-            // Automated tests never call a live AI API, even if a developer has Ai__Gemini__ApiKey
+            // Automated tests never call a live AI API, even if a developer has Ai__Anthropic__ApiKey
             // (or another provider key) in their environment: chat is the stub (replaced below),
             // and blank keys keep embeddings on the deterministic stub too.
-            b.UseSetting("Ai:Provider", "Gemini");
+            b.UseSetting("Ai:Provider", "Anthropic");
+            b.UseSetting("Ai:EmbeddingProvider", "");
             b.UseSetting("Ai:Gemini:ApiKey", "");
             b.UseSetting("Ai:Groq:ApiKey", "");
             b.UseSetting("GROQ_API_KEY", ""); // the machine-level key must not reach tests either
             b.UseSetting("Ai:Anthropic:ApiKey", "");
+            // Kept original uploads go to a throwaway directory of this test database, never the
+            // developer's own store (docs/SOURCE_DOCUMENT_RETENTION.md). A test can still override it.
+            b.UseSetting("OriginalDocuments:RootPath", Path.Combine(Path.GetTempPath(), "aireap-test-originals", DatabaseName));
             foreach (var (key, value) in _settings) b.UseSetting(key, value);
             b.UseSetting("Ai:OpenAI:ApiKey", "");
             if (_bootstrap)

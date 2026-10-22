@@ -11,6 +11,7 @@ public interface IAiReapDbContext
     DbSet<ProjectStakeholder> ProjectStakeholders { get; }
     DbSet<ProjectMember> ProjectMembers { get; }
     DbSet<RequirementSource> RequirementSources { get; }
+    DbSet<RequirementSourceFile> RequirementSourceFiles { get; }
     DbSet<Artifact> Artifacts { get; }
     DbSet<ArtifactVersion> ArtifactVersions { get; }
     DbSet<ArtifactRelationship> ArtifactRelationships { get; }

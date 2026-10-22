@@ -21,13 +21,13 @@ public class ClarificationService : IClarificationService
 
     public async Task<IReadOnlyList<ArtifactResponse>> GetForRequirementSourceAsync(Guid requirementSourceId, CancellationToken cancellationToken = default)
     {
-        var projectId = await _db.RequirementSources
+        var source = await _db.RequirementSources.AsNoTracking()
             .Where(s => s.Id == requirementSourceId)
-            .Select(s => (Guid?)s.ProjectId)
+            .Select(s => new { s.ProjectId, s.RawText })
             .FirstOrDefaultAsync(cancellationToken);
-        if (projectId is not null)
+        if (source is not null)
         {
-            await _projectAccess.EnsureMemberAsync(projectId.Value, cancellationToken);
+            await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
         }
 
         var questions = await _db.Artifacts.VisibleTo(_currentUser)
@@ -35,6 +35,20 @@ public class ClarificationService : IClarificationService
             .OrderBy(a => a.Code)
             .ToListAsync(cancellationToken);
 
-        return questions.Select(ArtifactResponseMapper.ToResponse).ToList();
+        // Source references point into the raw source, so a restricted caller (S2) gets none; a
+        // question saved before they were resolved gets them resolved now (ClarificationSourceReferences).
+        if (!_currentUser.CanReadRawSources())
+        {
+            return questions.Select(q => ArtifactResponseMapper.ToResponse(q) with
+            {
+                Data = ArtifactJson.ToCamelCaseElement(RequirementEvidenceFields.RedactForRestrictedCaller(q.DataJson))
+            }).ToList();
+        }
+
+        var index = SourceReferenceIndex.Build(requirementSourceId, source?.RawText);
+        return questions.Select(q => ArtifactResponseMapper.ToResponse(q) with
+        {
+            Data = ArtifactJson.ToCamelCaseElement(ClarificationSourceReferences.WithReferences(q.DataJson, index))
+        }).ToList();
     }
 }

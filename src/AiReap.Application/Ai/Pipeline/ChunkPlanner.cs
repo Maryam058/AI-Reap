@@ -34,13 +34,30 @@ public static class ChunkPlanner
             : Split(systemPrompt, sourceText, fixedContext, shared, budget, maxParts, fit.OriginalTokens);
     }
 
+    // Staged generation's plan (AiOutputStaging): whole only when the source is within the staging
+    // part size AND the whole prompt fits the input budget; otherwise split into parts of at most
+    // MaxPartSourceTokens of source, at most MaxParts parts. The real run (GenerationSupport) and the
+    // dry-run AI plan (AiPlanService) both call this, so they agree on the parts.
+    public static ChunkPlan PlanStaged(
+        string systemPrompt, string sourceText, string fixedContext, GenerationSupport.SharedContext shared, AiOutputStaging staging)
+    {
+        var fit = PromptBudgetReducer.Fit(systemPrompt, WholePrompt(sourceText, shared, fixedContext), staging.InputBudget);
+        return PromptBudgetReducer.EstimateTokens(sourceText) <= staging.MaxPartSourceTokens && SendsWhole(fit)
+            ? ChunkPlan.Whole(fit.OriginalTokens, staging.InputBudget)
+            : Split(systemPrompt, sourceText, fixedContext, shared, staging.InputBudget, staging.MaxParts, fit.OriginalTokens,
+                staging.MaxPartSourceTokens);
+    }
+
     // The split once the whole request is known not to fit the budget. Each part request carries
     // the system prompt, request framing, the part header, fixedContext, its share of the shared
     // context and a repair reserve; the rest of the budget is source text. Refusals are checked in
     // the order the real call applies them.
+    //
+    // maxPartSourceTokens (staged generation, AiOutputStaging): an upper bound on each part's source
+    // text below what the input budget alone would allow, so each part's response fits the output limit.
     public static ChunkPlan Split(
         string systemPrompt, string sourceText, string fixedContext, GenerationSupport.SharedContext shared,
-        int inputBudget, int maxParts, int estimatedWholeTokens)
+        int inputBudget, int maxParts, int estimatedWholeTokens, int? maxPartSourceTokens = null)
     {
         var reserved = PromptBudgetReducer.EstimateTokens(systemPrompt) + PromptBudgetReducer.RequestOverheadTokens
             + PromptBudgetReducer.EstimateTokens(GenerationSupport.PartHeader(999, 999)) + PromptBudgetReducer.EstimateTokens(fixedContext)
@@ -54,6 +71,10 @@ public static class ChunkPlanner
         var sharedWhole = sharedTokens <= available / GenerationSupport.SharedContextBudgetDivisor;
         var sharedBudget = sharedWhole ? sharedTokens : available / GenerationSupport.SharedContextBudgetDivisor;
         var maxPartTokens = available - sharedBudget;
+        if (maxPartSourceTokens is { } cap && cap < maxPartTokens)
+        {
+            maxPartTokens = cap;
+        }
 
         var plan = new ChunkPlan(ChunkPlanOutcome.Split, estimatedWholeTokens, inputBudget, maxParts, reserved,
             shared.Items.Count, sharedTokens, sharedWhole, sharedBudget, maxPartTokens, [], [], [], 0);

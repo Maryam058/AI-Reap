@@ -16,6 +16,7 @@ public class AiReapDbContext : IdentityDbContext<ApplicationUser>, IAiReapDbCont
     public DbSet<ProjectStakeholder> ProjectStakeholders => Set<ProjectStakeholder>();
     public DbSet<ProjectMember> ProjectMembers => Set<ProjectMember>();
     public DbSet<RequirementSource> RequirementSources => Set<RequirementSource>();
+    public DbSet<RequirementSourceFile> RequirementSourceFiles => Set<RequirementSourceFile>();
     public DbSet<Artifact> Artifacts => Set<Artifact>();
     public DbSet<ArtifactVersion> ArtifactVersions => Set<ArtifactVersion>();
     public DbSet<ArtifactRelationship> ArtifactRelationships => Set<ArtifactRelationship>();
@@ -87,6 +88,20 @@ public class AiReapDbContext : IdentityDbContext<ApplicationUser>, IAiReapDbCont
                 .WithMany()
                 .HasForeignKey(s => s.ProjectId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        builder.Entity<RequirementSourceFile>(b =>
+        {
+            // One original per source, keyed by the source. Cascade: the row means nothing without its
+            // source, and nothing else reaches this table. The stored bytes are removed separately
+            // (ProjectService.DeleteAsync, OriginalDocumentJanitor) - a database delete cannot reach them.
+            b.HasKey(f => f.RequirementSourceId);
+            b.HasOne<RequirementSource>().WithOne().HasForeignKey<RequirementSourceFile>(f => f.RequirementSourceId).OnDelete(DeleteBehavior.Cascade);
+            b.Property(f => f.StorageKey).IsRequired().HasMaxLength(64);
+            b.HasIndex(f => f.StorageKey).IsUnique();
+            b.Property(f => f.Format).IsRequired().HasMaxLength(16);
+            b.Property(f => f.Sha256).IsRequired().HasMaxLength(64);
+            b.Property(f => f.PageLineStartsJson).HasColumnType("nvarchar(max)");
         });
 
         builder.Entity<Artifact>(b =>

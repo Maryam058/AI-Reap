@@ -11,7 +11,7 @@ import { apiErrorText, failingChecksOf } from '../lib/errors';
 import { formatRelativeTime } from '../lib/format';
 import { useToast } from '../context/ToastContext';
 import { Dialog } from './ui/Dialog';
-import { LifecycleStepper } from './LifecycleStepper';
+import { LifecycleLegend, LifecycleStepper } from './LifecycleStepper';
 import { CheckGuidance } from './CheckGuidance';
 import { RoleRequiredActions } from './RoleRequiredAlert';
 import { roleGuard } from '../lib/roleGuard';
@@ -191,6 +191,7 @@ export function LifecyclePanel({ project, version, onProjectChanged }: { project
       <div className="lc-stepper-wrap">
         <LifecycleStepper status={state.status} pending={!!pending} gaps={state.evidenceGaps.map((g) => g.stage)} policy={policy} />
       </div>
+      <LifecycleLegend />
 
       {!progress.finished && next !== null && (
         <div className="lc-grid">

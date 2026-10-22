@@ -131,8 +131,11 @@ public class RequirementGenerationService : IRequirementGenerationService, IChun
             sharedContext: inputs.Shared,
             knownArtifactCodes: inputs.KnownCodes,
             knownSourceReferences: inputs.KnownReferences,
-            validateSourceIds: true);
-        var (parsed, rawResponse, model) = Merge(parts, _logger);
+            validateSourceIds: true,
+            // Claude: a large source is generated in bounded parts so no response is cut off at the
+            // output limit (AiOutputStaging); other clients keep the path above unchanged.
+            stageOutput: true);
+        var (parsed, rawResponse, model, review) = Merge(parts, _logger);
 
         var (result, _) = await PersistAsync(source, objectives, inputs.KnownReferences, parsed, rawResponse, model, onPrepared: null, cancellationToken);
 
@@ -140,7 +143,11 @@ public class RequirementGenerationService : IRequirementGenerationService, IChun
         return result with
         {
             Completeness = RequirementCompleteness.ForParts(parts, inputs.Shared.Items.Count)
-                .WithEvidence(result.FunctionalRequirements.Concat(result.NonFunctionalRequirements))
+                .WithEvidence(result.FunctionalRequirements.Concat(result.NonFunctionalRequirements)) with
+                {
+                    CrossPartSharedSourceIds = review?.SharedSourceIds,
+                    CrossPartTargetConflicts = review?.TargetConflicts
+                }
         };
     }
 
@@ -463,7 +470,7 @@ public class RequirementGenerationService : IRequirementGenerationService, IChun
                 JsonSerializer.Deserialize<GenerationPartAiResponse>(p.ParsedJson) ?? new GenerationPartAiResponse(),
                 p.Model, p.Section))
             .ToList();
-        var (parsed, rawResponse, model) = Merge(aiParts, _logger);
+        var (parsed, rawResponse, model, _) = Merge(aiParts, _logger);
 
         // The caller checked the objectives are unchanged since Start, so this preview gives the
         // codes the parts were shown.
@@ -518,7 +525,14 @@ public class RequirementGenerationService : IRequirementGenerationService, IChun
     // added to the first - and the count is logged. Requirements that differ in any of those fields
     // are all kept, even with the same title. The audit keeps every part's raw response and the
     // model(s) that served them. A single whole-source response is returned as it is.
-    private static (GenerationPartAiResponse Parsed, string RawResponse, string Model) Merge(
+    //
+    // Cross-part review (CrossPartReview): after that merge, requirements from different parts that cite
+    // the same source ID, and NFRs from different parts with the same category and title but different
+    // targets, are reported - never merged or dropped, since only a reviewer can tell a restatement from
+    // a conflict. The later conflict-detection stage still sees every requirement together.
+    private sealed record CrossPartReview(IReadOnlyList<string> SharedSourceIds, int TargetConflicts);
+
+    private static (GenerationPartAiResponse Parsed, string RawResponse, string Model, CrossPartReview? Review) Merge(
         IReadOnlyList<GenerationSupport.AiPart<GenerationPartAiResponse>> parts, ILogger logger)
     {
         foreach (var part in parts)
@@ -529,19 +543,21 @@ public class RequirementGenerationService : IRequirementGenerationService, IChun
 
         if (parts.Count == 1)
         {
-            return (parts[0].Parsed, parts[0].RawResponse, parts[0].Model);
+            return (parts[0].Parsed, parts[0].RawResponse, parts[0].Model, null);
         }
 
         var merged = new GenerationPartAiResponse();
+        var partsOf = new Dictionary<object, HashSet<int>>(ReferenceEqualityComparer.Instance);
         var frByKey = new Dictionary<string, FunctionalRequirementItem>(StringComparer.Ordinal);
         var nfrByKey = new Dictionary<string, NonFunctionalRequirementItem>(StringComparer.Ordinal);
         var duplicates = 0;
 
-        foreach (var item in parts.SelectMany(p => p.Parsed.FunctionalRequirements))
+        foreach (var (item, partNumber) in parts.SelectMany(p => p.Parsed.FunctionalRequirements.Select(i => (i, p.Number))))
         {
             var key = ContentKey(item.Actor, item.Title, item.Preconditions, item.Inputs, item.Processing, item.ExpectedResult);
             if (frByKey.TryGetValue(key, out var first))
             {
+                partsOf[first].Add(partNumber);
                 first.BusinessObjectiveCodes = Union(first.BusinessObjectiveCodes, item.BusinessObjectiveCodes);
                 first.SourceReferences = Union(first.SourceReferences, item.SourceReferences);
                 first.Dependencies = Union(first.Dependencies, item.Dependencies);
@@ -554,14 +570,16 @@ public class RequirementGenerationService : IRequirementGenerationService, IChun
             }
 
             frByKey[key] = item;
+            partsOf[item] = [partNumber];
             merged.FunctionalRequirements.Add(item);
         }
 
-        foreach (var item in parts.SelectMany(p => p.Parsed.NonFunctionalRequirements))
+        foreach (var (item, partNumber) in parts.SelectMany(p => p.Parsed.NonFunctionalRequirements.Select(i => (i, p.Number))))
         {
             var key = ContentKey(item.Category, item.Title, item.Description, item.TargetValue);
             if (nfrByKey.TryGetValue(key, out var first))
             {
+                partsOf[first].Add(partNumber);
                 first.SourceIds = Union(first.SourceIds, item.SourceIds);
                 first.AssumedClarifications = Union(first.AssumedClarifications, item.AssumedClarifications);
                 first.Evidence = UnionEvidence(first.Evidence, item.Evidence);
@@ -570,6 +588,7 @@ public class RequirementGenerationService : IRequirementGenerationService, IChun
             }
 
             nfrByKey[key] = item;
+            partsOf[item] = [partNumber];
             merged.NonFunctionalRequirements.Add(item);
         }
 
@@ -583,12 +602,48 @@ public class RequirementGenerationService : IRequirementGenerationService, IChun
             "RequirementGeneration merged {Parts} parts: {Frs} functional and {Nfrs} non-functional requirements; {Duplicates} duplicates merged.",
             parts.Count, merged.FunctionalRequirements.Count, merged.NonFunctionalRequirements.Count, duplicates);
 
+        var review = Review(merged, partsOf);
+        if (review.SharedSourceIds.Count > 0 || review.TargetConflicts > 0)
+        {
+            logger.LogWarning(
+                "RequirementGeneration cross-part review: source IDs cited from more than one part by different requirements: {Ids}; " +
+                "NFR target conflicts between parts: {Conflicts}. Nothing was merged or dropped; review these requirements.",
+                string.Join(", ", review.SharedSourceIds), review.TargetConflicts);
+        }
+
         var rawResponse = JsonSerializer.Serialize(new
         {
             parts = parts.Select(p => new { part = p.Number, of = p.Count, model = p.Model, response = p.RawResponse })
         });
         var model = string.Join(" + ", parts.Select(p => p.Model).Distinct());
-        return (merged, rawResponse, model);
+        return (merged, rawResponse, model, review);
+    }
+
+    private static CrossPartReview Review(GenerationPartAiResponse merged, IReadOnlyDictionary<object, HashSet<int>> partsOf)
+    {
+        var citing = new Dictionary<string, List<object>>(StringComparer.OrdinalIgnoreCase);
+        void Cite(object item, IEnumerable<string> ids)
+        {
+            foreach (var id in Clean(ids))
+            {
+                if (!citing.TryGetValue(id, out var list)) citing[id] = list = [];
+                list.Add(item);
+            }
+        }
+
+        merged.FunctionalRequirements.ForEach(i => Cite(i, i.SourceIds));
+        merged.NonFunctionalRequirements.ForEach(i => Cite(i, i.SourceIds));
+        var shared = citing
+            .Where(c => c.Value.Count > 1 && c.Value.SelectMany(i => partsOf[i]).Distinct().Count() > 1)
+            .Select(c => c.Key)
+            .ToList();
+
+        var conflicts = merged.NonFunctionalRequirements
+            .Where(n => !string.IsNullOrWhiteSpace(n.TargetValue))
+            .GroupBy(n => ContentKey(n.Category, n.Title))
+            .Count(g => g.Select(n => AiResultMerge.Key(n.TargetValue!)).Distinct().Count() > 1
+                && g.SelectMany(n => partsOf[n]).Distinct().Count() > 1);
+        return new CrossPartReview(shared, conflicts);
     }
 
     // Each field normalized on its own (AiResultMerge.Key) and kept apart, so two requirements are
@@ -609,9 +664,23 @@ public class RequirementGenerationService : IRequirementGenerationService, IChun
 
     // One part of a split source: it may legitimately state no functional requirement (background
     // prose, a glossary), so "at least one" is judged on the merged result instead (Merge).
-    private class GenerationPartAiResponse : IValidatableAiResponse
+    private class GenerationPartAiResponse : IValidatableAiResponse, IStagedPartResponse
     {
         protected virtual int MinFunctionalRequirements => 0;
+
+        [JsonIgnore]
+        public int ItemCount => FunctionalRequirements.Count + NonFunctionalRequirements.Count;
+
+        [JsonIgnore]
+        public IReadOnlyList<StagedCoverageClaim> CoverageClaims =>
+            FunctionalRequirements.Select(f => Claim(f.SourceIds, f.Evidence))
+                .Concat(NonFunctionalRequirements.Select(n => Claim(n.SourceIds, n.Evidence)))
+                .ToList();
+
+        private static StagedCoverageClaim Claim(List<string> sourceIds, List<EvidenceQuotePayload> evidence) => new(
+            sourceIds.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()).ToList(),
+            evidence.Where(q => string.Equals(q.From?.Trim(), RequirementEvidence.FromSrs, StringComparison.OrdinalIgnoreCase))
+                .Select(q => q.Quote).Where(q => !string.IsNullOrWhiteSpace(q)).ToList());
 
         public List<FunctionalRequirementItem> FunctionalRequirements { get; set; } = new();
         public List<NonFunctionalRequirementItem> NonFunctionalRequirements { get; set; } = new();

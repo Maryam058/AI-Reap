@@ -83,14 +83,17 @@ export const NAV_GROUPS: NavGroup[] = [
     key: 'main',
     label: 'Main',
     collapsible: false,
-    modules: [{ key: 'dashboard', label: 'Dashboard', icon: IconGrid, status: 'active', description: 'Portfolio and lifecycle progress overview.', to: '/dashboard' }],
+    // Projects lives here, in a group that cannot be folded away, so the way into a project is always visible.
+    modules: [
+      { key: 'dashboard', label: 'Dashboard', icon: IconGrid, status: 'active', description: 'Portfolio and lifecycle progress overview.', to: '/dashboard' },
+      { key: 'projects', label: 'Projects', icon: IconFolder, status: 'active', description: 'Create, edit, update, delete and open projects.', to: '/projects' },
+    ],
   },
   {
     key: 'project',
     label: 'Project',
     collapsible: true,
     modules: [
-      { key: 'projects', label: 'Projects', icon: IconFolder, status: 'active', description: 'Create, edit, update, delete and open projects.', to: '/projects' },
       { key: 'requirements', label: 'Requirements', icon: IconDocument, status: 'active', segment: 'gathering', tab: 'sources', stages: [1], description: 'Raw requirement sources that feed the analysis.' },
       { key: 'stakeholders', label: 'Stakeholders', icon: IconUsers, status: 'active', segment: 'gathering', tab: 'stakeholders', description: 'Who is affected by, and who decides on, the project.' },
       { key: 'scope', label: 'Scope & Objectives', icon: IconTarget, status: 'active', segment: 'gathering', tab: 'context', description: 'Business context, goals and scope of the project.' },

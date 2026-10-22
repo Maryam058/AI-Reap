@@ -4,7 +4,7 @@ import { useAuth } from '../auth/AuthContext';
 import { projectsApi } from '../api/projects';
 import { useProject } from '../context/ProjectContext';
 import { useProjectInsights } from '../hooks/useProjectInsights';
-import { lifecycleProgress, stageLabel } from '../lib/lifecycle';
+import { isGatedStage, lifecycleProgress, LIFECYCLE_STAGES, stageLabel } from '../lib/lifecycle';
 import { phasePath, workAreaForStage } from '../lib/workAreas';
 import { BUCKET_COLOR, BUCKET_LABEL, BUCKET_ORDER, countBuckets, isRequirement } from '../lib/requirements';
 import { formatFullDateTime, formatRelativeTime, statusLabel, statusVariant } from '../lib/format';
@@ -14,6 +14,7 @@ import { Avatar } from '../components/ui/Avatar';
 import { ProjectActionsMenu } from '../components/ProjectActionsMenu';
 import { LifecyclePanel } from '../components/LifecyclePanel';
 import { AgentActivitySummary } from '../components/AgentActivitySummary';
+import { ProjectTeamCard } from '../components/ProjectTeamCard';
 import { IconArrowRight, IconCheckCircle, IconDocument, IconEdit, IconInbox, IconSparkles, IconUsers } from '../components/icons';
 
 export function ProjectOverviewPage() {
@@ -81,7 +82,22 @@ export function ProjectOverviewPage() {
       <PageHeader
         title={project.name}
         subtitle={project.description || 'No description yet.'}
-        badge={<span className={`status-pill tone-${statusVariant(project.status)}`}>{statusLabel(project.status)}</span>}
+        badge={
+          <span className="overview-stage">
+            <span className="overview-stage-label">Current stage</span>{' '}
+            <span className={`status-pill tone-${statusVariant(project.status)}`}>{statusLabel(project.status)}</span>{' '}
+            <span className="overview-stage-meta">
+              Stage {progress.stageNumber} of {LIFECYCLE_STAGES.length}
+              {!progress.finished && (
+                <>
+                  {' '}
+                  · Next: {stageLabel(project.status + 1)}
+                  {isGatedStage(project.status) && ' (needs Reviewer approval)'}
+                </>
+              )}
+            </span>
+          </span>
+        }
         actions={
           <>
             <Link to={phasePath(project.id, 'review')} className={`btn ${progress.finished ? 'btn-primary' : 'btn-secondary'}`}>
@@ -233,6 +249,8 @@ export function ProjectOverviewPage() {
               </div>
             </dl>
           </section>
+
+          <ProjectTeamCard projectId={project.id} />
 
           <section className="panel" aria-labelledby="sh-title">
             <header className="panel-head tight">

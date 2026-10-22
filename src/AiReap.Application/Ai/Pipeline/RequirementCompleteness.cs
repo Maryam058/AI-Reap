@@ -27,6 +27,13 @@ namespace AiReap.Application.Ai.Pipeline;
 //   NoEvidenceCount         - evidenceStatus "none" (or missing): no quote was given;
 //   UnsupportedNumbersCount - requirements with at least one number or quantity that none of its
 //                             verified quotes contains (unsupportedNumbers non-empty).
+//
+// Cross-part review (Generate in parts only; null otherwise). Parts are generated separately, so the
+// merge flags what it cannot decide instead of silently choosing; nothing is dropped or rewritten:
+//   CrossPartSharedSourceIds - source IDs cited by different requirements that came from different parts
+//                              (possible duplicates or conflicting restatements - review them);
+//   CrossPartTargetConflicts - non-functional requirements from different parts with the same category
+//                              and title but different target values.
 public sealed record RequirementCompleteness(
     string ContextReduction,
     int PartCount,
@@ -34,7 +41,9 @@ public sealed record RequirementCompleteness(
     IReadOnlyList<string> Models,
     int? UnverifiedEvidenceCount = null,
     int? NoEvidenceCount = null,
-    int? UnsupportedNumbersCount = null)
+    int? UnsupportedNumbersCount = null,
+    IReadOnlyList<string>? CrossPartSharedSourceIds = null,
+    int? CrossPartTargetConflicts = null)
 {
     public const string NoReduction = "none", Split = "split";
     public const string ClarificationsWhole = "whole", ClarificationsDistributed = "distributed", ClarificationsNone = "none";

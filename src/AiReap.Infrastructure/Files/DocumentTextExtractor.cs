@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text;
 using AiReap.Application.Ai;
 using AiReap.Application.Files;
@@ -19,6 +20,101 @@ public class DocumentTextExtractor : IDocumentTextExtractor
     public bool CanExtract(string fileName) =>
         SupportedExtensions.Contains(Path.GetExtension(fileName), StringComparer.OrdinalIgnoreCase);
 
+    // Limits on what a DOCX may expand to: it is a ZIP, and a small one can inflate to gigabytes.
+    private const long MaxDocxUncompressedBytes = 200L * 1024 * 1024;
+    private const int MaxDocxEntries = 5_000;
+
+    public async Task<ExtractedDocument> ExtractDocumentAsync(ReadOnlyMemory<byte> content, string fileName, CancellationToken cancellationToken = default)
+    {
+        var extension = Path.GetExtension(fileName).ToLowerInvariant();
+        var kind = DocumentSignature.Detect(content.Span);
+        switch (extension)
+        {
+            case ".txt":
+                if (kind != DocumentSignature.Kind.Unknown)
+                {
+                    throw new InvalidDocumentException("This file is named .txt but its content is not plain text.");
+                }
+
+                using (var stream = new MemoryStream(content.ToArray(), writable: false))
+                {
+                    return new ExtractedDocument(await ExtractTxtAsync(stream, cancellationToken), null, null);
+                }
+
+            case ".pdf":
+                if (kind != DocumentSignature.Kind.Pdf)
+                {
+                    throw new InvalidDocumentException("This file is named .pdf but its content is not a PDF.");
+                }
+
+                try
+                {
+                    using var stream = new MemoryStream(content.ToArray(), writable: false);
+                    var text = ExtractPdf(stream, out var pageLineStarts);
+                    return new ExtractedDocument(text, OriginalDocumentFormats.Pdf, pageLineStarts);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // PdfPig's own message can quote the file; it is not passed on.
+                    throw new InvalidDocumentException("This PDF could not be read. It may be damaged or password-protected.");
+                }
+
+            case ".docx":
+                if (kind == DocumentSignature.Kind.Ole)
+                {
+                    throw new InvalidDocumentException("This file is a password-protected or older Word (.doc) document; save it as an unprotected .docx and upload that.");
+                }
+
+                if (kind != DocumentSignature.Kind.Zip)
+                {
+                    throw new InvalidDocumentException("This file is named .docx but its content is not a Word document.");
+                }
+
+                CheckDocxPackage(content);
+                try
+                {
+                    using var stream = new MemoryStream(content.ToArray(), writable: false);
+                    using var wordDocument = WordprocessingDocument.Open(stream, false, new OpenSettings { MaxCharactersInPart = MaxDocxUncompressedBytes });
+                    if (wordDocument.DocumentType != DocumentFormat.OpenXml.WordprocessingDocumentType.Document)
+                    {
+                        throw new InvalidDocumentException("Macro-enabled Word documents and templates are not accepted; upload a plain .docx.");
+                    }
+
+                    return new ExtractedDocument(DocxText(wordDocument), OriginalDocumentFormats.Docx, null, DocxText(wordDocument, legacy: true));
+                }
+                catch (Exception ex) when (ex is not (OperationCanceledException or InvalidDocumentException))
+                {
+                    throw new InvalidDocumentException("This Word document could not be read. It may be damaged.");
+                }
+
+            default:
+                throw new InvalidDocumentException("Only .txt, .pdf, and .docx uploads are supported.");
+        }
+    }
+
+    // A Word package is a ZIP with [Content_Types].xml and a main document; its entry count and
+    // expanded size are checked before anything is inflated.
+    private static void CheckDocxPackage(ReadOnlyMemory<byte> content)
+    {
+        try
+        {
+            using var zip = new ZipArchive(new MemoryStream(content.ToArray(), writable: false), ZipArchiveMode.Read);
+            if (zip.Entries.Count > MaxDocxEntries || zip.Entries.Sum(e => e.Length) > MaxDocxUncompressedBytes)
+            {
+                throw new InvalidDocumentException("This Word document expands to more than AI-REAP accepts.");
+            }
+
+            if (zip.GetEntry("[Content_Types].xml") is null)
+            {
+                throw new InvalidDocumentException("This file is named .docx but its content is not a Word document.");
+            }
+        }
+        catch (InvalidDataException)
+        {
+            throw new InvalidDocumentException("This Word document could not be read. It may be damaged.");
+        }
+    }
+
     public async Task<string> ExtractAsync(Stream stream, string fileName, CancellationToken cancellationToken = default)
     {
         var extension = Path.GetExtension(fileName).ToLowerInvariant();
@@ -37,16 +133,39 @@ public class DocumentTextExtractor : IDocumentTextExtractor
         return await reader.ReadToEndAsync(cancellationToken);
     }
 
-    private static string ExtractPdf(Stream stream)
+    private static string ExtractPdf(Stream stream) => ExtractPdf(stream, out _);
+
+    // The text, and the line of it each page starts on (lines counted as SourceReferenceIndex.Lines
+    // counts them: \r\n, \r or \n ends one). The text is the same either way.
+    private static string ExtractPdf(Stream stream, out List<int> pageLineStarts)
     {
         using var document = PdfDocument.Open(stream);
         var sb = new StringBuilder();
+        pageLineStarts = new List<int>();
+        var line = 0;
         foreach (var page in document.GetPages())
         {
-            sb.AppendLine(PageText(page.Letters));
+            var pageText = PageText(page.Letters);
+            pageLineStarts.Add(line);
+            sb.AppendLine(pageText);
+            line += LineBreaks(pageText) + 1;
         }
 
         return sb.ToString();
+    }
+
+    private static int LineBreaks(string text)
+    {
+        var breaks = 0;
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (text[i] == '\n' || (text[i] == '\r' && (i + 1 == text.Length || text[i + 1] != '\n')))
+            {
+                breaks++;
+            }
+        }
+
+        return breaks;
     }
 
     // A PDF page's text with its line boundaries kept. PdfPig's page.Text joins every letter with no
@@ -211,13 +330,40 @@ public class DocumentTextExtractor : IDocumentTextExtractor
     private static string ExtractDocx(Stream stream)
     {
         using var wordDocument = WordprocessingDocument.Open(stream, false);
+        return DocxText(wordDocument);
+    }
+
+    private static string DocxText(WordprocessingDocument wordDocument, bool legacy = false)
+    {
         var body = wordDocument.MainDocumentPart?.Document?.Body;
         if (body is null)
         {
             return string.Empty;
         }
 
-        var paragraphs = body.Descendants<Paragraph>().Select(p => p.InnerText);
+        // Only the visible run text, tabs kept: Paragraph.InnerText also returns field instructions
+        // (w:instrText) and drops tabs, so a table-of-contents entry read "Actors and RolesPAGEREF _Toc123 \h 9"
+        // instead of "Actors and Roles\t9" - which SourceReferenceIndex recognises as a contents entry.
+        // legacy: InnerText, as earlier uploads were extracted (ExtractedDocument.LegacyText).
+        var paragraphs = body.Descendants<Paragraph>().Select(p => legacy ? p.InnerText : VisibleText(p));
         return string.Join("\n", paragraphs);
+    }
+
+    private static string VisibleText(Paragraph paragraph)
+    {
+        var text = new StringBuilder();
+        foreach (var element in paragraph.Descendants())
+        {
+            if (element is Text t)
+            {
+                text.Append(t.Text);
+            }
+            else if (element is TabChar)
+            {
+                text.Append('\t');
+            }
+        }
+
+        return text.ToString();
     }
 }

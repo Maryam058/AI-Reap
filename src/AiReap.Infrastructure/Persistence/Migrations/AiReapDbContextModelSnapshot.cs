@@ -991,6 +991,43 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.ToTable("RequirementSources");
                 });
 
+            modelBuilder.Entity("AiReap.Domain.Entities.RequirementSourceFile", b =>
+                {
+                    b.Property<Guid>("RequirementSourceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Format")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<long>("Length")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("PageLineStartsJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("StorageKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.HasKey("RequirementSourceId");
+
+                    b.HasIndex("StorageKey")
+                        .IsUnique();
+
+                    b.ToTable("RequirementSourceFiles");
+                });
+
             modelBuilder.Entity("AiReap.Infrastructure.Identity.ApplicationUser", b =>
                 {
                     b.Property<string>("Id")
@@ -1418,6 +1455,15 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Project");
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.RequirementSourceFile", b =>
+                {
+                    b.HasOne("AiReap.Domain.Entities.RequirementSource", null)
+                        .WithOne()
+                        .HasForeignKey("AiReap.Domain.Entities.RequirementSourceFile", "RequirementSourceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<string>", b =>

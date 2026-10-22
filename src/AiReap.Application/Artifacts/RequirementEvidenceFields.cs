@@ -80,11 +80,24 @@ public static class RequirementEvidenceFields
     // The payload as a restricted caller may see it: each evidence quote without its text (and an
     // excerpt quote without its document label). Anything that is not an evidence-carrying payload
     // is returned unchanged.
+    // Also removes a clarification question's source references (ClarificationSourceReferences): their
+    // headings and excerpts are source text, and a restricted caller cannot open the source anyway.
     public static string RedactForRestrictedCaller(string json)
     {
-        if (JsonNode.Parse(json) is not JsonObject payload || Lookup(payload, EvidenceKey) is not JsonArray evidence)
+        if (JsonNode.Parse(json) is not JsonObject payload)
         {
             return json;
+        }
+
+        var hasReferences = Lookup(payload, ClarificationSourceReferences.Key) is not null;
+        if (hasReferences)
+        {
+            Remove(payload, ClarificationSourceReferences.Key);
+        }
+
+        if (Lookup(payload, EvidenceKey) is not JsonArray evidence)
+        {
+            return hasReferences ? payload.ToJsonString() : json;
         }
 
         foreach (var quote in evidence.OfType<JsonObject>())

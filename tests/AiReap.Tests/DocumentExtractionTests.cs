@@ -60,6 +60,17 @@ public class DocumentExtractionTests(ITestOutputHelper output)
     // ---- DOCX ---------------------------------------------------------------------------------
 
     [Fact]
+    public async Task Docx_contents_entry_keeps_its_tab_and_page_but_not_its_field_instruction()
+    {
+        var bytes = DocxFixtureBuilder.ContentsEntry("4.2 Actors and Roles", "9", "Nurses triage patients.");
+        var extracted = await Extractor.ExtractDocumentAsync(bytes, "srs.docx");
+
+        Assert.Equal("4.2 Actors and Roles\t9\n4.2 Actors and Roles\nNurses triage patients.", extracted.Text);
+        // The text as earlier uploads were extracted, to match an original attached to one of them.
+        Assert.Equal("4.2 Actors and Roles PAGEREF _Toc123 \\h 9\n4.2 Actors and Roles\nNurses triage patients.", extracted.LegacyText);
+    }
+
+    [Fact]
     public async Task Docx_plain_paragraphs_are_kept_exactly_and_in_order()
     {
         var lines = NonBlankLines(ClinicSource);

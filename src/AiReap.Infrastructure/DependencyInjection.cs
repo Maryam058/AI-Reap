@@ -37,28 +37,16 @@ public static class DependencyInjection
 
         services.Configure<AnthropicOptions>(configuration.GetSection(AnthropicOptions.SectionName));
         services.Configure<AiOptions>(configuration.GetSection(AiOptions.SectionName));
+        // Gemini settings are still bound for embeddings (GeminiEmbeddingClient); Groq settings only for
+        // Ai:Groq:MaxBatchedRunParts (AiBatchSettings). Neither provider serves chat requests any more.
         services.Configure<GeminiOptions>(configuration.GetSection(GeminiOptions.SectionName));
+        services.Configure<GroqOptions>(configuration.GetSection(GroqOptions.SectionName));
         services.Configure<AiResilienceOptions>(configuration.GetSection(AiResilienceOptions.SectionName));
 
-        // Ai:Groq:ApiKey (user-secrets / Ai__Groq__ApiKey) wins; the conventional GROQ_API_KEY
-        // environment variable is the fallback source, so an existing machine-level key just works.
-        services.AddOptions<GroqOptions>()
-            .Bind(configuration.GetSection(GroqOptions.SectionName))
-            .PostConfigure(options =>
-            {
-                if (string.IsNullOrWhiteSpace(options.ApiKey))
-                {
-                    options.ApiKey = configuration[GroqOptions.ConventionalKeyVariable] ?? string.Empty;
-                }
-            });
-
-        // Every provider client and the stub are always registered (so the app never fails to
-        // start regardless of which provider ends up selected, and switching providers is a config
-        // change with no wiring changes). Which one IAiChatClient actually resolves to is decided
-        // per-request in ResolveAiChatClient below, once a real IHostEnvironment/IOptions snapshot
-        // is available.
-        services.AddHttpClient<GeminiAiChatClient>();
-        services.AddHttpClient<GroqAiChatClient>();
+        // Claude is the only chat provider. Its client and the stub are always registered (so the app
+        // never fails to start whatever the configuration); which one IAiChatClient resolves to is
+        // decided per request scope in ResolveAiChatClient. No Gemini or Groq chat client is
+        // registered, so nothing can resolve one.
         services.AddHttpClient<AnthropicAiChatClient>();
         services.AddSingleton<StubAiChatClient>();
         services.AddSingleton<AiProviderCooldown>();
@@ -72,196 +60,157 @@ public static class DependencyInjection
 
         services.Configure<OpenAiOptions>(configuration.GetSection(OpenAiOptions.SectionName));
 
-        // §26 embeddings: Gemini (semantic, same key as chat) when it's the configured provider and
-        // a key is present; else OpenAI if its key is set; else the deterministic hash stub.
-        var geminiOptions = configuration.GetSection(GeminiOptions.SectionName).Get<GeminiOptions>() ?? new GeminiOptions();
-        var chatProvider = configuration[$"{AiOptions.SectionName}:Provider"];
-        var openAiApiKey = configuration[$"{OpenAiOptions.SectionName}:ApiKey"];
-        if (geminiOptions.HasUsableApiKey
-            && (string.IsNullOrWhiteSpace(chatProvider) || string.Equals(chatProvider.Trim(), AiOptions.Gemini, StringComparison.OrdinalIgnoreCase)))
+        switch (SelectEmbeddingProvider(configuration))
         {
-            services.AddHttpClient<IEmbeddingClient, GeminiEmbeddingClient>();
-        }
-        else if (!string.IsNullOrWhiteSpace(openAiApiKey))
-        {
-            services.AddHttpClient<IEmbeddingClient, OpenAiEmbeddingClient>();
-        }
-        else
-        {
-            services.AddSingleton<IEmbeddingClient, StubEmbeddingClient>();
+            case AiOptions.Gemini:
+                services.AddHttpClient<IEmbeddingClient, GeminiEmbeddingClient>();
+                break;
+            case AiOptions.OpenAI:
+                services.AddHttpClient<IEmbeddingClient, OpenAiEmbeddingClient>();
+                break;
+            default:
+                services.AddSingleton<IEmbeddingClient, StubEmbeddingClient>();
+                break;
         }
 
         services.AddSingleton<IDocumentTextExtractor, DocumentTextExtractor>();
 
+        // Original PDF/DOCX uploads (docs/SOURCE_DOCUMENT_RETENTION.md).
+        services.Configure<OriginalDocumentOptions>(configuration.GetSection(OriginalDocumentOptions.SectionName));
+        // No RootPath: a directory of its own per database, so two databases on one machine (a dev API,
+        // a test host) never share one - see FileSystemOriginalDocumentStore.IsOwnedByAsync.
+        services.PostConfigure<OriginalDocumentOptions>(options =>
+        {
+            if (string.IsNullOrWhiteSpace(options.RootPath))
+            {
+                options.RootPath = FileSystemOriginalDocumentStore.DefaultRoot(configuration.GetConnectionString("Default"));
+            }
+        });
+        services.AddSingleton(sp => sp.GetRequiredService<IOptions<OriginalDocumentOptions>>().Value);
+        services.AddSingleton<IOriginalDocumentStore, FileSystemOriginalDocumentStore>();
+        services.AddHostedService<OriginalDocumentJanitor>();
+
         return services;
     }
 
-    // Ai:Provider picks the primary implementation explicitly. "Gemini" (the default when Provider
-    // is unset) is the primary cloud LLM, with Ai:FallbackProvider ("Groq" by default) behind it in
-    // FallbackAiChatClient, so an exhausted Gemini quota needs no config change. "Groq" can also be
-    // the primary. "Anthropic" keeps its original selection behavior (no fallback). Any other value
-    // is a configuration mistake and fails fast at resolution time rather than silently falling
-    // back to something the operator didn't ask for. Every real client is wrapped in
-    // ResilientAiChatClient (timeout, retry with backoff, error classification); the stub never is.
+    // §26 embeddings, independent of the chat provider. Ai:EmbeddingProvider wins when set. Blank keeps
+    // the previous automatic choice for every deployment that ran Gemini chat (the shipped default):
+    // Gemini when its key is usable, else OpenAI when its key is set, else the deterministic stub.
+    // (Before the move to Claude chat, the Gemini branch also required Ai:Provider to be Gemini; a
+    // deployment that ran Anthropic chat WITH a Gemini key now gets Gemini embeddings unless it sets
+    // Ai:EmbeddingProvider - see docs/CLAUDE_SETUP.md.)
+    public static string SelectEmbeddingProvider(IConfiguration configuration)
+    {
+        var configured = configuration[$"{AiOptions.SectionName}:{nameof(AiOptions.EmbeddingProvider)}"]?.Trim();
+        if (!string.IsNullOrEmpty(configured))
+        {
+            foreach (var known in new[] { AiOptions.Gemini, AiOptions.OpenAI, AiOptions.Stub })
+            {
+                if (string.Equals(configured, known, StringComparison.OrdinalIgnoreCase)) return known;
+            }
+
+            throw new InvalidOperationException(
+                $"Ai:EmbeddingProvider is set to '{configured}', which is not a supported embedding provider. " +
+                "Use 'Gemini', 'OpenAI', 'Stub', or leave it empty for automatic selection.");
+        }
+
+        var gemini = configuration.GetSection(GeminiOptions.SectionName).Get<GeminiOptions>() ?? new GeminiOptions();
+        if (gemini.HasUsableApiKey) return AiOptions.Gemini;
+        if (!string.IsNullOrWhiteSpace(configuration[$"{OpenAiOptions.SectionName}:ApiKey"])) return AiOptions.OpenAI;
+        return AiOptions.Stub;
+    }
+
+    // Ai:Provider must be "Anthropic" (or unset). Gemini and Groq are rejected with an actionable
+    // error rather than silently honored or silently replaced, and there is no chat fallback.
+    //
+    // Real key present -> the real Claude client, in every environment. No usable key -> the
+    // deterministic stub in Development/Testing only (loudly logged, and recorded as model
+    // "stub-canned-model" in the AI audit trail, so it is never mistaken for real output), so the app
+    // and the full pipeline stay runnable offline. Anywhere else the real client is still returned and
+    // fails each AI call with AiProviderException(NotConfigured) before sending anything, which the API
+    // maps to a 503 naming Ai:Anthropic:ApiKey - never canned data dressed up as real AI output.
+    //
+    // Settings that would make every request fail or exceed the model's limits (AnthropicOptions.Validate)
+    // fail resolution with all problems listed.
     private static IAiChatClient ResolveAiChatClient(IServiceProvider sp)
     {
         var aiOptions = sp.GetRequiredService<IOptions<AiOptions>>().Value;
-        var provider = string.IsNullOrWhiteSpace(aiOptions.Provider) ? AiOptions.Gemini : aiOptions.Provider.Trim();
+        var provider = string.IsNullOrWhiteSpace(aiOptions.Provider) ? AiOptions.Anthropic : aiOptions.Provider.Trim();
 
-        if (IsCloudProvider(provider, out var primary))
+        if (string.Equals(provider, AiOptions.Gemini, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(provider, AiOptions.Groq, StringComparison.OrdinalIgnoreCase))
         {
-            return ResolveCloud(sp, aiOptions, primary);
+            throw new InvalidOperationException(
+                $"Ai:Provider is set to '{aiOptions.Provider}', but Gemini and Groq are no longer supported as chat providers: " +
+                "AI-REAP uses Anthropic Claude only, with no chat fallback. Set Ai:Provider to 'Anthropic' (or remove it) and " +
+                "configure Ai:Anthropic:ApiKey. Gemini embeddings are not affected by this setting.");
         }
 
         if (!string.Equals(provider, AiOptions.Anthropic, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                $"Ai:Provider is set to '{aiOptions.Provider}', which is not a recognized AI provider. " +
-                "Use 'Gemini' (default), 'Groq' or 'Anthropic'.");
+                $"Ai:Provider is set to '{aiOptions.Provider}', which is not a recognized AI provider. Use 'Anthropic'.");
         }
 
-        // Real key present -> always the real client, in every environment. No usable key -> the
-        // deterministic stub in Development/Testing only, so the app and the full Analyze pipeline
-        // stay runnable with no live API key. In every other environment (Production, Staging, or
-        // anything not explicitly recognized as a dev/test environment), a missing or placeholder key
-        // must NOT silently produce stub data dressed up as real AI output - it throws instead, so a
-        // misconfigured deployment fails loudly (a 500, logged with the real reason) on the first
-        // request that needs AI rather than quietly serving canned analysis.
+        var fallback = aiOptions.FallbackProvider?.Trim();
+        if (!string.IsNullOrEmpty(fallback) && !string.Equals(fallback, "None", StringComparison.OrdinalIgnoreCase))
+        {
+            SelectionLogger(sp).LogWarning(
+                "Ai:FallbackProvider is set to '{FallbackProvider}' but is ignored: AI-REAP has no chat fallback " +
+                "(Anthropic Claude only). Remove the setting.", fallback);
+        }
+
         var options = sp.GetRequiredService<IOptions<AnthropicOptions>>().Value;
-        if (options.HasUsableApiKey)
-        {
-            return Resilient(sp, sp.GetRequiredService<AnthropicAiChatClient>(), AiOptions.Anthropic);
-        }
-
-        var environment = sp.GetRequiredService<IHostEnvironment>();
-        if (environment.IsDevelopment() || environment.IsEnvironment("Testing"))
-        {
-            SelectionLogger(sp).LogWarning("Anthropic API key not configured; using development AI stub.");
-            return sp.GetRequiredService<StubAiChatClient>();
-        }
-
-        throw new InvalidOperationException(
-            $"Ai:Anthropic:ApiKey is not configured (or is a placeholder) in the '{environment.EnvironmentName}' " +
-            "environment. This environment is not permitted to silently fall back to the development AI stub, " +
-            "so real AI analysis cannot run until a valid Anthropic API key is configured.");
-    }
-
-    // Both keys -> primary with automatic fallback. One key -> that provider alone (logged when it
-    // isn't the primary). No key -> the deterministic stub in Development/Testing only (loudly
-    // logged, and recorded as model "stub-canned-model" in the AI audit trail, so it is never
-    // mistaken for real output); the stub is never used while any real provider is configured.
-    // Anywhere else the primary client is still returned and fails each AI call with
-    // AiProviderException(NotConfigured), which the API maps to a 503 naming the missing setting -
-    // never canned data dressed up as real AI output.
-    private static IAiChatClient ResolveCloud(IServiceProvider sp, AiOptions aiOptions, string primaryName)
-    {
-        var fallbackName = ResolveFallbackName(aiOptions, primaryName);
-        var primary = ConfiguredCloudClient(sp, primaryName);
-        var fallback = fallbackName is null ? null : ConfiguredCloudClient(sp, fallbackName);
-
-        if (primary is not null && fallback is not null)
-        {
-            var resilience = sp.GetRequiredService<IOptions<AiResilienceOptions>>().Value;
-            return new FallbackAiChatClient(
-                Wrap(sp, primary, primaryName, resilience.WithoutRateLimitRetry()), primaryName,
-                Wrap(sp, fallback, fallbackName!), fallbackName!,
-                sp.GetRequiredService<AiProviderCooldown>(),
-                TimeSpan.FromSeconds(Math.Max(0, aiOptions.PrimaryCooldownSeconds)),
-                sp.GetRequiredService<ILoggerFactory>().CreateLogger<FallbackAiChatClient>());
-        }
-
-        if (primary is not null)
-        {
-            return Wrap(sp, primary, primaryName);
-        }
-
-        if (fallback is not null)
-        {
-            SelectionLogger(sp).LogWarning(
-                "{Primary} API key not configured; using {Fallback} only (no automatic fallback).", primaryName, fallbackName);
-            return Wrap(sp, fallback, fallbackName!);
-        }
-
-        var environment = sp.GetRequiredService<IHostEnvironment>();
-        if (environment.IsDevelopment() || environment.IsEnvironment("Testing"))
-        {
-            SelectionLogger(sp).LogWarning(
-                "No AI provider API key configured ({Settings}); using the DEVELOPMENT AI STUB. " +
-                "Responses are canned test data, NOT real AI output (audit model 'stub-canned-model').",
-                fallbackName is null ? $"Ai:{primaryName}:ApiKey" : $"Ai:{primaryName}:ApiKey, Ai:{fallbackName}:ApiKey");
-            return sp.GetRequiredService<StubAiChatClient>();
-        }
-
-        return Wrap(sp, CloudClient(sp, primaryName), primaryName);
-    }
-
-    // A cloud client as it is used: resilience around it, plus - for Groq, whose free tier caps the
-    // size of one request - the request budget outside that, so a prompt is condensed once and every
-    // retry reuses it. Gemini gets no budget: its requests are sent exactly as built, under its own
-    // per-attempt timeout and timeout-retry limit (Ai:Gemini:TimeoutSeconds / MaxTimeoutAttempts).
-    private static IAiChatClient Wrap(IServiceProvider sp, IAiChatClient client, string name, AiResilienceOptions? resilience = null)
-    {
-        if (name == AiOptions.Gemini)
-        {
-            var gemini = sp.GetRequiredService<IOptions<GeminiOptions>>().Value;
-            var shared = resilience ?? sp.GetRequiredService<IOptions<AiResilienceOptions>>().Value;
-            return Resilient(sp, client, name, shared.WithTimeout(
-                gemini.TimeoutSeconds > 0 ? gemini.TimeoutSeconds : shared.TimeoutSeconds,
-                Math.Max(0, gemini.MaxTimeoutAttempts)));
-        }
-
-        if (name != AiOptions.Groq)
-        {
-            return Resilient(sp, client, name, resilience);
-        }
-
-        var groq = sp.GetRequiredService<IOptions<GroqOptions>>().Value;
-        var resilient = Resilient(sp, client, name,
-            (resilience ?? sp.GetRequiredService<IOptions<AiResilienceOptions>>().Value).WithRateLimitAttempts(groq.MaxRateLimitAttempts));
-        return new RequestBudgetAiChatClient(
-            resilient, name, $"{GroqOptions.SectionName}:{nameof(GroqOptions.MaxRequestTokens)}",
-            groq.MaxRequestTokens, groq.ReservedOutputTokens,
-            sp.GetRequiredService<ILoggerFactory>().CreateLogger<RequestBudgetAiChatClient>(),
-            groq.MaxChunkedParts, $"{GroqOptions.SectionName}:{nameof(GroqOptions.MaxChunkedParts)}");
-    }
-
-    private static bool IsCloudProvider(string name, out string canonical)
-    {
-        canonical = string.Equals(name, AiOptions.Gemini, StringComparison.OrdinalIgnoreCase) ? AiOptions.Gemini
-            : string.Equals(name, AiOptions.Groq, StringComparison.OrdinalIgnoreCase) ? AiOptions.Groq
-            : string.Empty;
-        return canonical.Length > 0;
-    }
-
-    private static string? ResolveFallbackName(AiOptions aiOptions, string primaryName)
-    {
-        var name = aiOptions.FallbackProvider?.Trim();
-        if (string.IsNullOrEmpty(name) || string.Equals(name, "None", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        if (!IsCloudProvider(name, out var fallbackName))
+        var problems = options.Validate();
+        if (problems.Count > 0)
         {
             throw new InvalidOperationException(
-                $"Ai:FallbackProvider is set to '{aiOptions.FallbackProvider}', which is not a supported fallback provider. " +
-                "Use 'Groq' (default), 'Gemini' or 'None'.");
+                "The Anthropic chat configuration is invalid: " + string.Join(" ", problems));
         }
 
-        return fallbackName == primaryName ? null : fallbackName;
+        if (!options.HasUsableApiKey)
+        {
+            var environment = sp.GetRequiredService<IHostEnvironment>();
+            if (environment.IsDevelopment() || environment.IsEnvironment("Testing"))
+            {
+                SelectionLogger(sp).LogWarning(
+                    "Anthropic API key not configured; using development AI stub. Responses are canned test data, NOT real AI " +
+                    "output (audit model 'stub-canned-model'). Set Ai:Anthropic:ApiKey to use Claude.");
+                return sp.GetRequiredService<StubAiChatClient>();
+            }
+        }
+
+        return Wrap(sp, sp.GetRequiredService<AnthropicAiChatClient>(), options);
     }
 
-    private static IAiChatClient? ConfiguredCloudClient(IServiceProvider sp, string name)
+    // The Claude client as it is used: resilience (Ai:Anthropic:TimeoutSeconds / MaxTimeoutAttempts,
+    // Ai:Resilience for the rest) and, outside that, the lossless request budget - prompts are never
+    // condensed; an over-budget requirement source is split by the caller or refused before sending.
+    private static IAiChatClient Wrap(IServiceProvider sp, AnthropicAiChatClient client, AnthropicOptions options)
     {
-        var hasKey = name == AiOptions.Groq
-            ? sp.GetRequiredService<IOptions<GroqOptions>>().Value.HasUsableApiKey
-            : sp.GetRequiredService<IOptions<GeminiOptions>>().Value.HasUsableApiKey;
-        return hasKey ? CloudClient(sp, name) : null;
-    }
+        var shared = sp.GetRequiredService<IOptions<AiResilienceOptions>>().Value;
+        var resilient = Resilient(sp, client, AiOptions.Anthropic, shared.WithTimeout(
+            options.TimeoutSeconds > 0 ? options.TimeoutSeconds : shared.TimeoutSeconds,
+            Math.Max(0, options.MaxTimeoutAttempts)));
 
-    private static IAiChatClient CloudClient(IServiceProvider sp, string name) => name == AiOptions.Groq
-        ? sp.GetRequiredService<GroqAiChatClient>()
-        : sp.GetRequiredService<GeminiAiChatClient>();
+        var budgetSetting = $"{AnthropicOptions.SectionName}:{nameof(AnthropicOptions.MaxRequestTokens)}";
+        var policy = new RequestBudgetPolicy(
+            CondenseOverBudget: false,
+            InputBudgetOverride: options.EstimatedInputBudget(PromptBudgetReducer.CharsPerToken),
+            CountInputTokens: options.UseTokenCountingApi ? client.CountInputTokensAsync : null,
+            CountedInputBudget: options.InputTokenBudget,
+            TooLargeAdvice: "Nothing was sent. Split the source into smaller requirement sources, or ask an administrator to " +
+                $"review {budgetSetting}.",
+            StagedPartSourceTokens: Math.Max(0, options.GenerationPartSourceTokens),
+            StagedMaxParts: options.MaxGenerationParts,
+            StagedPartSourceSetting: $"{AnthropicOptions.SectionName}:{nameof(AnthropicOptions.GenerationPartSourceTokens)}",
+            StagedMaxPartsSetting: $"{AnthropicOptions.SectionName}:{nameof(AnthropicOptions.MaxGenerationParts)}");
+
+        return new RequestBudgetAiChatClient(
+            resilient, AiOptions.Anthropic, budgetSetting, options.MaxRequestTokens, options.MaxTokens,
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<RequestBudgetAiChatClient>(),
+            options.MaxChunkedParts, $"{AnthropicOptions.SectionName}:{nameof(AnthropicOptions.MaxChunkedParts)}", policy);
+    }
 
     private static ILogger SelectionLogger(IServiceProvider sp) =>
         sp.GetRequiredService<ILoggerFactory>().CreateLogger("AiReap.Infrastructure.Ai.AiChatClientSelection");

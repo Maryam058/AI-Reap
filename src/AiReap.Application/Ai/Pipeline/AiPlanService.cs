@@ -190,14 +190,20 @@ public class AiPlanService : IAiPlanService
                 with { SizeStatus = AiPlanStatus.Uncertain };
         }
 
-        var min = ChunkPlanner.Plan(inputs.SystemPrompt, inputs.SourceText, inputs.FixedContextMin, inputs.Shared, limits.InputBudget, limits.MaxParts);
-        var max = inputs.FixedContextMax == inputs.FixedContextMin
-            ? min
-            : ChunkPlanner.Plan(inputs.SystemPrompt, inputs.SourceText, inputs.FixedContextMax, inputs.Shared, limits.InputBudget, limits.MaxParts);
+        // Generate on a provider with an output ceiling is staged (GenerationSupport, AiOutputStaging):
+        // planned with ChunkPlanner.PlanStaged, exactly as the real run plans it.
+        var staging = operation == AiPlanOperation.Generate ? limits.OutputStaging : null;
+        ChunkPlan PlanFor(string fixedContext) => staging is not null
+            ? ChunkPlanner.PlanStaged(inputs.SystemPrompt, inputs.SourceText, fixedContext, inputs.Shared, staging)
+            : ChunkPlanner.Plan(inputs.SystemPrompt, inputs.SourceText, fixedContext, inputs.Shared, limits.InputBudget, limits.MaxParts);
+        var partsSetting = staging?.MaxPartsSetting ?? limits.MaxPartsSetting;
+
+        var min = PlanFor(inputs.FixedContextMin);
+        var max = inputs.FixedContextMax == inputs.FixedContextMin ? min : PlanFor(inputs.FixedContextMax);
 
         foreach (var plan in new[] { max, min }.Distinct())
         {
-            if (Refusal(limits, plan) is { } refusal && reasons.All(r => r.Code != refusal.Code))
+            if (Refusal(limits, plan, partsSetting) is { } refusal && reasons.All(r => r.Code != refusal.Code))
             {
                 reasons.Add(refusal);
             }
@@ -225,6 +231,16 @@ public class AiPlanService : IAiPlanService
                 $"for a source this large may be {cap}{timeout}; if so the run fails and nothing is saved. This is a size " +
                 $"heuristic (above {threshold:N0} source tokens), not a measurement.",
                 Setting: limits.MaxOutputTokensSetting, Limit: limits.MaxOutputTokens, Actual: sourceTokens));
+        }
+
+        if (staging is not null && max.Outcome == ChunkPlanOutcome.Split)
+        {
+            reasons.Add(new AiPlanReason("OutputStaged", "Info",
+                $"Requirements are generated in {max.Chunks.Count} parts of at most ~{max.MaxPartSourceTokens:N0} source tokens " +
+                $"({staging.PartSourceSetting}={staging.MaxPartSourceTokens:N0}) so no answer is cut off at {limits.Provider}'s output limit. " +
+                $"A part whose answer is still cut off is split again (at most {staging.MaxPartsSetting}={staging.MaxParts} parts in total), " +
+                "so a run can send more requests than planned here.",
+                Setting: staging.PartSourceSetting, Limit: staging.MaxPartSourceTokens, Actual: sourceTokens));
         }
 
         if (limits.IsStub)
@@ -260,13 +276,13 @@ public class AiPlanService : IAiPlanService
     }
 
     // The refusal a real run would raise for this plan, worded for before the run.
-    private static AiPlanReason? Refusal(AiProviderLimits limits, ChunkPlan plan) => plan.Outcome switch
+    private static AiPlanReason? Refusal(AiProviderLimits limits, ChunkPlan plan, string? partsSetting) => plan.Outcome switch
     {
         ChunkPlanOutcome.TooManyParts => new AiPlanReason("TooManyParts", "Blocking",
             $"{limits.Provider} would need {plan.Chunks.Count} parts (~{plan.MaxPartSourceTokens:N0} source tokens each within its " +
-            $"{plan.InputBudget:N0}-token input budget); at most {plan.MaxParts} are allowed ({limits.MaxPartsSetting}={plan.MaxParts}). " +
+            $"{plan.InputBudget:N0}-token input budget); at most {plan.MaxParts} are allowed ({partsSetting}={plan.MaxParts}). " +
             $"A run served by {limits.Provider} is refused before any request is sent.",
-            limits.MaxPartsSetting, plan.MaxParts, plan.Chunks.Count),
+            partsSetting, plan.MaxParts, plan.Chunks.Count),
         ChunkPlanOutcome.CannotSplit => new AiPlanReason("CannotSplit", "Blocking",
             $"{limits.Provider}'s {plan.InputBudget:N0}-token input budget leaves too little room for source text next to the " +
             $"~{plan.ReservedTokensPerPart:N0} tokens every part must carry (instructions, context and a repair reserve).",

@@ -53,7 +53,8 @@ public sealed class AiRouteInspector : IAiRouteInspector
                         MaxRequestTokens = budget.MaxRequestTokens,
                         BudgetSetting = budget.BudgetSetting,
                         MaxParts = budget.MaxChunkedParts,
-                        MaxPartsSetting = budget.MaxPartsSetting
+                        MaxPartsSetting = budget.MaxPartsSetting,
+                        OutputStaging = budget.OutputStaging
                     };
             }
 
@@ -62,6 +63,13 @@ public sealed class AiRouteInspector : IAiRouteInspector
                 var inner = Describe(resilient.Inner, name ?? resilient.ProviderName);
                 return inner with { TimeoutSeconds = Math.Max(1, resilient.Options.TimeoutSeconds) };
             }
+
+            case AnthropicAiChatClient anthropic:
+                return Known(name ?? AiOptions.Anthropic, anthropic.ModelName) with
+                {
+                    MaxOutputTokens = anthropic.Options.MaxTokens,
+                    MaxOutputTokensSetting = $"{AnthropicOptions.SectionName}:{nameof(AnthropicOptions.MaxTokens)}"
+                };
 
             case GeminiAiChatClient gemini:
                 return Known(name ?? AiOptions.Gemini, gemini.ModelName) with

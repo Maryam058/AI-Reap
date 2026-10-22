@@ -81,12 +81,29 @@ public sealed class ApplicationExceptionHandler(ILogger<ApplicationExceptionHand
             Application.Knowledge.CopilotContextOverBudgetException copilotOverBudget => MapCopilotOverBudget(copilotOverBudget),
             AiProviderException ai => MapProvider(ai),
 
+            // Staged generation left requirement IDs uncovered (GenerationSupport, StagedPartCoverage). The
+            // message already says nothing was saved, how many requests were sent and when generating again
+            // can help; never "retryable", since the cause may be deterministic.
+            AiStagedPartIncompleteException incomplete => (
+                StatusCodes.Status502BadGateway, "ai_invalid_output",
+                "The AI response could not be used.",
+                incomplete.Message, false,
+                new Dictionary<string, object?>
+                {
+                    ["errors"] = incomplete.Errors.Take(10).ToArray(),
+                    ["failedParts"] = incomplete.Parts.Take(10)
+                        .Select(p => new { part = p.Part, partCount = p.PartCount, missingIds = p.MissingIds.Take(50).ToArray() }).ToArray(),
+                    ["requestsSent"] = incomplete.RequestsSent
+                }),
+
             AiOutputValidationException invalid => (
                 StatusCodes.Status502BadGateway, "ai_invalid_output",
                 "The AI response could not be used.",
-                invalid.Repairable
+                invalid.RepairAttempted
                     ? "The AI returned output that failed validation, even after one automatic correction attempt. Nothing was saved. Try again; if it keeps failing, simplify or shorten the requirement text."
-                    : invalid.Message,
+                    : invalid.Repairable
+                        ? $"The AI response could not be used and no automatic correction was attempted: {invalid.Message} Nothing was saved. Try again."
+                        : invalid.Message,
                 invalid.Repairable,
                 new Dictionary<string, object?> { ["errors"] = invalid.Errors.Take(10).ToArray() }),
 
@@ -150,7 +167,8 @@ public sealed class ApplicationExceptionHandler(ILogger<ApplicationExceptionHand
             AiFailureKind.RateLimited => MapRateLimit(ai, extra),
             AiFailureKind.Timeout => (StatusCodes.Status504GatewayTimeout, "ai_timeout",
                 "The AI provider did not respond in time.",
-                "The AI request timed out. Try again; very long requirement text may need to be split.", true, extra),
+                "The AI request timed out. The provider may already have received and processed it, so it may still be billed. " +
+                "Try again; very long requirement text may need to be split.", true, extra),
             AiFailureKind.Unavailable => (StatusCodes.Status503ServiceUnavailable, "ai_unavailable",
                 "The AI provider is temporarily unavailable.", "The AI service could not be reached. Try again shortly.", true, extra),
             AiFailureKind.ContentBlocked => (StatusCodes.Status422UnprocessableEntity, "ai_content_blocked",
@@ -171,8 +189,10 @@ public sealed class ApplicationExceptionHandler(ILogger<ApplicationExceptionHand
         PrimaryDetail(ex.Primary) +
         $"The requirement source exceeds the configured {ex.Provider} processing limit " +
         $"(it would need {ex.RequiredParts} parts; {ex.MaxPartsSetting}={ex.MaxParts}). " +
-        $"No request was sent to {ex.Provider} and nothing was saved. Retry when an AI provider without this limit " +
-        "is available, or split the requirement source into smaller parts.",
+        $"No request was sent to {ex.Provider} and nothing was saved. " +
+        (ex.Primary is null
+            ? $"Split the requirement source into smaller parts, or ask an administrator to review {ex.MaxPartsSetting}."
+            : "Retry when an AI provider without this limit is available, or split the requirement source into smaller parts."),
         false,
         new Dictionary<string, object?>
         {
@@ -191,7 +211,9 @@ public sealed class ApplicationExceptionHandler(ILogger<ApplicationExceptionHand
         $"{ex.Provider}'s configured input budget of {ex.InputBudget:N0} tokens leaves too little room for source text after " +
         $"the ~{ex.ReservedTokens:N0} tokens of instructions and context every request must carry. " +
         $"No request was sent to {ex.Provider} and nothing was saved. Splitting the requirement source will not help: " +
-        $"use an AI provider without this limit, or ask an administrator to review Ai:{ex.Provider}:MaxRequestTokens.",
+        (ex.Primary is null
+            ? $"ask an administrator to review Ai:{ex.Provider}:MaxRequestTokens."
+            : $"use an AI provider without this limit, or ask an administrator to review Ai:{ex.Provider}:MaxRequestTokens."),
         false,
         new Dictionary<string, object?>
         {
@@ -215,8 +237,10 @@ public sealed class ApplicationExceptionHandler(ILogger<ApplicationExceptionHand
               $"{ex.InputBudget:N0} tokens by ~{ex.OverBudgetTokens:N0}. The repair attempt was not sent and nothing was saved. "
             : $"The {ex.Stage} request (~{ex.EstimatedInputTokens:N0} estimated input tokens) exceeds {ex.Provider}'s configured input " +
               $"budget of {ex.InputBudget:N0} tokens by ~{ex.OverBudgetTokens:N0}. No request was sent to {ex.Provider} and nothing was saved. ") +
-        "This stage does not shorten its input, because that could silently leave requirements out. Retry when an AI provider " +
-        "without this limit is available, or reduce the input this stage carries.",
+        "This stage does not shorten its input, because that could silently leave requirements out. " +
+        (ex.Primary is null
+            ? $"Reduce the input this stage carries (for example, split the requirement source), or ask an administrator to review Ai:{ex.Provider}:MaxRequestTokens."
+            : "Retry when an AI provider without this limit is available, or reduce the input this stage carries."),
         false,
         new Dictionary<string, object?>
         {
@@ -243,14 +267,16 @@ public sealed class ApplicationExceptionHandler(ILogger<ApplicationExceptionHand
                 $"Your question and the project context it requires (~{ex.EstimatedInputTokens:N0} estimated input tokens) exceed " +
                 $"{ex.Provider}'s configured input budget of {ex.InputBudget:N0} tokens by ~{ex.OverBudgetTokens:N0}, even with all optional " +
                 $"project context left out. No request was sent to {ex.Provider} and nothing was saved. The Copilot never shortens your " +
-                "question. Ask a shorter question, or retry when an AI provider without this limit is available.",
+                "question. " + (ex.Primary is null
+                    ? $"Ask a shorter question, or ask an administrator to review Ai:{ex.Provider}:MaxRequestTokens."
+                    : "Ask a shorter question, or retry when an AI provider without this limit is available."),
             Application.Knowledge.CopilotRefusalReason.RetryNotSafe =>
                 $"The request (~{ex.EstimatedInputTokens:N0} estimated input tokens) exceeds {ex.Provider}'s configured input budget of " +
                 $"{ex.InputBudget:N0} tokens, so it was not sent. The Copilot shortens optional project context only when the shortened " +
                 "request cannot reach another AI provider; this provider route has another provider, so no shortened request was made " +
                 "and nothing was saved. " +
                 (ex.Primary is null
-                    ? "Ask a narrower question, or retry when an AI provider without this limit is available."
+                    ? "Ask a narrower question."
                     : $"Try again when {ex.Primary.Provider} is available again; it takes the request whole."),
             _ =>
                 $"The first Copilot request was sent to {ex.Provider}, but its response failed validation, and the automatic repair attempt " +
@@ -296,7 +322,7 @@ public sealed class ApplicationExceptionHandler(ILogger<ApplicationExceptionHand
         var limit = reported.RateLimitType is { } type ? $"{reported.Provider} reported that its {LimitName(type)} limit ({type}) was reached. " : "";
 
         var detail = limit + (ai.QuotaExhausted
-            ? "The AI usage quota appears to be used up for now (for example a daily free-tier limit). Please wait and try again later."
+            ? "The AI usage quota appears to be used up for now (or a spend limit was reached). Please wait and try again later, or ask an administrator to check the provider account's limits."
             : retryAfterSeconds is { } seconds
                 ? $"Please wait and try again in about {FormatWait(seconds)}."
                 : "Please wait and try again.");

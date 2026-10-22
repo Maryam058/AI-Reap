@@ -21,6 +21,7 @@ public class MigrationModelConsistencyTests
     private const string D3Migration = "20261019120000_AddDecisionEvidenceSnapshot";
     private const string S1Migration = "20261019120100_ArtifactCurrentVersionConcurrencyToken";
     private const string RowVersionMigration = "20261020090000_AddArtifactRowVersion";
+    private const string SourceFilesMigration = "20261022075854_AddRequirementSourceFiles";
 
     private static AiReapDbContext Context() =>
         new(new DbContextOptionsBuilder<AiReapDbContext>()
@@ -56,13 +57,32 @@ public class MigrationModelConsistencyTests
     {
         using var context = Context();
         var migrations = context.GetService<IMigrationsAssembly>().Migrations.Keys.Order(StringComparer.Ordinal).ToList();
-        Assert.Equal(RowVersionMigration, migrations[^1]);
-        Assert.Equal(S1Migration, migrations[^2]);
-        Assert.Equal(D3Migration, migrations[^3]);
+        Assert.Equal(SourceFilesMigration, migrations[^1]);
+        Assert.Equal(RowVersionMigration, migrations[^2]);
+        Assert.Equal(S1Migration, migrations[^3]);
+        Assert.Equal(D3Migration, migrations[^4]);
 
         var snapshot = Relational(context, context.GetService<IMigrationsAssembly>().ModelSnapshot!.Model);
-        var latest = Relational(context, TargetModel(context, RowVersionMigration));
+        var latest = Relational(context, TargetModel(context, SourceFilesMigration));
         Assert.Empty(context.GetService<IMigrationsModelDiffer>().GetDifferences(latest, snapshot));
+    }
+
+    // Original source documents (docs/SOURCE_DOCUMENT_RETENTION.md): one new table and its index, and
+    // nothing else - no existing table or column is touched.
+    [Fact]
+    public void AddRequirementSourceFiles_only_creates_the_source_files_table()
+    {
+        using var context = Context();
+
+        var differences = context.GetService<IMigrationsModelDiffer>().GetDifferences(
+            Relational(context, TargetModel(context, RowVersionMigration)), Relational(context, TargetModel(context, SourceFilesMigration)));
+
+        var create = Assert.IsType<CreateTableOperation>(Assert.Single(differences, d => d is CreateTableOperation));
+        Assert.Equal("RequirementSourceFiles", create.Name);
+        var foreignKey = Assert.Single(create.ForeignKeys);
+        Assert.Equal(("RequirementSources", ReferentialAction.Cascade), (foreignKey.PrincipalTable, foreignKey.OnDelete));
+        var index = Assert.IsType<CreateIndexOperation>(Assert.Single(differences, d => d is not CreateTableOperation));
+        Assert.Equal(("RequirementSourceFiles", true), (index.Table, index.IsUnique));
     }
 
     [Fact]

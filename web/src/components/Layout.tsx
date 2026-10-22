@@ -5,6 +5,7 @@ import { useTheme } from '../context/ThemeContext';
 import { useSidebar } from '../context/SidebarContext';
 import { ProjectProvider, useProjectContext } from '../context/ProjectContext';
 import { WORK_AREAS } from '../lib/workAreas';
+import { stageLabel } from '../lib/lifecycle';
 import { Sidebar } from './Sidebar';
 import { NotificationBell } from './NotificationBell';
 import { Breadcrumbs, type Crumb } from './Breadcrumbs';
@@ -98,10 +99,20 @@ function Shell({ children }: { children: ReactNode }) {
             <IconMenu />
           </button>
           {projectId && (
-            <Link to={`/projects/${projectId}`} className="topbar-project" title={project?.name}>
+            <Link
+              to={`/projects/${projectId}`}
+              className="topbar-project"
+              title={project ? `${project.name} · current stage: ${stageLabel(project.status)}` : undefined}
+            >
               <IconFolder width={14} height={14} />
               <span className="topbar-project-label">Project</span>
               <strong>{project?.name ?? '…'}</strong>
+              {project && (
+                <span className="topbar-project-stage">
+                  <span className="sr-only">, current stage: </span>
+                  {stageLabel(project.status)}
+                </span>
+              )}
             </Link>
           )}
           <div className="topbar-spacer">

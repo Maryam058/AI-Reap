@@ -20,6 +20,7 @@ public sealed class InMemoryAiReapDb : IAiReapDbContext
     public DbSet<ProjectStakeholder> ProjectStakeholders { get; } = new InMemoryDbSet<ProjectStakeholder>();
     public DbSet<ProjectMember> ProjectMembers { get; } = new InMemoryDbSet<ProjectMember>();
     public DbSet<RequirementSource> RequirementSources { get; } = new InMemoryDbSet<RequirementSource>();
+    public DbSet<RequirementSourceFile> RequirementSourceFiles { get; } = new InMemoryDbSet<RequirementSourceFile>();
     public DbSet<Artifact> Artifacts { get; } = new InMemoryDbSet<Artifact>();
     public DbSet<ArtifactVersion> ArtifactVersions { get; } = new InMemoryDbSet<ArtifactVersion>();
     public DbSet<ArtifactRelationship> ArtifactRelationships { get; } = new InMemoryDbSet<ArtifactRelationship>();

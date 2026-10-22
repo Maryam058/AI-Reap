@@ -10,13 +10,12 @@ using Xunit;
 
 namespace AiReap.Tests;
 
-// Covers AddInfrastructure's choice of IAiChatClient implementation (AiReap.Infrastructure/
-// DependencyInjection.cs), which used to be a single "is ApiKey blank?" check. A leftover
-// placeholder value (e.g. "sk-ant-..." from setup docs) is not blank, so it passed that check
-// straight through to a real HTTP call that's guaranteed to fail with 401 - the actual root
-// cause traced in this session's Analyze 500 investigation. These tests exercise the real,
-// public AddInfrastructure entry point end to end (not the private selector directly), the same
-// way Program.cs calls it.
+// Covers AddInfrastructure's choice of IAiChatClient and IEmbeddingClient (AiReap.Infrastructure/
+// DependencyInjection.cs) through the real, public AddInfrastructure entry point, the same way
+// Program.cs calls it. Policy: Anthropic Claude is the only chat provider, with no chat fallback;
+// Gemini and Groq are rejected as chat providers; embeddings are chosen independently of chat.
+// Offline: resolving clients never sends a request (no test here calls CompleteAsync on a real
+// transport except where a missing key guarantees nothing is sent).
 public class AiChatClientSelectionTests
 {
     private sealed class FakeHostEnvironment : IHostEnvironment
@@ -29,7 +28,7 @@ public class AiChatClientSelectionTests
 
     // Captures formatted log messages without needing a mocking library, consistent with the
     // hand-rolled fakes already used elsewhere in this suite (ControllableAiChatClient, FakeHandler).
-    private sealed class CapturingLoggerProvider : ILoggerProvider
+    internal sealed class CapturingLoggerProvider : ILoggerProvider
     {
         public List<string> Messages { get; } = new();
 
@@ -64,26 +63,32 @@ public class AiChatClientSelectionTests
 
     // A syntactically plausible key: long, sk-ant- prefixed, no ellipsis - what a real Anthropic
     // key looks like, without being one.
-    private const string PlausibleRealKey = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    internal const string PlausibleRealKey = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
     // A syntactically plausible Gemini key ("AIza" + 35 chars) that is not a real key.
     private const string PlausibleGeminiKey = "AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-    // Gemini is now the default provider; the Anthropic-specific tests below pin "Anthropic" explicitly.
-    private static (ServiceProvider Provider, CapturingLoggerProvider Logs) BuildProvider(
+    // A syntactically plausible Groq key ("gsk_" + 52 chars) that is not a real key.
+    private const string PlausibleGroqKey = "gsk_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    // aiProvider null = Ai:Provider not configured at all; anthropicModel null = Ai:Anthropic:Model not configured.
+    internal static (ServiceProvider Provider, CapturingLoggerProvider Logs) BuildProvider(
         string? apiKey, string environmentName, string? aiProvider = "Anthropic", string? geminiKey = null,
-        string? groqKey = null, IDictionary<string, string?>? extra = null)
+        string? groqKey = null, IDictionary<string, string?>? extra = null, string? anthropicModel = "claude-sonnet-5",
+        Action<IServiceCollection>? configure = null)
     {
+        var settings = new Dictionary<string, string?>
+        {
+            ["ConnectionStrings:Default"] = "Server=unused;Database=unused;Trusted_Connection=True",
+            ["Ai:Anthropic:ApiKey"] = apiKey,
+            ["Ai:Gemini:ApiKey"] = geminiKey,
+            ["Ai:Groq:ApiKey"] = groqKey,
+        };
+        if (aiProvider is not null) settings["Ai:Provider"] = aiProvider;
+        if (anthropicModel is not null) settings["Ai:Anthropic:Model"] = anthropicModel;
+
         var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["ConnectionStrings:Default"] = "Server=unused;Database=unused;Trusted_Connection=True",
-                ["Ai:Provider"] = aiProvider,
-                ["Ai:Anthropic:ApiKey"] = apiKey,
-                ["Ai:Anthropic:Model"] = "claude-sonnet-5",
-                ["Ai:Gemini:ApiKey"] = geminiKey,
-                ["Ai:Groq:ApiKey"] = groqKey,
-            })
+            .AddInMemoryCollection(settings)
             .AddInMemoryCollection(extra ?? new Dictionary<string, string?>())
             .Build();
 
@@ -92,67 +97,291 @@ public class AiChatClientSelectionTests
         services.AddSingleton<IHostEnvironment>(new FakeHostEnvironment { EnvironmentName = environmentName });
         services.AddLogging(builder => builder.AddProvider(logs));
         services.AddInfrastructure(configuration);
+        configure?.Invoke(services);
 
         return (services.BuildServiceProvider(), logs);
     }
+
+    // Every client in the wrapper chain, outermost first.
+    internal static List<IAiChatClient> Chain(IAiChatClient client)
+    {
+        var chain = new List<IAiChatClient>();
+        for (IAiChatClient? current = client; current is not null;)
+        {
+            chain.Add(current);
+            current = current switch
+            {
+                RequestBudgetAiChatClient budget => budget.Inner,
+                ResilientAiChatClient resilient => resilient.Inner,
+                _ => null
+            };
+        }
+
+        return chain;
+    }
+
+    private static AnthropicAiChatClient AssertClaudeOnly(IAiChatClient client)
+    {
+        var chain = Chain(client);
+        Assert.DoesNotContain(chain, c => c is GeminiAiChatClient or GroqAiChatClient or FallbackAiChatClient or StubAiChatClient);
+        var budget = Assert.IsType<RequestBudgetAiChatClient>(chain[0]);
+        var resilient = Assert.IsType<ResilientAiChatClient>(budget.Inner);
+        Assert.Equal("Anthropic", resilient.ProviderName);
+        return Assert.IsType<AnthropicAiChatClient>(resilient.Inner);
+    }
+
+    // ---- Claude is the chat provider -----------------------------------------------------------
+
+    [Theory]
+    [InlineData(null)]          // Ai:Provider unset -> Anthropic is the default
+    [InlineData("Anthropic")]
+    [InlineData("anthropic")]
+    [InlineData("  ")]
+    public async Task Anthropic_is_the_chat_provider_by_default_and_when_named(string? aiProvider)
+    {
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production, aiProvider);
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        AssertClaudeOnly(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+    }
+
+    [Theory]
+    [InlineData("Development")]
+    [InlineData("Production")]
+    public async Task Claude_is_used_even_when_gemini_and_groq_keys_are_configured(string environmentName)
+    {
+        var (provider, _) = BuildProvider(PlausibleRealKey, environmentName, geminiKey: PlausibleGeminiKey, groqKey: PlausibleGroqKey);
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        AssertClaudeOnly(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+    }
+
+    [Fact]
+    public async Task No_gemini_or_groq_chat_client_is_registered_at_all()
+    {
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production, geminiKey: PlausibleGeminiKey, groqKey: PlausibleGroqKey);
+        await using var _ = provider;
+
+        Assert.Null(provider.GetService<GeminiAiChatClient>());
+        Assert.Null(provider.GetService<GroqAiChatClient>());
+        Assert.Null(provider.GetService<FallbackAiChatClient>());
+    }
+
+    [Theory]
+    [InlineData("Gemini")]
+    [InlineData("gemini")]
+    [InlineData("Groq")]
+    public async Task Gemini_or_groq_as_chat_provider_fails_with_an_actionable_error_instead_of_being_used(string aiProvider)
+    {
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Development, aiProvider, geminiKey: PlausibleGeminiKey, groqKey: PlausibleGroqKey);
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+
+        Assert.Contains("Ai:Provider", ex.Message);
+        Assert.Contains("no longer supported as chat providers", ex.Message);
+        Assert.Contains("Anthropic", ex.Message);
+        Assert.Contains("Ai:Anthropic:ApiKey", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("SomeOtherVendor")]
+    [InlineData("Ollama")]
+    public async Task An_unrecognized_provider_fails_with_a_clear_error(string aiProvider)
+    {
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Development, aiProvider);
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+        Assert.Contains("Ai:Provider", ex.Message);
+        Assert.Contains(aiProvider, ex.Message);
+        Assert.EndsWith("Use 'Anthropic'.", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("Groq")]
+    [InlineData("Gemini")]
+    public async Task A_leftover_fallback_provider_is_ignored_with_a_warning_and_never_routes_a_request(string fallback)
+    {
+        var (provider, logs) = BuildProvider(PlausibleRealKey, Environments.Production, geminiKey: PlausibleGeminiKey, groqKey: PlausibleGroqKey,
+            extra: new Dictionary<string, string?> { ["Ai:FallbackProvider"] = fallback });
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        AssertClaudeOnly(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+        Assert.Contains(logs.Messages, m => m.Contains("Ai:FallbackProvider") && m.Contains("ignored"));
+    }
+
+    // ---- model -------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task An_explicitly_configured_anthropic_model_is_preserved()
+    {
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production, anthropicModel: "claude-sonnet-5");
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
+
+        Assert.Equal("claude-sonnet-5", client.ModelName);
+        Assert.Equal("claude-sonnet-5", AssertClaudeOnly(client).ModelName);
+    }
+
+    [Fact]
+    public async Task Without_a_configured_model_claude_sonnet_5_5_is_used()
+    {
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production, anthropicModel: null);
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        Assert.Equal("claude-sonnet-5-5", scope.ServiceProvider.GetRequiredService<IAiChatClient>().ModelName);
+    }
+
+    // ---- limits ------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Claude_runs_under_a_lossless_application_budget_and_its_own_timeout()
+    {
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production);
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var budget = Assert.IsType<RequestBudgetAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+        var resilience = Assert.IsType<ResilientAiChatClient>(budget.Inner).Options;
+
+        Assert.False(budget.CondensesOverBudget);                      // never drops passages
+        Assert.Equal(200_000, budget.MaxRequestTokens);                 // Ai:Anthropic:MaxRequestTokens default
+        // (200,000 - 16,000 output) Claude tokens, scaled from 2.5 to the estimator's 3 chars/token.
+        Assert.Equal((int)Math.Floor(184_000 * (2.5 / 3.0)), budget.InputBudget);
+        Assert.Equal(8, budget.MaxChunkedParts);
+        Assert.Equal("Ai:Anthropic:MaxRequestTokens", budget.BudgetSetting);
+        Assert.Equal("Ai:Anthropic:MaxChunkedParts", budget.MaxPartsSetting);
+        Assert.Null(budget.Policy.CountInputTokens);                    // count_tokens is opt-in
+        Assert.Equal((600, 1), (resilience.TimeoutSeconds, resilience.MaxTimeoutAttempts));
+    }
+
+    [Fact]
+    public async Task Staged_generation_limits_are_advertised_from_the_anthropic_settings()
+    {
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production,
+            extra: new Dictionary<string, string?> { ["Ai:Anthropic:GenerationPartSourceTokens"] = "9000", ["Ai:Anthropic:MaxGenerationParts"] = "12" });
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var staging = Assert.IsAssignableFrom<IStagedOutputAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>()).OutputStaging!;
+
+        Assert.Equal(("Anthropic", 9000, 12), (staging.Provider, staging.MaxPartSourceTokens, staging.MaxParts));
+        Assert.Equal("Ai:Anthropic:GenerationPartSourceTokens", staging.PartSourceSetting);
+        Assert.Equal("Ai:Anthropic:MaxGenerationParts", staging.MaxPartsSetting);
+        Assert.Equal((int)Math.Floor(184_000 * (2.5 / 3.0)), staging.InputBudget);
+    }
+
+    [Fact]
+    public async Task Staged_generation_can_be_turned_off_and_then_a_source_goes_out_in_one_response()
+    {
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production,
+            extra: new Dictionary<string, string?> { ["Ai:Anthropic:GenerationPartSourceTokens"] = "0" });
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        Assert.Null(Assert.IsAssignableFrom<IStagedOutputAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>()).OutputStaging);
+    }
+
+    [Theory]
+    [InlineData("Ai:Anthropic:GenerationPartSourceTokens", "100", "GenerationPartSourceTokens")]
+    [InlineData("Ai:Anthropic:MaxGenerationParts", "0", "MaxGenerationParts")]
+    public async Task Invalid_staging_settings_fail_with_the_setting_named(string key, string value, string expected)
+    {
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production, extra: new Dictionary<string, string?> { [key] = value });
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+        Assert.Contains(expected, ex.Message);
+    }
+
+    [Fact]
+    public async Task Token_counting_is_wired_only_when_opted_in()
+    {
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production,
+            extra: new Dictionary<string, string?> { ["Ai:Anthropic:UseTokenCountingApi"] = "true" });
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var budget = Assert.IsType<RequestBudgetAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+        Assert.NotNull(budget.Policy.CountInputTokens);
+        Assert.Equal(184_000, budget.Policy.CountedInputBudget);
+    }
+
+    [Theory]
+    [InlineData("Ai:Anthropic:MaxRequestTokens", "2000000", "context window")]
+    [InlineData("Ai:Anthropic:MaxTokens", "200000", "MaxTokens")]
+    [InlineData("Ai:Anthropic:Effort", "extreme", "Effort")]
+    [InlineData("Ai:Anthropic:Model", " ", "Model")]
+    public async Task Invalid_anthropic_settings_fail_with_every_problem_named(string key, string value, string expected)
+    {
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Development, extra: new Dictionary<string, string?> { [key] = value });
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+        Assert.Contains(expected, ex.Message);
+        Assert.DoesNotContain(PlausibleRealKey, ex.Message, StringComparison.Ordinal);
+    }
+
+    // ---- missing key ------------------------------------------------------------------------
 
     [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
     [InlineData("sk-ant-...")]
-    public async Task AddInfrastructure_uses_the_stub_client_in_development_when_no_usable_key_is_configured(string? apiKey)
+    public async Task Development_uses_the_loudly_logged_stub_when_no_usable_key_is_configured(string? apiKey)
     {
-        var (provider, logs) = BuildProvider(apiKey, Environments.Development);
+        var (provider, logs) = BuildProvider(apiKey, Environments.Development, geminiKey: PlausibleGeminiKey, groqKey: PlausibleGroqKey);
         await using var _ = provider;
         using var scope = provider.CreateScope();
 
         var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
 
+        // Never Gemini or Groq, even though their keys are present.
         Assert.IsType<StubAiChatClient>(client);
+        Assert.Equal("stub-canned-model", client.ModelName);
         Assert.Contains(logs.Messages, m => m.Contains("Anthropic API key not configured; using development AI stub."));
     }
 
     [Fact]
-    public async Task AddInfrastructure_uses_the_stub_client_in_the_testing_environment_when_no_usable_key_is_configured()
+    public async Task The_testing_environment_also_uses_the_stub_when_no_usable_key_is_configured()
     {
         var (provider, _) = BuildProvider(apiKey: null, "Testing");
         await using var _ = provider;
         using var scope = provider.CreateScope();
 
-        var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
-
-        Assert.IsType<StubAiChatClient>(client);
-    }
-
-    [Theory]
-    [InlineData("Development")]
-    [InlineData("Production")]
-    public async Task AddInfrastructure_uses_the_real_client_whenever_a_usable_api_key_is_configured(string environmentName)
-    {
-        var (provider, _) = BuildProvider(PlausibleRealKey, environmentName);
-        await using var _ = provider;
-        using var scope = provider.CreateScope();
-
-        var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
-
-        Assert.IsType<AnthropicAiChatClient>(Assert.IsType<ResilientAiChatClient>(client).Inner);
+        Assert.IsType<StubAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
     }
 
     [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("sk-ant-...")]
-    public async Task AddInfrastructure_throws_in_production_instead_of_silently_using_the_stub_when_no_usable_key_is_configured(string? apiKey)
+    public async Task Production_without_a_usable_key_never_uses_the_stub_or_another_provider_and_fails_calls_as_not_configured(string? apiKey)
     {
-        var (provider, _) = BuildProvider(apiKey, Environments.Production);
+        var (provider, _) = BuildProvider(apiKey, Environments.Production, geminiKey: PlausibleGeminiKey, groqKey: PlausibleGroqKey);
         await using var _ = provider;
         using var scope = provider.CreateScope();
 
-        var ex = Assert.Throws<InvalidOperationException>(() => scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+        var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
+        AssertClaudeOnly(client);
 
+        // Safe offline: with no usable key the client throws before building any HTTP request.
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("system", "user"));
+        Assert.Equal(AiFailureKind.NotConfigured, ex.Kind);
+        Assert.Equal("Anthropic", ex.Provider);
         Assert.Contains("Ai:Anthropic:ApiKey", ex.Message);
-        Assert.Contains("Production", ex.Message);
         if (!string.IsNullOrEmpty(apiKey))
         {
             Assert.DoesNotContain(apiKey, ex.Message, StringComparison.Ordinal); // never echoes the key itself
@@ -173,106 +402,6 @@ public class AiChatClientSelectionTests
         Assert.Equal(expected, options.HasUsableApiKey);
     }
 
-    [Fact]
-    public async Task AddInfrastructure_still_uses_the_anthropic_selection_logic_when_Ai_Provider_is_explicitly_Anthropic()
-    {
-        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production, aiProvider: "Anthropic");
-        await using var _ = provider;
-        using var scope = provider.CreateScope();
-
-        var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
-
-        Assert.IsType<AnthropicAiChatClient>(Assert.IsType<ResilientAiChatClient>(client).Inner);
-    }
-
-    [Fact]
-    public async Task AddInfrastructure_throws_a_clear_error_when_Ai_Provider_is_unrecognized()
-    {
-        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Development, aiProvider: "SomeOtherVendor");
-        await using var _ = provider;
-        using var scope = provider.CreateScope();
-
-        var ex = Assert.Throws<InvalidOperationException>(() => scope.ServiceProvider.GetRequiredService<IAiChatClient>());
-
-        Assert.Contains("Ai:Provider", ex.Message);
-        Assert.Contains("SomeOtherVendor", ex.Message);
-    }
-
-    // ---- Gemini (the default provider) -------------------------------------------------------
-
-    [Theory]
-    [InlineData(null)]          // Ai:Provider unset -> Gemini is the default
-    [InlineData("Gemini")]
-    [InlineData("gemini")]
-    public async Task AddInfrastructure_uses_the_gemini_client_by_default_when_a_key_is_configured(string? aiProvider)
-    {
-        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider, geminiKey: PlausibleGeminiKey);
-        await using var _ = provider;
-        using var scope = provider.CreateScope();
-
-        var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
-
-        var resilient = Assert.IsType<ResilientAiChatClient>(client);
-        Assert.IsType<GeminiAiChatClient>(resilient.Inner);
-        Assert.Equal("gemini-3.8-flash", client.ModelName);
-    }
-
-    [Fact]
-    public void Shipped_appsettings_resolve_to_gemini_3_6_flash_without_any_committed_api_key()
-    {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "src", "AiReap.Api", "appsettings.json")))
-        {
-            directory = directory.Parent;
-        }
-        Assert.NotNull(directory);
-
-        var configuration = new ConfigurationBuilder()
-            .AddJsonFile(Path.Combine(directory!.FullName, "src", "AiReap.Api", "appsettings.json"), optional: false)
-            .Build();
-        var gemini = configuration.GetSection(GeminiOptions.SectionName).Get<GeminiOptions>()!;
-
-        Assert.Equal("Gemini", configuration["Ai:Provider"]);
-        Assert.Equal("gemini-3.8-flash", gemini.Model);
-        Assert.Equal("low", gemini.ThinkingLevel);
-        // Gemini 3 rejects thinkingLevel + thinkingBudget together, and advises against low temperatures.
-        Assert.Null(gemini.ThinkingBudget);
-        Assert.Null(gemini.Temperature);
-        // Verified against the model's metadata (outputTokenLimit 65,536 for gemini-3.8-flash).
-        Assert.Equal(65536, gemini.MaxOutputTokens);
-        Assert.Equal((300, 1), (gemini.TimeoutSeconds, gemini.MaxTimeoutAttempts));
-        // The key only ever comes from user-secrets or Ai__Gemini__ApiKey.
-        Assert.True(string.IsNullOrEmpty(gemini.ApiKey));
-    }
-
-    [Theory]
-    [InlineData("Development")]
-    [InlineData("Testing")]
-    public async Task AddInfrastructure_uses_the_stub_for_gemini_in_dev_and_test_when_no_key_is_configured(string environmentName)
-    {
-        var (provider, logs) = BuildProvider(apiKey: null, environmentName, aiProvider: "Gemini");
-        await using var _ = provider;
-        using var scope = provider.CreateScope();
-
-        Assert.IsType<StubAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
-        Assert.Contains(logs.Messages, m => m.Contains("No AI provider API key configured") && m.Contains("DEVELOPMENT AI STUB"));
-    }
-
-    [Fact]
-    public async Task Missing_gemini_key_outside_development_never_falls_back_to_the_stub_and_fails_calls_as_not_configured()
-    {
-        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider: "Gemini");
-        await using var _ = provider;
-        using var scope = provider.CreateScope();
-
-        var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
-        Assert.IsNotType<StubAiChatClient>(client);
-
-        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("system", "user"));
-        Assert.Equal(AiFailureKind.NotConfigured, ex.Kind);
-        Assert.Contains("Ai:Gemini:ApiKey", ex.Message);
-    }
-
     [Theory]
     [InlineData(null, false)]
     [InlineData("", false)]
@@ -285,142 +414,125 @@ public class AiChatClientSelectionTests
         Assert.Equal(expected, new GeminiOptions { ApiKey = apiKey ?? string.Empty }.HasUsableApiKey);
     }
 
-    // ---- Groq fallback -----------------------------------------------------------------------
+    // ---- health check -------------------------------------------------------------------------
 
-    // A syntactically plausible Groq key ("gsk_" + 52 chars) that is not a real key.
-    private const string PlausibleGroqKey = "gsk_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    [Fact]
+    public async Task Health_check_reports_claude_without_calling_any_provider()
+    {
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production, anthropicModel: null);
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var status = await scope.ServiceProvider.GetRequiredService<IAiHealthCheckService>().CheckAsync();
+
+        Assert.Equal("Anthropic", status.Provider);
+        Assert.True(status.Configured);
+        Assert.Equal("claude-sonnet-5-5", status.Model);
+        Assert.Null(status.Fallback);
+    }
+
+    [Fact]
+    public async Task Health_check_reports_a_gemini_chat_setting_as_not_configured_with_the_fix()
+    {
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production, aiProvider: "Gemini", geminiKey: PlausibleGeminiKey);
+        await using var _ = provider;
+        using var scope = provider.CreateScope();
+
+        var status = await scope.ServiceProvider.GetRequiredService<IAiHealthCheckService>().CheckAsync();
+
+        Assert.False(status.Configured);
+        Assert.Contains("only supported chat provider", status.Detail);
+    }
+
+    // ---- embeddings: independent of the chat provider ------------------------------------------
 
     [Theory]
-    [InlineData("Development")]
-    [InlineData("Production")]
-    public async Task Gemini_is_primary_and_groq_the_fallback_when_both_keys_are_configured(string environmentName)
+    [InlineData(null)]
+    [InlineData("Anthropic")]
+    public async Task Gemini_embeddings_stay_selected_with_the_same_model_name_when_chat_is_claude(string? aiProvider)
     {
-        var (provider, _) = BuildProvider(apiKey: null, environmentName, aiProvider: "Gemini", geminiKey: PlausibleGeminiKey, groqKey: PlausibleGroqKey);
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production, aiProvider, geminiKey: PlausibleGeminiKey);
         await using var _ = provider;
         using var scope = provider.CreateScope();
 
-        var client = Assert.IsType<FallbackAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
+        var embeddings = scope.ServiceProvider.GetRequiredService<IEmbeddingClient>();
 
-        Assert.IsType<GeminiAiChatClient>(Assert.IsType<ResilientAiChatClient>(client.Primary).Inner);
-        // Groq alone carries the request budget (Ai:Groq:MaxRequestTokens); Gemini is never budgeted.
-        var budgeted = Assert.IsType<RequestBudgetAiChatClient>(client.Fallback);
-        Assert.IsType<GroqAiChatClient>(Assert.IsType<ResilientAiChatClient>(budgeted.Inner).Inner);
-        Assert.Equal(8000 - 4000, budgeted.InputBudget);
-        Assert.Equal(8, budgeted.MaxChunkedParts); // Ai:Groq:MaxChunkedParts default
-        Assert.Equal("gemini-3.8-flash", client.ModelName); // before any call, the primary
+        Assert.IsType<GeminiEmbeddingClient>(embeddings);
+        // DocumentChunk.EmbeddingModel values written before the move to Claude keep matching.
+        Assert.Equal("gemini-embedding-001@768", embeddings.ModelName);
     }
 
     [Fact]
-    public async Task Groq_part_limit_is_read_from_Ai_Groq_MaxChunkedParts()
+    public async Task Without_any_embedding_key_the_deterministic_stub_is_used()
     {
-        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider: "Gemini", geminiKey: PlausibleGeminiKey,
-            groqKey: PlausibleGroqKey, extra: new Dictionary<string, string?> { ["Ai:Groq:MaxChunkedParts"] = "12" });
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production);
         await using var _ = provider;
         using var scope = provider.CreateScope();
 
-        var client = Assert.IsType<FallbackAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
-
-        Assert.Equal(12, Assert.IsType<RequestBudgetAiChatClient>(client.Fallback).MaxChunkedParts);
-    }
-
-    // Gemini runs under its own per-attempt timeout and timeout-retry limit; Groq keeps Ai:Resilience.
-    [Fact]
-    public async Task Gemini_gets_its_own_timeout_and_groq_keeps_the_shared_resilience_settings()
-    {
-        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider: "Gemini", geminiKey: PlausibleGeminiKey, groqKey: PlausibleGroqKey);
-        await using var _ = provider;
-        using var scope = provider.CreateScope();
-
-        var client = Assert.IsType<FallbackAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
-        var gemini = Assert.IsType<ResilientAiChatClient>(client.Primary).Options;
-        var groq = Assert.IsType<ResilientAiChatClient>(Assert.IsType<RequestBudgetAiChatClient>(client.Fallback).Inner).Options;
-        var shared = new AiResilienceOptions();
-
-        Assert.Equal((300, 1), (gemini.TimeoutSeconds, gemini.MaxTimeoutAttempts));          // GeminiOptions defaults
-        Assert.Equal(1, gemini.MaxRateLimitAttempts);                                         // 429 still goes straight to Groq
-        Assert.Equal(shared.MaxAttempts, gemini.MaxAttempts);                                 // 503s still retried as before
-        Assert.Equal((shared.TimeoutSeconds, 0), (groq.TimeoutSeconds, groq.MaxTimeoutAttempts)); // Groq unchanged
-        Assert.Equal(new GroqOptions().MaxRateLimitAttempts, groq.MaxRateLimitAttempts);
+        Assert.IsType<StubEmbeddingClient>(scope.ServiceProvider.GetRequiredService<IEmbeddingClient>());
     }
 
     [Fact]
-    public async Task Gemini_timeout_settings_are_read_from_Ai_Gemini_also_when_gemini_is_the_only_provider()
+    public async Task OpenAI_embeddings_are_used_when_only_an_openai_key_is_configured()
     {
-        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider: "Gemini", geminiKey: PlausibleGeminiKey,
-            extra: new Dictionary<string, string?> { ["Ai:Gemini:TimeoutSeconds"] = "450", ["Ai:Gemini:MaxTimeoutAttempts"] = "2" });
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production,
+            extra: new Dictionary<string, string?> { ["Ai:OpenAI:ApiKey"] = "openai-test-key", ["Ai:OpenAI:Model"] = "text-embedding-3-small" });
         await using var _ = provider;
         using var scope = provider.CreateScope();
 
-        var options = Assert.IsType<ResilientAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>()).Options;
-
-        Assert.Equal((450, 2), (options.TimeoutSeconds, options.MaxTimeoutAttempts));
-    }
-
-    // 0 falls back to the shared Ai:Resilience values (previous behavior).
-    [Fact]
-    public async Task Gemini_timeout_settings_of_0_use_the_shared_resilience_values()
-    {
-        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider: "Gemini", geminiKey: PlausibleGeminiKey,
-            extra: new Dictionary<string, string?>
-            {
-                ["Ai:Gemini:TimeoutSeconds"] = "0", ["Ai:Gemini:MaxTimeoutAttempts"] = "0", ["Ai:Resilience:TimeoutSeconds"] = "90"
-            });
-        await using var _ = provider;
-        using var scope = provider.CreateScope();
-
-        var options = Assert.IsType<ResilientAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>()).Options;
-
-        Assert.Equal((90, 0), (options.TimeoutSeconds, options.MaxTimeoutAttempts));
-    }
-
-    [Fact]
-    public async Task Groq_key_is_read_from_the_conventional_GROQ_API_KEY_setting_when_Ai_Groq_ApiKey_is_unset()
-    {
-        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider: "Gemini", geminiKey: PlausibleGeminiKey,
-            extra: new Dictionary<string, string?> { ["GROQ_API_KEY"] = PlausibleGroqKey });
-        await using var _ = provider;
-        using var scope = provider.CreateScope();
-
-        Assert.IsType<FallbackAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>());
-    }
-
-    [Fact]
-    public async Task Groq_alone_is_used_when_only_a_groq_key_is_configured_never_the_stub()
-    {
-        var (provider, logs) = BuildProvider(apiKey: null, Environments.Development, aiProvider: "Gemini", groqKey: PlausibleGroqKey);
-        await using var _ = provider;
-        using var scope = provider.CreateScope();
-
-        var client = scope.ServiceProvider.GetRequiredService<IAiChatClient>();
-
-        Assert.IsType<GroqAiChatClient>(Assert.IsType<ResilientAiChatClient>(Assert.IsType<RequestBudgetAiChatClient>(client).Inner).Inner);
-        Assert.Equal("groq:openai/gpt-oss-120b", client.ModelName);
-        Assert.Contains(logs.Messages, m => m.Contains("using Groq only"));
-    }
-
-    [Fact]
-    public async Task Fallback_can_be_disabled_with_FallbackProvider_None()
-    {
-        var (provider, _) = BuildProvider(apiKey: null, Environments.Production, aiProvider: "Gemini", geminiKey: PlausibleGeminiKey,
-            groqKey: PlausibleGroqKey, extra: new Dictionary<string, string?> { ["Ai:FallbackProvider"] = "None" });
-        await using var _ = provider;
-        using var scope = provider.CreateScope();
-
-        Assert.IsType<GeminiAiChatClient>(Assert.IsType<ResilientAiChatClient>(scope.ServiceProvider.GetRequiredService<IAiChatClient>()).Inner);
+        var embeddings = scope.ServiceProvider.GetRequiredService<IEmbeddingClient>();
+        Assert.IsType<OpenAiEmbeddingClient>(embeddings);
+        Assert.Equal("text-embedding-3-small", embeddings.ModelName);
     }
 
     [Theory]
-    [InlineData("Ollama")]
-    [InlineData("ollama")]
-    public async Task Ollama_is_no_longer_a_recognized_provider(string aiProvider)
+    [InlineData("OpenAI", typeof(OpenAiEmbeddingClient))]
+    [InlineData("stub", typeof(StubEmbeddingClient))]
+    [InlineData("Gemini", typeof(GeminiEmbeddingClient))]
+    public async Task An_explicit_embedding_provider_wins_over_automatic_selection(string embeddingProvider, Type expected)
     {
-        var (provider, _) = BuildProvider(apiKey: null, Environments.Development, aiProvider);
+        var (provider, _) = BuildProvider(PlausibleRealKey, Environments.Production, geminiKey: PlausibleGeminiKey,
+            extra: new Dictionary<string, string?> { ["Ai:EmbeddingProvider"] = embeddingProvider, ["Ai:OpenAI:ApiKey"] = "openai-test-key" });
         await using var _ = provider;
         using var scope = provider.CreateScope();
 
-        var ex = Assert.Throws<InvalidOperationException>(() => scope.ServiceProvider.GetRequiredService<IAiChatClient>());
-        Assert.Contains("Ai:Provider", ex.Message);
-        Assert.EndsWith("Use 'Gemini' (default), 'Groq' or 'Anthropic'.", ex.Message);
+        Assert.IsType(expected, scope.ServiceProvider.GetRequiredService<IEmbeddingClient>());
+    }
+
+    [Fact]
+    public void An_unknown_embedding_provider_fails_at_startup()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            BuildProvider(PlausibleRealKey, Environments.Production, extra: new Dictionary<string, string?> { ["Ai:EmbeddingProvider"] = "Voyage" }));
+        Assert.Contains("Ai:EmbeddingProvider", ex.Message);
+    }
+
+    // ---- shipped configuration ---------------------------------------------------------------
+
+    [Fact]
+    public void Shipped_appsettings_make_claude_sonnet_5_5_the_only_chat_provider_without_any_committed_key()
+    {
+        var root = RepositoryRoot();
+        var appsettingsPath = Path.Combine(root, "src", "AiReap.Api", "appsettings.json");
+        var configuration = new ConfigurationBuilder().AddJsonFile(appsettingsPath, optional: false).Build();
+        var anthropic = configuration.GetSection(AnthropicOptions.SectionName).Get<AnthropicOptions>()!;
+        var gemini = configuration.GetSection(GeminiOptions.SectionName).Get<GeminiOptions>()!;
+
+        Assert.Equal("Anthropic", configuration["Ai:Provider"]);
+        Assert.True(string.IsNullOrEmpty(configuration["Ai:FallbackProvider"]));
+        Assert.Equal("claude-sonnet-5-5", anthropic.Model);
+        Assert.Empty(anthropic.Validate());
+        Assert.True(string.IsNullOrEmpty(anthropic.ApiKey));
+        Assert.Equal(16000, anthropic.MaxTokens);
+        Assert.Equal(200_000, anthropic.MaxRequestTokens);
+        Assert.False(anthropic.UseTokenCountingApi);
+        Assert.Equal((6000, 24), (anthropic.GenerationPartSourceTokens, anthropic.MaxGenerationParts));
+        // Embedding model unchanged (re-embedding is never triggered by this configuration).
+        Assert.Equal(("gemini-embedding-001", 768), (gemini.EmbeddingModel, gemini.EmbeddingDimensions));
+        Assert.True(string.IsNullOrEmpty(gemini.ApiKey));
+        Assert.True(string.IsNullOrEmpty(configuration["Ai:EmbeddingProvider"]));
+        Assert.False(configuration.GetSection("Ai:Groq").Exists());
+        Assert.False(configuration.GetSection("Ai:Ollama").Exists());
     }
 
     [Fact]
@@ -429,22 +541,6 @@ public class AiChatClientSelectionTests
         var types = typeof(GeminiAiChatClient).Assembly.GetTypes();
 
         Assert.DoesNotContain(types, t => t.Name.Contains("Ollama", StringComparison.OrdinalIgnoreCase));
-    }
-
-    [Fact]
-    public void Shipped_appsettings_make_gemini_primary_and_groq_the_fallback_without_any_key_or_ollama_section()
-    {
-        var root = RepositoryRoot();
-        var appsettingsPath = Path.Combine(root, "src", "AiReap.Api", "appsettings.json");
-        var configuration = new ConfigurationBuilder().AddJsonFile(appsettingsPath, optional: false).Build();
-        var groq = configuration.GetSection(GroqOptions.SectionName).Get<GroqOptions>()!;
-
-        Assert.Equal("Gemini", configuration["Ai:Provider"]);
-        Assert.Equal("Groq", configuration["Ai:FallbackProvider"]);
-        Assert.Equal("openai/gpt-oss-120b", groq.Model);
-        Assert.True(string.IsNullOrEmpty(groq.ApiKey));
-        Assert.False(configuration.GetSection("Ai:Ollama").Exists());
-        Assert.DoesNotContain("11434", File.ReadAllText(appsettingsPath));
     }
 
     // Real-looking Gemini ("AIza...") or Groq ("gsk_...") keys must never be committed to source or config.
@@ -475,7 +571,7 @@ public class AiChatClientSelectionTests
 
     private static string? RealGroqKey => Environment.GetEnvironmentVariable("GROQ_API_KEY")?.Trim();
 
-    private static string RepositoryRoot()
+    internal static string RepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "src", "AiReap.Api", "appsettings.json")))

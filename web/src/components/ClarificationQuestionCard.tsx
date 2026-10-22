@@ -1,6 +1,8 @@
-import { useState } from 'react';
-import type { ArtifactSummary, ClarificationQuestionData } from '../api/types';
-import { IconInfo } from './icons';
+import { Fragment, useState } from 'react';
+import type { ArtifactSummary, ClarificationQuestionData, SourceReference } from '../api/types';
+import { reasonSegments, referenceAriaLabel } from '../lib/sourceReferences';
+import { IconDocument, IconInfo } from './icons';
+import { SourceDocumentViewer } from './SourceDocumentViewer';
 
 interface Props {
   artifact: ArtifactSummary;
@@ -12,6 +14,7 @@ export function ClarificationQuestionCard({ artifact, canAnswer, onAnswer }: Pro
   const data = artifact.data as unknown as ClarificationQuestionData;
   const [answer, setAnswer] = useState(data.answer ?? '');
   const [submitting, setSubmitting] = useState(false);
+  const [openReference, setOpenReference] = useState<SourceReference | null>(null);
 
   const isOpen = data.clarificationStatus === 'Open';
 
@@ -39,10 +42,30 @@ export function ClarificationQuestionCard({ artifact, canAnswer, onAnswer }: Pro
         <p className="cq-reason">
           <IconInfo width={13} height={13} />
           <span>
-            <span className="detail-label">Why it matters:</span> {data.reason}
+            <span className="detail-label">Why it matters:</span>{' '}
+            {/* Only server-resolved references become links; the rest is plain text (never HTML). */}
+            {reasonSegments(data.reason, data.sourceReferences).map((segment, i) =>
+              segment.reference ? (
+                <button
+                  key={i}
+                  type="button"
+                  className="source-link"
+                  aria-haspopup="dialog"
+                  aria-label={referenceAriaLabel(segment.reference)}
+                  title="Open the requirement source at this section"
+                  onClick={() => setOpenReference(segment.reference!)}
+                >
+                  <IconDocument width={12} height={12} aria-hidden="true" />
+                  {segment.text}
+                </button>
+              ) : (
+                <Fragment key={i}>{segment.text}</Fragment>
+              ),
+            )}
           </span>
         </p>
       )}
+      {openReference && <SourceDocumentViewer reference={openReference} onClose={() => setOpenReference(null)} />}
 
       {isOpen && canAnswer ? (
         <div className="cq-answer-form">

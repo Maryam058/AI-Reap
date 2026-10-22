@@ -51,6 +51,50 @@ export const requirementSourcesApi = {
   sourceIdCoverage: (sourceId: string, token: string | null) =>
     apiClient.get<SourceIdCoverage>(`/api/requirement-sources/${sourceId}/source-id-coverage`, token),
 
+  // The retained source text. Refused (403) to a user who may not read raw sources or is not a
+  // member of the source's project.
+  getById: (sourceId: string, token: string | null) =>
+    apiClient.get<RequirementSource>(`/api/requirement-sources/${encodeURIComponent(sourceId)}`, token),
+
+  // The kept original PDF/DOCX, as bytes, for the in-app viewer: fetched with the token, never through a
+  // link, so it is never a URL a user could share or the browser could cache. 404 for a source with no
+  // kept original (or in another project), 403 for a role that may not read raw sources.
+  getOriginal: async (sourceId: string, token: string | null, signal?: AbortSignal): Promise<ArrayBuffer> => {
+    const response = await fetch(`${API_BASE_URL}/api/requirement-sources/${encodeURIComponent(sourceId)}/original`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      cache: 'no-store',
+      signal,
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new ApiError(response.status, text || response.statusText);
+    }
+
+    return response.arrayBuffer();
+  },
+
+  // Keeps the PDF/DOCX of a source uploaded before originals were kept, so the viewer can show it.
+  // 422 when the file's text is not the source's text (another document or version), 409 when the
+  // source already has its original or was not uploaded as that type.
+  attachOriginal: async (sourceId: string, file: File, token: string | null): Promise<RequirementSource> => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await fetch(`${API_BASE_URL}/api/requirement-sources/${encodeURIComponent(sourceId)}/original`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new ApiError(response.status, text || response.statusText);
+    }
+
+    return (await response.json()) as RequirementSource;
+  },
+
   getClarificationQuestions: (sourceId: string, token: string | null) =>
     apiClient.get<ArtifactSummary[]>(`/api/requirement-sources/${sourceId}/clarification-questions`, token),
 

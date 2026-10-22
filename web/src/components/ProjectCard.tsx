@@ -26,7 +26,6 @@ export function ProjectCard({
   return (
     <article className="project-card">
       <div className="project-card-top">
-        <span className={`status-pill tone-${statusVariant(project.status)}`}>{statusLabel(project.status)}</span>
         {pending && (
           <span className="status-pill tone-warning" title={`Waiting for a Reviewer to approve ${stageLabel(pending.fromStatus)} → ${stageLabel(pending.toStatus)}`}>
             <IconLock width={11} height={11} /> Awaiting review
@@ -41,11 +40,24 @@ export function ProjectCard({
       <p className="project-card-desc">{project.description || 'No description yet.'}</p>
 
       <div className="project-card-phase">
-        <span className="project-card-label">Next stage</span>
-        <strong>
-          {progress.finished ? 'Lifecycle completed' : stageLabel(project.status + 1)}
-          {!progress.finished && isGatedStage(project.status) && <span className="muted"> · Reviewer gate</span>}
-        </strong>
+        <span className="project-card-label">Current stage</span>
+        <span className="project-card-stage">
+          <span className={`status-pill tone-${statusVariant(project.status)}`}>{statusLabel(project.status)}</span>
+        </span>
+        <span className="project-card-next">
+          {progress.finished ? (
+            'Lifecycle completed'
+          ) : (
+            <>
+              Next: <strong>{stageLabel(project.status + 1)}</strong>
+              {isGatedStage(project.status) && (
+                <span className="project-card-gate" title="A Reviewer must approve before the project can leave this stage">
+                  <IconLock width={11} height={11} aria-hidden="true" /> Needs Reviewer approval
+                </span>
+              )}
+            </>
+          )}
+        </span>
       </div>
 
       <div className="project-card-progress">

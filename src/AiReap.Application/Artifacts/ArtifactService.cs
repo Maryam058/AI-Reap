@@ -119,6 +119,15 @@ public class ArtifactService : IArtifactService
             newData = sanitized.ToJsonString();
             dataChanged = !JsonNode.DeepEquals(sanitized, JsonNode.Parse(artifact.DataJson));
         }
+        else if (request.Data is { ValueKind: JsonValueKind.Object } cqData
+                 && artifact.ArtifactType == ArtifactType.ClarificationQuestion
+                 && JsonNode.Parse(cqData.GetRawText()) is JsonObject editedQuestion)
+        {
+            // A question's source references are server-owned (ClarificationSourceReferences).
+            var sanitized = ClarificationSourceReferences.KeepOnEdit(artifact.DataJson, editedQuestion);
+            newData = sanitized.ToJsonString();
+            dataChanged = !JsonNode.DeepEquals(sanitized, JsonNode.Parse(artifact.DataJson));
+        }
         else
         {
             newData = request.Data?.GetRawText();
@@ -697,11 +706,13 @@ public class ArtifactService : IArtifactService
         });
     }
 
-    // S2/P0-2 — a caller who may not read raw sources gets requirement evidence without its quote text.
+    // S2/P0-2 — a caller who may not read raw sources gets requirement evidence without its quote text,
+    // and clarification questions without their source references.
     private ArtifactResponse ToResponse(Artifact artifact)
     {
         var response = ArtifactResponseMapper.ToResponse(artifact);
-        return _currentUser.CanReadRawSources() || !RequirementEvidenceFields.Applies(artifact.ArtifactType)
+        return _currentUser.CanReadRawSources()
+               || !RequirementEvidenceFields.Applies(artifact.ArtifactType) && artifact.ArtifactType != ArtifactType.ClarificationQuestion
             ? response
             : response with { Data = ArtifactJson.ToCamelCaseElement(RequirementEvidenceFields.RedactForRestrictedCaller(artifact.DataJson)) };
     }

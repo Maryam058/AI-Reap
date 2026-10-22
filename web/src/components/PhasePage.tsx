@@ -32,7 +32,13 @@ export function PhasePage({
   // How this area's stages relate to where the project actually is.
   const states = serves.map((s) => stageState(s, project.status));
   const relation = states.includes('current') ? 'current' : states.every((s) => s === 'completed') ? 'completed' : 'upcoming';
-  const relationText = relation === 'current' ? 'current stage' : relation === 'completed' ? 'stage already passed' : 'ahead of the project';
+  const servesText = serves.map(stageLabel).join(' & ');
+  const relationText =
+    relation === 'current'
+      ? 'This page is for the current stage'
+      : relation === 'completed'
+        ? `This page supports ${servesText}, already passed`
+        : `This page supports ${servesText}, a later stage`;
   const prev = previousWorkArea(phaseKey);
   const next = nextWorkArea(phaseKey);
 
@@ -43,8 +49,8 @@ export function PhasePage({
         subtitle={description}
         badge={
           serves.length > 0 && (
-            <span className={`phase-badge ${relation}`} title={`The project is in ${stageLabel(project.status)}`}>
-              Serves {serves.map(stageLabel).join(' & ')} · {relationText}
+            <span className={`phase-badge ${relation}`} title={`This page's work serves the ${servesText} stage${serves.length > 1 ? 's' : ''}`}>
+              Project is in <strong>{stageLabel(project.status)}</strong> · {relationText}
             </span>
           )
         }

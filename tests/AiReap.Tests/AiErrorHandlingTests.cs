@@ -105,7 +105,7 @@ public class AiErrorHandlingTests : IAsyncLifetime
         Assert.Equal(
             "The requirement source exceeds the configured Groq processing limit " +
             "(it would need 40 parts; Ai:Groq:MaxChunkedParts=8). No request was sent to Groq and nothing was saved. " +
-            "Retry when an AI provider without this limit is available, or split the requirement source into smaller parts.",
+            "Split the requirement source into smaller parts, or ask an administrator to review Ai:Groq:MaxChunkedParts.",
             body["detail"]!.GetValue<string>());
         Assert.Equal("Groq", body["provider"]!.GetValue<string>());
         Assert.False(body["sentToProvider"]!.GetValue<bool>());
@@ -194,7 +194,7 @@ public class AiErrorHandlingTests : IAsyncLifetime
             "Groq's configured input budget of 4,000 tokens leaves too little room for source text after " +
             "the ~5,712 tokens of instructions and context every request must carry. " +
             "No request was sent to Groq and nothing was saved. Splitting the requirement source will not help: " +
-            "use an AI provider without this limit, or ask an administrator to review Ai:Groq:MaxRequestTokens.",
+            "ask an administrator to review Ai:Groq:MaxRequestTokens.",
             body["detail"]!.GetValue<string>());
         Assert.Equal("Groq", body["provider"]!.GetValue<string>());
         Assert.False(body["sentToProvider"]!.GetValue<bool>());
@@ -293,7 +293,8 @@ public class AiErrorHandlingTests : IAsyncLifetime
         Assert.Equal("Gemini and Groq rate limit reached.", body!["title"]!.GetValue<string>());
         Assert.Equal(
             "Groq reported that its tokens-per-day limit (TPD) was reached. " +
-            "The AI usage quota appears to be used up for now (for example a daily free-tier limit). Please wait and try again later.",
+            "The AI usage quota appears to be used up for now (or a spend limit was reached). Please wait and try again later, " +
+            "or ask an administrator to check the provider account's limits.",
             body["detail"]!.GetValue<string>());
         Assert.Equal("TPD", body["rateLimitType"]!.GetValue<string>());
         Assert.True(body["quotaExhausted"]!.GetValue<bool>());

@@ -73,6 +73,22 @@ public static class DocxFixtureBuilder
             new FooterReference { Type = HeaderFooterValues.Default, Id = main.GetIdOfPart(footer) }));
     });
 
+    // A Word table-of-contents entry (title, tab, PAGEREF field showing the page number), then the
+    // heading it lists and a line of body text.
+    public static byte[] ContentsEntry(string title, string page, string bodyText) => Build(body =>
+    {
+        body.Append(new Paragraph(
+            new Run(new Text(title)),
+            new Run(new TabChar()),
+            new Run(new FieldChar { FieldCharType = FieldCharValues.Begin }),
+            new Run(new FieldCode(" PAGEREF _Toc123 \\h ") { Space = SpaceProcessingModeValues.Preserve }),
+            new Run(new FieldChar { FieldCharType = FieldCharValues.Separate }),
+            new Run(new Text(page)),
+            new Run(new FieldChar { FieldCharType = FieldCharValues.End })));
+        body.Append(Para(title));
+        body.Append(Para(bodyText));
+    });
+
     private static TableRow Row(params string[] cells) =>
         new(cells.Select(c => new TableCell(Para(c))));
 

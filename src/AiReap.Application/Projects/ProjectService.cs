@@ -1,11 +1,14 @@
 using AiReap.Application.Artifacts;
 using AiReap.Application.Common;
+using AiReap.Application.Files;
 using AiReap.Application.Lifecycle;
 using AiReap.Application.Persistence;
 using AiReap.Application.Traceability;
 using AiReap.Domain.Common;
 using AiReap.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AiReap.Application.Projects;
 
@@ -13,11 +16,15 @@ public class ProjectService : IProjectService
 {
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly IOriginalDocumentStore? _originals;
+    private readonly ILogger<ProjectService> _logger;
 
-    public ProjectService(IAiReapDbContext db, ICurrentUser currentUser)
+    public ProjectService(IAiReapDbContext db, ICurrentUser currentUser, IOriginalDocumentStore? originals = null, ILogger<ProjectService>? logger = null)
     {
         _db = db;
         _currentUser = currentUser;
+        _originals = originals;
+        _logger = logger ?? NullLogger<ProjectService>.Instance;
     }
 
     public async Task<ProjectResponse> CreateAsync(CreateProjectRequest request, CancellationToken cancellationToken = default)
@@ -135,6 +142,10 @@ public class ProjectService : IProjectService
         _db.AIExecutions.RemoveRange(await _db.AIExecutions.Where(e => e.ProjectId == id).ToListAsync(cancellationToken));
         _db.AgentRuns.RemoveRange(await _db.AgentRuns.Where(r => r.ProjectId == id).ToListAsync(cancellationToken));
         _db.Artifacts.RemoveRange(await _db.Artifacts.Where(a => a.ProjectId == id).ToListAsync(cancellationToken));
+        // The sources' kept originals: their rows go with the sources (Cascade); the stored files are
+        // removed once the delete has committed (below).
+        var sourceIds = _db.RequirementSources.Where(s => s.ProjectId == id).Select(s => s.Id);
+        var originalKeys = await _db.RequirementSourceFiles.Where(f => sourceIds.Contains(f.RequirementSourceId)).Select(f => f.StorageKey).ToListAsync(cancellationToken);
         _db.RequirementSources.RemoveRange(await _db.RequirementSources.Where(s => s.ProjectId == id).ToListAsync(cancellationToken));
         _db.Documents.RemoveRange(await _db.Documents.Where(d => d.ProjectId == id).ToListAsync(cancellationToken));
         _db.ProjectMembers.RemoveRange(await _db.ProjectMembers.Where(m => m.ProjectId == id).ToListAsync(cancellationToken));
@@ -153,6 +164,20 @@ public class ProjectService : IProjectService
         {
             ArtifactPersistence.Undo(_db);
             throw new ConflictException(DeleteConflictMessage);
+        }
+
+        // After the commit, so a failed delete never loses a file. A file that cannot be removed now is
+        // an orphan (no row references it) and OriginalDocumentJanitor removes it later.
+        foreach (var key in originalKeys)
+        {
+            try
+            {
+                if (_originals is not null) await _originals.DeleteAsync(key, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not remove the stored original {StorageKey} of deleted project {ProjectId}; the orphan sweep will remove it.", key, id);
+            }
         }
 
         return true;

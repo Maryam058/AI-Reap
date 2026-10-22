@@ -1,0 +1,455 @@
+using System.Text;
+using System.Text.RegularExpressions;
+using AiReap.Application.Artifacts.Payloads;
+
+namespace AiReap.Application.Ai;
+
+// A reference the model claims for a clarification question's reason (RequirementAnalysis prompt).
+// Never stored as given: SourceReferenceIndex.Resolve keeps it only where it resolves in the source.
+public class ClaimedSourceReference
+{
+    public string? Label { get; set; }   // the words of the reason that refer to the source
+    public string? Section { get; set; } // "3.2", "Section 3.2", "Appendix A"
+    public string? Heading { get; set; } // "User Roles"
+    public string? Quote { get; set; }   // verbatim words from the source
+}
+
+// One heading of a requirement source. Number: "3.2", "A" (after Appendix/Annex/...), or null for an
+// unnumbered heading. Title: the heading without its number or table-of-contents tail. EndLine
+// (exclusive) is where the next section that is not a subsection of this one starts.
+public sealed record SourceSection(string? Number, string Title, string HeadingLine, int Line, int EndLine, bool TableOfContents);
+
+// Deterministic resolution of the places a clarification question's reason points at in its
+// requirement source (no AI call, no I/O). The source is the retained text (RequirementSource.RawText)
+// the question was generated from - the original upload's pages and layout are not retained, so page
+// references ("page 12") are never resolved. A reference is kept only when it resolves:
+//   - "Section 3.2", "Sections 3.2 and 4.1", "§4", "Clause 7", "Appendix A" in the reason, where a
+//     heading with that number is in the source (SourceChunker.IsSectionHeading). A heading in a table
+//     of contents ("3.2 User Roles ..... 12") is used only when the section has no other heading;
+//   - a quoted heading title ("the 'User Roles' section") equal to a heading's title;
+//   - a reference the model claims (ClaimedSourceReference) whose label is in the reason, whose
+//     section number or heading exists, and whose number and heading - when both are given - name
+//     the same section. Its quote is kept only when it is found in the source, inside that section.
+// Anything else - an unknown number, a heading that is not in the source, a page - stays plain text.
+public sealed partial class SourceReferenceIndex
+{
+    private const int MaxExcerptChars = 300;
+    private const int MinQuoteChars = 12;
+    private const int MaxQuoteChars = 500;
+
+    private readonly Guid _sourceId;
+    private readonly string _text;
+    private readonly int[] _lineStarts;
+    private readonly string[] _lines;
+    private readonly IReadOnlyList<SourceSection> _sections;
+
+    // The normalized text quotes are searched in, and each of its characters' index in _text.
+    private readonly string _normalized;
+    private readonly List<int> _normalizedMap;
+
+    private SourceReferenceIndex(Guid sourceId, string text)
+    {
+        _sourceId = sourceId;
+        _text = text;
+        _lines = Lines(text);
+        _lineStarts = LineStarts(text, _lines);
+        _sections = BuildSections(_lines);
+        (_normalized, _normalizedMap) = Normalize(text);
+    }
+
+    public static SourceReferenceIndex Build(Guid sourceId, string? sourceText) => new(sourceId, sourceText ?? string.Empty);
+
+    public IReadOnlyList<SourceSection> Sections => _sections;
+
+    // The source's lines as the viewer splits them (web/src/lib/sourceReferences.ts).
+    public static string[] Lines(string text) => LineBreak().Split(text);
+
+    public List<SourceReferencePayload> Resolve(string? reason, IReadOnlyList<ClaimedSourceReference>? claimed = null)
+    {
+        var resolved = new List<SourceReferencePayload>();
+        if (string.IsNullOrWhiteSpace(reason) || _sections.Count == 0 && (claimed is null || claimed.Count == 0))
+        {
+            return resolved;
+        }
+
+        // A claim that is in the reason but does not resolve blocks its words, so a contradicted
+        // "Section 4 - Billing" (4 is Security) is not linked by the number alone below.
+        var blocked = new List<(int Start, int End)>();
+        bool Taken(int start, int end) => Overlaps(resolved, start, end) || blocked.Any(b => start < b.End && b.Start < end);
+
+        foreach (var claim in claimed ?? [])
+        {
+            if (FromClaim(reason, claim, resolved, out var span) is { } reference)
+            {
+                resolved.Add(reference);
+            }
+            else if (span is { } words)
+            {
+                blocked.Add(words);
+            }
+        }
+
+        foreach (Match match in KeywordReference().Matches(reason))
+        {
+            var numbers = match.Groups["n"].Captures;
+            for (var i = 0; i < numbers.Count; i++)
+            {
+                // The first number's link includes its keyword ("Section 3.2"); later ones are the number alone.
+                var start = i == 0 ? match.Index : numbers[i].Index;
+                var end = numbers[i].Index + numbers[i].Length;
+                if (Taken(start, end) || FindByNumber(numbers[i].Value) is not { } section)
+                {
+                    continue;
+                }
+
+                resolved.Add(ForSection(reason[start..end], start, section));
+            }
+        }
+
+        foreach (Match match in QuotedTitle().Matches(reason))
+        {
+            var title = match.Groups["t"];
+            if (!Taken(title.Index, title.Index + title.Length) && FindByTitle(title.Value) is { } section)
+            {
+                resolved.Add(ForSection(title.Value, title.Index, section));
+            }
+        }
+
+        return resolved.OrderBy(r => r.Start).ToList();
+    }
+
+    // span: the claim's words in the reason, when they are there.
+    private SourceReferencePayload? FromClaim(
+        string reason, ClaimedSourceReference claim, List<SourceReferencePayload> taken, out (int Start, int End)? span)
+    {
+        span = null;
+        var label = claim.Label?.Trim();
+        if (string.IsNullOrEmpty(label))
+        {
+            return null;
+        }
+
+        var start = FreeIndexOf(reason, label, taken, StringComparison.Ordinal);
+        if (start < 0)
+        {
+            start = FreeIndexOf(reason, label, taken, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (start < 0)
+        {
+            return null; // the label is not in the reason: there is nothing to link
+        }
+
+        label = reason.Substring(start, label.Length);
+        span = (start, start + label.Length);
+        SourceSection? section = null;
+        if (!string.IsNullOrWhiteSpace(claim.Section))
+        {
+            section = FindByNumber(ClaimedNumber(claim.Section));
+            if (section is null)
+            {
+                return null; // a section number that is not in the source
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(claim.Heading))
+        {
+            if (section is null)
+            {
+                section = FindByTitle(claim.Heading);
+            }
+            else if (!TitleMatches(section, claim.Heading))
+            {
+                return null; // number and heading name different sections: neither is trusted
+            }
+        }
+
+        var quote = FindQuote(claim.Quote);
+        if (quote is { } q && section is not null && (q.Line < section.Line || q.EndLine > section.EndLine))
+        {
+            quote = null; // found, but not in the section it was cited for
+        }
+
+        if (quote is { } found)
+        {
+            var containing = section ?? Containing(found.Line);
+            return new SourceReferencePayload
+            {
+                Label = label,
+                Start = start,
+                SourceId = _sourceId,
+                SectionNumber = containing?.Number,
+                Heading = containing?.HeadingLine,
+                Line = found.Line,
+                EndLine = found.EndLine,
+                Anchor = $"L{found.Line}",
+                Excerpt = found.Text,
+                ExcerptIsQuote = true
+            };
+        }
+
+        return section is null ? null : ForSection(label, start, section);
+    }
+
+    private SourceReferencePayload ForSection(string label, int start, SourceSection section) => new()
+    {
+        Label = label,
+        Start = start,
+        SourceId = _sourceId,
+        SectionNumber = section.Number,
+        Heading = section.HeadingLine,
+        Line = section.Line,
+        EndLine = section.EndLine,
+        Anchor = $"L{section.Line}",
+        Excerpt = SectionExcerpt(section)
+    };
+
+    // ---- sections --------------------------------------------------------------------------
+
+    private static List<SourceSection> BuildSections(string[] lines)
+    {
+        var headings = new List<(string? Number, string Title, string Line, int Index, bool Toc)>();
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (!SourceChunker.IsSectionHeading(lines[i]))
+            {
+                continue;
+            }
+
+            var trimmed = lines[i].Trim();
+            var match = NumberedHeading().Match(trimmed);
+            var number = match.Success ? match.Groups["num"].Value : null;
+            var title = match.Success ? match.Groups["title"].Value : MarkdownMarker().Replace(trimmed, string.Empty);
+            var toc = TableOfContentsTail().IsMatch(trimmed);
+            title = TableOfContentsTail().Replace(title, string.Empty).Trim().TrimEnd(':').Trim();
+            headings.Add((number, title, trimmed, i, toc));
+        }
+
+        var sections = new List<SourceSection>(headings.Count);
+        for (var k = 0; k < headings.Count; k++)
+        {
+            var h = headings[k];
+            var end = lines.Length;
+            for (var j = k + 1; j < headings.Count; j++)
+            {
+                var next = headings[j];
+                // A numbered section runs on through its subsections (3.2 -> 3.2.1) and ignores
+                // unnumbered headings inside it ("Notes:"); an unnumbered one ends at the next heading.
+                if (h.Number is null
+                    || next.Number is not null && !next.Number.StartsWith(h.Number + ".", StringComparison.OrdinalIgnoreCase))
+                {
+                    end = next.Index;
+                    break;
+                }
+            }
+
+            while (end - 1 > h.Index && string.IsNullOrWhiteSpace(lines[end - 1]))
+            {
+                end--;
+            }
+
+            sections.Add(new SourceSection(h.Number, h.Title, h.Line, h.Index, end, h.Toc));
+        }
+
+        return sections;
+    }
+
+    // The first heading with this number outside a table of contents, else the first in one.
+    private SourceSection? FindByNumber(string number)
+    {
+        var key = number.Trim().TrimEnd('.');
+        var candidates = _sections.Where(s => string.Equals(s.Number, key, StringComparison.OrdinalIgnoreCase)).ToList();
+        return candidates.FirstOrDefault(s => !s.TableOfContents) ?? candidates.FirstOrDefault();
+    }
+
+    private SourceSection? FindByTitle(string title)
+    {
+        var key = TitleKey(title);
+        if (key.Length == 0)
+        {
+            return null;
+        }
+
+        var candidates = _sections.Where(s => TitleKey(s.Title) == key).ToList();
+        return candidates.FirstOrDefault(s => !s.TableOfContents) ?? candidates.FirstOrDefault();
+    }
+
+    // A claimed heading names the section when it is its title, or the title contains it (or the
+    // other way round) - "User Roles" for "User Roles and Permissions".
+    private static bool TitleMatches(SourceSection section, string heading)
+    {
+        var claimed = TitleKey(NumberedHeading().Match(heading.Trim()) is { Success: true } m ? m.Groups["title"].Value : heading);
+        var actual = TitleKey(section.Title);
+        return claimed.Length > 0 && actual.Length > 0 && (actual.Contains(claimed, StringComparison.Ordinal) || claimed.Contains(actual, StringComparison.Ordinal));
+    }
+
+    private static string TitleKey(string title) =>
+        Whitespace().Replace(title.Trim().Trim('"', '\'', '\u201C', '\u201D', '\u2018', '\u2019').TrimEnd(':', '.'), " ").Trim().ToLowerInvariant();
+
+    // "Section 3.2" / "§3.2" / "3.2." -> "3.2"; "Appendix A" -> "A".
+    private static string ClaimedNumber(string section)
+    {
+        var match = NumberedHeading().Match(section.Trim() + " x");
+        return match.Success ? match.Groups["num"].Value : section.Trim().TrimStart('§').Trim().TrimEnd('.');
+    }
+
+    private SourceSection? Containing(int line) =>
+        _sections.Where(s => !s.TableOfContents && s.Line <= line && line < s.EndLine).MaxBy(s => s.Line);
+
+    private string? SectionExcerpt(SourceSection section)
+    {
+        var body = new StringBuilder();
+        for (var i = section.Line + 1; i < section.EndLine && body.Length < MaxExcerptChars; i++)
+        {
+            var line = _lines[i].Trim();
+            if (line.Length > 0)
+            {
+                body.Append(body.Length > 0 ? " " : string.Empty).Append(line);
+            }
+        }
+
+        if (body.Length == 0)
+        {
+            return null;
+        }
+
+        if (body.Length <= MaxExcerptChars)
+        {
+            return body.ToString();
+        }
+
+        var cut = body.ToString(0, MaxExcerptChars);
+        var space = cut.LastIndexOf(' ');
+        return (space > MaxExcerptChars / 2 ? cut[..space] : cut) + "\u2026";
+    }
+
+    // ---- quotes ----------------------------------------------------------------------------
+
+    private (int Line, int EndLine, string Text)? FindQuote(string? quote)
+    {
+        var trimmed = quote?.Trim().Trim('"', '\u201C', '\u201D');
+        if (string.IsNullOrEmpty(trimmed) || trimmed.Length < MinQuoteChars || trimmed.Length > MaxQuoteChars
+            || trimmed.Contains("...", StringComparison.Ordinal) || trimmed.Contains('\u2026'))
+        {
+            return null; // too short to locate reliably, too long, or not one continuous passage
+        }
+
+        var (needle, _) = Normalize(trimmed);
+        needle = needle.Trim();
+        var at = _normalized.IndexOf(needle, StringComparison.Ordinal);
+        if (needle.Length == 0 || at < 0)
+        {
+            return null;
+        }
+
+        var start = _normalizedMap[at];
+        var end = _normalizedMap[at + needle.Length - 1] + 1;
+        return (LineOf(start), LineOf(end - 1) + 1, _text[start..end]);
+    }
+
+    // Lower-cased, whitespace runs as one space, curly quotes and dashes as their plain forms.
+    private static (string Text, List<int> Map) Normalize(string text)
+    {
+        var sb = new StringBuilder(text.Length);
+        var map = new List<int>(text.Length);
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (char.IsWhiteSpace(c))
+            {
+                if (sb.Length > 0 && sb[^1] == ' ')
+                {
+                    continue;
+                }
+
+                c = ' ';
+            }
+            else
+            {
+                c = c switch
+                {
+                    '\u2018' or '\u2019' => '\'',
+                    '\u201C' or '\u201D' => '"',
+                    '\u2013' or '\u2014' or '\u2212' => '-',
+                    _ => char.ToLowerInvariant(c)
+                };
+            }
+
+            sb.Append(c);
+            map.Add(i);
+        }
+
+        return (sb.ToString(), map);
+    }
+
+    private int LineOf(int offset)
+    {
+        var index = Array.BinarySearch(_lineStarts, offset);
+        return index >= 0 ? index : ~index - 1;
+    }
+
+    private static int[] LineStarts(string text, string[] lines)
+    {
+        var starts = new int[lines.Length];
+        var offset = 0;
+        for (var i = 0; i < lines.Length; i++)
+        {
+            starts[i] = offset;
+            offset += lines[i].Length;
+            if (offset < text.Length)
+            {
+                offset += text[offset] == '\r' && offset + 1 < text.Length && text[offset + 1] == '\n' ? 2 : 1;
+            }
+        }
+
+        return starts;
+    }
+
+    // ---- labels ----------------------------------------------------------------------------
+
+    private static int FreeIndexOf(string reason, string label, List<SourceReferencePayload> taken, StringComparison comparison)
+    {
+        for (var at = reason.IndexOf(label, comparison); at >= 0; at = reason.IndexOf(label, at + 1, comparison))
+        {
+            if (!Overlaps(taken, at, at + label.Length))
+            {
+                return at;
+            }
+        }
+
+        return -1;
+    }
+
+    private static bool Overlaps(List<SourceReferencePayload> taken, int start, int end) =>
+        taken.Any(r => start < r.Start + r.Label.Length && r.Start < end);
+
+    [GeneratedRegex(@"\r\n|\r|\n")]
+    private static partial Regex LineBreak();
+
+    [GeneratedRegex(@"\s+")]
+    private static partial Regex Whitespace();
+
+    [GeneratedRegex(@"^#{1,6}\s+")]
+    private static partial Regex MarkdownMarker();
+
+    // "3.2 User Roles", "## 3.2. User Roles", "Section 4: Security", "Appendix A - Glossary".
+    // A letter or roman numeral is a section number only after a keyword.
+    [GeneratedRegex(@"^(?:#{1,6}\s+)?(?:(?i:section|chapter|part|appendix|annex|module|clause)\s+(?<num>\d+(?:\.\d+)*|[A-Z](?:\.\d+)*|[IVXLC]+)|§\s*(?<num>\d+(?:\.\d+)*)|(?<num>\d+(?:\.\d+)*))\.?(?=[\s:\-\u2013\u2014]|$)[\s:\-\u2013\u2014]*(?<title>.*)$")]
+    private static partial Regex NumberedHeading();
+
+    // A table-of-contents entry: a page number after dot leaders, a tab or a wide gap, or the field
+    // instruction a Word contents entry carried in DOCX text extracted before those were dropped
+    // ("Actors and RolesPAGEREF _Toc123 \h 9"). A heading that merely ends in a number
+    // ("Release Phase 2") is not one.
+    [GeneratedRegex(@"(?:(?:\s*(?:\.{3,}|\u2026+)\s*|\s{2,}|\t+)\d+|\s*PAGEREF\s+\S+(?:\s*\\[a-z])*\s*\d*)\s*$")]
+    private static partial Regex TableOfContentsTail();
+
+    // "Section 12.7", "Sections 3.2 and 4.1", "§4", "Appendix A", "clauses 3, 5 or 7".
+    [GeneratedRegex(@"(?:\b(?i:sub-?sections?|sections?|sec\.|clauses?|chapters?|appendix|appendices|annex(?:es)?)|§§?)\s*(?<n>\d+(?:\.\d+)*(?![\w])|[A-Z](?:\.\d+)*(?![\w]))(?:\s*(?:,|\band\b|\bor\b|&|\bto\b|\bthrough\b|[\-\u2013\u2014])\s*(?<n>\d+(?:\.\d+)*(?![\w])))*")]
+    private static partial Regex KeywordReference();
+
+    // "the "User Roles" section", 'User Roles', curly quotes. Straight single quotes only around a
+    // phrase (after a space or bracket, before a space or punctuation), so an apostrophe never opens one.
+    [GeneratedRegex(@"[""\u201C](?<t>[^""\u201C\u201D\n]{3,80})[""\u201D]|\u2018(?<t>[^\u2018\u2019\n]{3,80})\u2019|(?<=^|[\s(])'(?<t>[^'\n]{3,80})'(?=[\s.,;:)!?]|$)")]
+    private static partial Regex QuotedTitle();
+}

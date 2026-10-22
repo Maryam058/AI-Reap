@@ -217,6 +217,16 @@ export interface RequirementSource {
   rawText: string;
   originalFileName?: string | null;
   createdAt: string;
+  // Present only on a single-source read, when the uploaded PDF/DOCX itself is kept.
+  originalDocument?: OriginalDocumentInfo | null;
+}
+
+export interface OriginalDocumentInfo {
+  format: 'pdf' | 'docx' | string;
+  length: number;
+  // PDF only: the rawText line each page starts on.
+  pageLineStarts?: number[] | null;
+  storedAt: string;
 }
 
 export interface CreateRequirementSourceRequest {
@@ -279,11 +289,28 @@ export interface ArtifactRelationship {
   isOutgoing: boolean;
 }
 
+// A place in a clarification question's reason that the server resolved in its requirement source
+// (SourceReferenceIndex). Line/endLine: 0-based line range of the source text, endLine exclusive.
+export interface SourceReference {
+  label: string;
+  start: number;
+  sourceId: string;
+  sectionNumber?: string | null;
+  heading?: string | null;
+  line: number;
+  endLine: number;
+  anchor: string;
+  excerpt?: string | null;
+  excerptIsQuote?: boolean;
+}
+
 export interface ClarificationQuestionData {
   question: string;
   reason?: string | null;
   clarificationStatus: 'Open' | 'Answered' | 'Resolved' | 'NotApplicable';
   answer?: string | null;
+  // Absent for a caller who may not read raw sources (S2).
+  sourceReferences?: SourceReference[] | null;
 }
 
 export interface FunctionalRequirementData extends RequirementEvidenceData {

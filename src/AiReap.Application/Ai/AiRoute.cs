@@ -35,4 +35,6 @@ public sealed record AiProviderLimits(
     int? MaxOutputTokens,
     string? MaxOutputTokensSetting,
     int? TimeoutSeconds,
-    int? LargeGenerationWarningTokens);
+    int? LargeGenerationWarningTokens,
+    // Staged requirement generation for a provider with an output ceiling (null: not staged).
+    AiOutputStaging? OutputStaging = null);

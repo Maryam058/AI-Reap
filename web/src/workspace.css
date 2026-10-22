@@ -1222,6 +1222,11 @@ main {
 .panel .table-scroll {
   margin-top: 0;
 }
+/* Keeps absolutely positioned content (e.g. sr-only column headers) inside the scroll box, so a wide
+   table scrolls in its container instead of widening the page. */
+.table-scroll {
+  position: relative;
+}
 
 /* ---- SDLC stepper ------------------------------------------------------- */
 
@@ -2194,6 +2199,7 @@ a.sdlc-link:hover .sdlc-node {
   margin: 1rem 0 0;
   padding: 0;
   display: flex;
+  flex-wrap: wrap;
   gap: 1.25rem;
   font-size: 0.75rem;
   color: var(--muted);
@@ -5291,4 +5297,181 @@ a.btn-ghost {
   .rv-stage-list { position: static; flex-direction: row; overflow-x: auto; padding-bottom: 0.25rem; }
   .rv-stage-card { min-width: 210px; }
   .rv-search { margin-left: 0; min-width: 0; flex: 1 1 160px; }
+}
+
+/* ---- Stage visibility & project opening --------------------------------- */
+
+/* Approved: its own outlined tone, so it never reads as Completed (green). */
+.status-pill.tone-approved {
+  background: var(--surface);
+  color: var(--primary);
+  box-shadow: inset 0 0 0 1.5px var(--primary);
+}
+
+/* Project card: the current stage leads, the next stage follows. */
+.project-card-top .menu {
+  margin-left: auto;
+}
+.project-card-stage .status-pill {
+  height: 26px;
+  font-size: 0.78rem;
+  padding: 0 0.7rem;
+}
+.project-card-phase {
+  gap: 0.3rem;
+}
+.project-card-next {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem 0.5rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.project-card-next strong {
+  color: var(--text);
+}
+.project-card-gate {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+/* Project table: Open sits next to the actions menu. */
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+/* Top bar: the open project's stage next to its name. */
+.topbar-project {
+  max-width: 360px;
+}
+.topbar-project-stage {
+  flex-shrink: 0;
+  padding-left: 0.45rem;
+  border-left: 1px solid var(--primary-soft-border);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* Overview header: current stage, position and next stage in one line. */
+.overview-stage {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.6rem;
+}
+.overview-stage-label {
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted-subtle);
+}
+.overview-stage-meta {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+/* Work-area badge: longer, plain-language text may wrap on narrow screens. */
+.phase-badge {
+  height: auto;
+  min-height: 24px;
+  padding-top: 0.2rem;
+  padding-bottom: 0.2rem;
+  white-space: normal;
+  line-height: 1.35;
+}
+.phase-badge strong {
+  margin: 0 0.25em;
+  font-weight: 800;
+}
+
+/* Lifecycle key under the overview stepper. */
+.lc-legend {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.1rem;
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+.lc-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.lc-legend-mark {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--border-strong);
+  background: var(--surface);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.lc-legend-mark.completed {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.lc-legend-mark.current {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+.lc-legend-mark.gated {
+  border: none;
+  background: var(--warning-soft);
+  color: var(--warning-strong);
+}
+
+/* Project team card (members, read-only). */
+.team-hint {
+  margin: -0.25rem 0 0.75rem;
+}
+.team-list li.is-inactive {
+  opacity: 0.65;
+}
+.team-more {
+  display: inline-block;
+  margin-top: 0.6rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* Sidebar: which project the work-area links open, when none is open. */
+.nav-last-project {
+  margin: 0.25rem 0.5rem 0.75rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface-sunken);
+  font-size: 0.74rem;
+  line-height: 1.4;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.nav-last-project a {
+  font-weight: 700;
+}
+
+/* Gated stages: the lock icon carries this on wide layouts; text takes over where the lock is hidden. */
+.lc-gate-text {
+  display: none;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--warning-strong);
+}
+@media (max-width: 760px) {
+  .lifecycle-panel .lc-gate-text {
+    display: block;
+  }
 }

@@ -18,12 +18,16 @@ export function statusLabel(status: number): string {
   return stageLabel(status);
 }
 
+/**
+ * Pill tone for a lifecycle stage. Stages in flight are blue; amber is kept for real warnings
+ * (pending reviews, evidence gaps) and green for Completed. Approved has its own outlined tone so
+ * it never reads as Completed.
+ */
 export function statusVariant(status: number): string {
   if (status <= 0) return 'neutral';
-  if (status <= 3) return 'info';
-  if (status === 4) return 'success';
-  if (status <= 6) return 'warning';
-  return 'success';
+  if (status === 4) return 'approved';
+  if (status >= 7) return 'success';
+  return 'info';
 }
 
 export function formatRelativeTime(iso: string): string {

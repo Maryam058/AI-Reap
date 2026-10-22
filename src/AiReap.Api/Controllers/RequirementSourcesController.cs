@@ -7,6 +7,7 @@ using AiReap.Domain.Common;
 using AiReap.Domain.Enums;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace AiReap.Api.Controllers;
 
@@ -60,16 +61,28 @@ public class RequirementSourcesController : ControllerBase
         return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
     }
 
-    // §6 — TXT/PDF/DOCX upload (ADR-001 §4).
+    // §6 — TXT/PDF/DOCX upload (ADR-001 §4). The content must be what the name says (signature and a
+    // document that opens; InvalidDocumentException), within OriginalDocuments:MaxUploadBytes. A PDF or
+    // DOCX is also kept as the original, privately (docs/SOURCE_DOCUMENT_RETENTION.md); a TXT's text is
+    // the file. The file name is kept as display text only.
     [HttpPost("api/projects/{projectId:guid}/requirement-sources/upload")]
     [Authorize(Roles = WriterRoles)]
-    [RequestSizeLimit(5 * 1024 * 1024)]
+    [UploadSizeLimit]
     public async Task<ActionResult<RequirementSourceResponse>> Upload(
-        Guid projectId, IFormFile file, CancellationToken cancellationToken)
+        Guid projectId, IFormFile file, CancellationToken cancellationToken, [FromServices] IOptions<OriginalDocumentOptions>? originalOptions = null)
     {
         if (file.Length == 0)
         {
             return BadRequest("File is empty.");
+        }
+
+        var maxBytes = (originalOptions?.Value ?? new OriginalDocumentOptions()).MaxUploadBytes;
+        if (file.Length > maxBytes)
+        {
+            return Problem(
+                statusCode: StatusCodes.Status413PayloadTooLarge,
+                title: "File too large.",
+                detail: $"Uploads are limited to {maxBytes / (1024.0 * 1024.0):0.#} MB.");
         }
 
         if (!_textExtractor.CanExtract(file.FileName))
@@ -77,23 +90,127 @@ public class RequirementSourcesController : ControllerBase
             return BadRequest("Only .txt, .pdf, and .docx uploads are supported.");
         }
 
-        string text;
-        using (var stream = file.OpenReadStream())
+        var content = new byte[file.Length];
+        await using (var stream = file.OpenReadStream())
         {
-            text = await _textExtractor.ExtractAsync(stream, file.FileName, cancellationToken);
+            await stream.ReadExactlyAsync(content, cancellationToken);
         }
 
-        if (string.IsNullOrWhiteSpace(text))
+        ExtractedDocument extracted;
+        try
+        {
+            extracted = await _textExtractor.ExtractDocumentAsync(content, file.FileName, cancellationToken);
+        }
+        catch (InvalidDocumentException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+
+        if (string.IsNullOrWhiteSpace(extracted.Text))
         {
             return BadRequest("No extractable text was found in this file (a scanned/image-only PDF is not supported).");
         }
 
-        var created = await _sources.CreateAsync(
-            projectId,
-            new CreateRequirementSourceRequest(RequirementSourceType.FileUpload, text, file.FileName),
-            cancellationToken);
+        var original = extracted.Format is null ? null : new OriginalDocumentUpload(content, extracted.Format, extracted.PageLineStarts);
+        var created = await _sources.CreateFromUploadAsync(projectId, file.FileName, extracted.Text, original, cancellationToken);
 
         return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
+    }
+
+    // The original PDF/DOCX of a source uploaded before originals were kept, offered again so the source
+    // viewer can show it. Checked as an upload is, and accepted only when its text is the source's text
+    // (AttachOriginalAsync); the source's text and everything generated from it are left as they are.
+    [HttpPost("api/requirement-sources/{id:guid}/original")]
+    [Authorize(Roles = WriterRoles)]
+    [UploadSizeLimit]
+    public async Task<ActionResult<RequirementSourceResponse>> AttachOriginal(
+        Guid id, IFormFile file, CancellationToken cancellationToken, [FromServices] IOptions<OriginalDocumentOptions>? originalOptions = null)
+    {
+        var maxBytes = (originalOptions?.Value ?? new OriginalDocumentOptions()).MaxUploadBytes;
+        if (file.Length == 0)
+        {
+            return BadRequest("File is empty.");
+        }
+
+        if (file.Length > maxBytes)
+        {
+            return Problem(
+                statusCode: StatusCodes.Status413PayloadTooLarge,
+                title: "File too large.",
+                detail: $"Uploads are limited to {maxBytes / (1024.0 * 1024.0):0.#} MB.");
+        }
+
+        if (!_textExtractor.CanExtract(file.FileName))
+        {
+            return BadRequest("Only .pdf and .docx files can be attached as the original.");
+        }
+
+        var content = new byte[file.Length];
+        await using (var stream = file.OpenReadStream())
+        {
+            await stream.ReadExactlyAsync(content, cancellationToken);
+        }
+
+        ExtractedDocument extracted;
+        try
+        {
+            extracted = await _textExtractor.ExtractDocumentAsync(content, file.FileName, cancellationToken);
+        }
+        catch (InvalidDocumentException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+
+        var result = await _sources.AttachOriginalAsync(id, content, extracted, cancellationToken);
+        return result.Status switch
+        {
+            AttachOriginalStatus.Attached => Ok(result.Source),
+            AttachOriginalStatus.SourceNotFound => NotFound(),
+            AttachOriginalStatus.NotApplicable => Problem(statusCode: StatusCodes.Status409Conflict, title: "No original can be attached.",
+                detail: "This source already has its original, was not uploaded as a file of this type, or originals are not kept."),
+            _ => Problem(statusCode: StatusCodes.Status422UnprocessableEntity, title: "This is not the uploaded document.",
+                detail: "The file's text is not the text of this source. Choose the same version of the document that was uploaded.")
+        };
+    }
+
+    // The original PDF/DOCX of an uploaded source, for the in-app source viewer: membership and the
+    // raw-source rule (S2) as for the source's text, but a source in another project is a plain 404,
+    // the same as one that does not exist. Sent inline, never cached, and never sniffed as another type;
+    // the sandbox policy keeps it inert if it is opened directly.
+    [HttpGet("api/requirement-sources/{id:guid}/original")]
+    public async Task<IActionResult> GetOriginal(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _sources.GetOriginalAsync(id, cancellationToken);
+        switch (result.Status)
+        {
+            case OriginalDocumentStatus.SourceNotFound:
+                return NotFound();
+            case OriginalDocumentStatus.NotRetained:
+                return Problem(statusCode: StatusCodes.Status404NotFound, title: "Original document not kept.",
+                    detail: "Only the text of this source is kept: it was pasted, uploaded as TXT, or uploaded before original files were kept.",
+                    type: "urn:aireap:original-not-retained");
+            case OriginalDocumentStatus.Unavailable:
+                return Problem(statusCode: StatusCodes.Status404NotFound, title: "Original document unavailable.",
+                    detail: "The original file of this source could not be read. Its text is still available.",
+                    type: "urn:aireap:original-unavailable");
+        }
+
+        Response.Headers.XContentTypeOptions = "nosniff";
+        Response.Headers.CacheControl = "no-store, private";
+        Response.Headers.ContentSecurityPolicy = "sandbox; default-src 'none'";
+        Response.Headers["Cross-Origin-Resource-Policy"] = "same-site";
+        var disposition = new Microsoft.Net.Http.Headers.ContentDispositionHeaderValue("inline");
+        disposition.SetHttpFileName(ContentDispositionFileName(result.FileName));
+        Response.Headers.ContentDisposition = disposition.ToString();
+        return File(result.Content!, result.ContentType!);
+    }
+
+    // The display name as a header-safe file name: no path, no control characters.
+    private static string ContentDispositionFileName(string? fileName)
+    {
+        var name = Path.GetFileName(fileName ?? string.Empty);
+        name = new string(name.Where(c => !char.IsControl(c) && c is not ('"' or '\\')).ToArray()).Trim();
+        return name.Length == 0 ? "requirement-source" : name;
     }
 
     [HttpGet("api/projects/{projectId:guid}/requirement-sources")]

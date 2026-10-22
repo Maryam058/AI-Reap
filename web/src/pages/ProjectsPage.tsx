@@ -14,7 +14,7 @@ import { ProjectGridSkeleton } from '../components/ui/Skeletons';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import { ProjectCard } from '../components/ProjectCard';
 import { ProjectActionsMenu } from '../components/ProjectActionsMenu';
-import { IconFolder, IconGrid, IconPlus, IconSearch } from '../components/icons';
+import { IconArrowRight, IconFolder, IconGrid, IconPlus, IconSearch } from '../components/icons';
 
 type SortKey = 'updated' | 'created' | 'name' | 'progress';
 type View = 'cards' | 'table';
@@ -196,7 +196,7 @@ export function ProjectsPage() {
                 <thead>
                   <tr>
                     <th scope="col">Project</th>
-                    <th scope="col">Status</th>
+                    <th scope="col">Current stage</th>
                     <th scope="col">Lifecycle progress</th>
                     <th scope="col">Updated</th>
                     <th scope="col">Created</th>
@@ -229,7 +229,12 @@ export function ProjectsPage() {
                         <td>{formatRelativeTime(p.updatedAt)}</td>
                         <td>{formatFullDateTime(p.createdAt)}</td>
                         <td className="col-actions">
-                          <ProjectActionsMenu project={p} onUpdated={onUpdated} onDeleted={onDeleted} />
+                          <span className="row-actions">
+                            <Link to={`/projects/${p.id}`} className="btn btn-secondary btn-sm" aria-label={`Open ${p.name}`}>
+                              Open <IconArrowRight width={14} height={14} />
+                            </Link>
+                            <ProjectActionsMenu project={p} onUpdated={onUpdated} onDeleted={onDeleted} />
+                          </span>
                         </td>
                       </tr>
                     );

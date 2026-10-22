@@ -12,7 +12,7 @@ namespace AiReap.Application.Ai.Pipeline;
 
 public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRunOperation
 {
-    internal const string PromptTemplateVersion = "RequirementAnalysis-v1";
+    internal const string PromptTemplateVersion = "RequirementAnalysis-v2";
 
     // Shared with the dry-run AI plan (AiPlanService), so it plans the prompt a real run sends.
     internal const string SystemPrompt = """
@@ -23,6 +23,13 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
         requirement. Never invent a confirmed detail (a number, a rule, a permission) that was
         not stated - if it is unclear or unstated, put it under missingInformation instead.
 
+        When a reason refers to a place in the requirement text, list it in that item's
+        sourceRefs: "label" is the exact words of the reason that refer to it (e.g. "Section 3.2"),
+        "section" its section number and "heading" its heading exactly as written in the text, and
+        "quote" a short passage copied word for word from that place. Only reference sections,
+        headings and passages that are actually written in the text, never a page number; leave
+        sourceRefs empty when the reason refers to no specific place.
+
         Respond with ONLY a single JSON object, no markdown fences, no commentary, matching
         exactly this shape:
         {
@@ -30,7 +37,8 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
           "capabilities": ["string"],
           "dataElements": ["string"],
           "notes": ["string"],
-          "missingInformation": [{"topic": "string", "question": "string", "reason": "string"}]
+          "missingInformation": [{"topic": "string", "question": "string", "reason": "string",
+            "sourceRefs": [{"label": "string", "section": "string", "heading": "string", "quote": "string"}]}]
         }
         """;
 
@@ -109,6 +117,7 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
 
             var codes = await ArtifactCodeGenerator.ReserveCodesAsync(
                 _db, source.ProjectId, ArtifactType.ClarificationQuestion, fresh.Count, ct);
+            var references = SourceReferenceIndex.Build(source.Id, source.RawText);
 
             for (var i = 0; i < fresh.Count; i++)
             {
@@ -117,7 +126,9 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
                 {
                     Question = item.Question,
                     Reason = item.Reason,
-                    ClarificationStatus = "Open"
+                    ClarificationStatus = "Open",
+                    // Only the references that resolve in the source; the model's claims are not stored.
+                    SourceReferences = references.Resolve(item.Reason, item.SourceRefs)
                 };
 
                 var artifact = new Artifact
@@ -282,5 +293,6 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
         public string Topic { get; set; } = string.Empty;
         public string Question { get; set; } = string.Empty;
         public string Reason { get; set; } = string.Empty;
+        public List<ClaimedSourceReference>? SourceRefs { get; set; }
     }
 }

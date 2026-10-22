@@ -1185,6 +1185,228 @@ pre {
   text-transform: none;
 }
 
+/* A verified link from "Why it matters" into the requirement source (SourceDocumentViewer). */
+.source-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.2rem;
+  padding: 0 0.15rem;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font: inherit;
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.source-link:hover {
+  color: var(--primary-hover);
+  background: var(--primary-soft);
+}
+
+.source-link:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.cq-reason .source-link svg {
+  align-self: center;
+  margin-top: 0;
+  color: currentColor;
+}
+
+.src-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.src-viewer-status,
+.src-viewer-note {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.src-viewer-attach {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm, 6px);
+  font-size: 0.85rem;
+}
+
+.src-viewer-attach p {
+  margin: 0;
+  flex: 1 1 22rem;
+}
+
+.src-viewer-attach .src-viewer-warning {
+  flex-basis: 100%;
+}
+
+.src-viewer-warning {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--warning-soft);
+  color: var(--warning-strong);
+  font-size: 0.85rem;
+}
+
+.src-viewer-evidence {
+  margin: 0;
+  padding: 0.6rem 0.85rem;
+  border-left: 3px solid var(--primary);
+  background: var(--primary-soft);
+  border-radius: 0 6px 6px 0;
+  font-size: 0.88rem;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.src-viewer-evidence .detail-label {
+  display: block;
+  margin-bottom: 0.2rem;
+}
+
+.src-viewer-doc {
+  position: relative;
+  max-height: min(60vh, 560px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+.src-viewer-doc:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.src-line {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0 0.75rem 0 0;
+  border-left: 3px solid transparent;
+}
+
+.src-line-no {
+  flex: 0 0 3.25rem;
+  text-align: right;
+  color: var(--muted-subtle);
+  user-select: none;
+}
+
+.src-line-text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.src-line-cited {
+  background: var(--primary-soft);
+  border-left-color: var(--primary-soft-border);
+}
+
+.src-line-heading {
+  border-left-color: var(--primary);
+  font-weight: 700;
+}
+
+.src-line mark {
+  background: var(--warning-soft);
+  color: inherit;
+  outline: 1px solid var(--warning);
+  border-radius: 2px;
+}
+
+/* The original PDF/DOCX (OriginalDocumentViews): the pane scrolls, the page behind does not. */
+.src-original {
+  display: block;
+  width: 100%;
+  height: min(64vh, 680px);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+}
+
+.src-original:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.src-pdf {
+  overflow: auto;
+  padding: 16px;
+}
+
+.src-pdf-page {
+  position: relative;
+  margin: 0 auto 16px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
+}
+
+.src-pdf-page canvas {
+  display: block;
+}
+
+/* pdf.js text layer: transparent text over the canvas, kept only so the cited text can be marked
+   (the rules pdf.js's own viewer applies; its full stylesheet is not loaded). */
+.src-pdf-page .textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  transform-origin: 0 0;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+
+.src-pdf-page .textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  transform-origin: 0% 0%;
+}
+
+.src-pdf-page .textLayer > :not(.markedContent),
+.src-pdf-page .textLayer .markedContent span:not(.markedContent) {
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.src-pdf-page .textLayer .markedContent {
+  display: contents;
+}
+
+.src-pdf-page mark.src-hit {
+  background: rgb(255 196 0 / 0.45);
+  color: transparent;
+  border-radius: 2px;
+  outline: 2px solid rgb(201 138 0 / 0.9);
+}
+
+.src-pdf-page mark.src-hit-heading {
+  background: rgb(255 196 0 / 0.25);
+}
+
 .cq-answer-form .req-textarea {
   margin-bottom: 0.6rem;
 }

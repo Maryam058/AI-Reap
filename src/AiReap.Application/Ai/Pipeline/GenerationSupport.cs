@@ -260,12 +260,20 @@ public static class GenerationSupport
         string fixedContext = "", Func<TimeSpan, CancellationToken, Task>? delay = null,
         SharedContext? sharedContext = null,
         IEnumerable<string>? knownArtifactCodes = null, IEnumerable<string>? knownSourceReferences = null,
-        bool validateSourceIds = false)
+        bool validateSourceIds = false, bool stageOutput = false)
         where TWhole : class, TPart where TPart : class
     {
         var shared = sharedContext ?? SharedContext.None;
         var knownCodes = knownArtifactCodes?.ToList();
         var knownRefs = knownSourceReferences?.ToList();
+
+        // Staged output (requirement generation on a client with an output ceiling, AiOutputStaging).
+        // Clients without the capability (the stub, test doubles) keep the path below unchanged.
+        if (stageOutput && chatClient is IStagedOutputAiChatClient { OutputStaging: { } staging })
+        {
+            return await CallAiAndParseStagedAsync<TWhole, TPart>(chatClient, logger, operationType, inputReference,
+                systemPrompt, sourceText, staging, fixedContext, shared, delay, knownCodes, knownRefs, validateSourceIds, cancellationToken);
+        }
 
         AiRequestOverBudgetException overBudget;
         try
@@ -334,6 +342,250 @@ public static class GenerationSupport
         return parts;
     }
 
+    // One unit of staged work: its source text, what follows it in the prompt (its share of the shared
+    // context, then fixedContext), the heading it starts under, and whether it carried every shared item.
+    private sealed record StagedPart(string Chunk, string Following, string? Section, bool SharedContextWhole);
+
+    // Staged generation (AiOutputStaging). The plan is ChunkPlanner.PlanStaged - exactly what the
+    // dry-run AI plan reports: a source within MaxPartSourceTokens whose prompt fits is sent whole as
+    // before; a larger one is split up front into parts of at most MaxPartSourceTokens of source text.
+    // A response cut off at the output limit (AiOutputTruncatedException) is never used: the whole
+    // source, or the one part that was cut off, is split in half at section/paragraph boundaries and
+    // sent again, every passage still exactly once, until it fits - at most MaxParts parts in total and
+    // never below MinPartSourceTokens. A part whose response has no items (IStagedPartResponse) but whose
+    // text defines requirement IDs that no generated requirement covers, in a family the run did generate
+    // (StagedPartCoverage), ends the run before anything is returned: its requirements would otherwise be
+    // silently missing. That is decided as soon as it is certain (no later part mentions the ID, so none
+    // could cover it), else after the last part. Any failure ends the whole run with nothing persisted;
+    // refusals made before any request say so, and failures after requests were sent say how many were sent.
+    private static async Task<IReadOnlyList<AiPart<TPart>>> CallAiAndParseStagedAsync<TWhole, TPart>(
+        IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
+        string systemPrompt, string sourceText, AiOutputStaging staging, string fixedContext, SharedContext shared,
+        Func<TimeSpan, CancellationToken, Task>? delay, List<string>? knownCodes, List<string>? knownRefs,
+        bool validateSourceIds, CancellationToken cancellationToken)
+        where TWhole : class, TPart where TPart : class
+    {
+        var plan = ChunkPlanner.PlanStaged(systemPrompt, sourceText, fixedContext, shared, staging);
+        var sent = 0;
+        var resplits = 0;
+        var requests = new RequestCounter();
+
+        if (plan.Outcome == ChunkPlanOutcome.Whole)
+        {
+            try
+            {
+                sent++;
+                var (raw, parsed) = await CallAndParseAsync<TWhole>(chatClient, logger, operationType, inputReference,
+                    systemPrompt, ChunkPlanner.WholePrompt(sourceText, shared, fixedContext), uncondensed: true, knownCodes, knownRefs,
+                    validateSourceIds ? SourceIdScope.For(sourceText, sourceText) : null, cancellationToken, requests);
+                return [new AiPart<TPart>(1, 1, raw, parsed, chatClient.ModelName)];
+            }
+            catch (AiOutputTruncatedException ex)
+            {
+                resplits++;
+                var half = (PromptBudgetReducer.EstimateTokens(sourceText) + 1) / 2;
+                logger.LogWarning(
+                    "AI output truncated ({StopReason}): {OperationType} input={InputReference}; the response was not used. " +
+                    "Re-sending the source in parts of at most ~{Half} source tokens.",
+                    ex.StopReason, operationType, inputReference, half);
+                if (half < MinPartSourceTokens)
+                {
+                    throw StagingExhausted(staging, sent, "the whole source", ex, "it is too small to split further");
+                }
+
+                plan = ChunkPlanner.Split(systemPrompt, sourceText, fixedContext, shared, staging.InputBudget, staging.MaxParts,
+                    plan.EstimatedWholeTokens, half);
+            }
+            catch (AiRequestOverBudgetException ex)
+            {
+                // Not sent (or, for the repair attempt, only the first request was): split, as the input path does.
+                if (ex.Data[RepairAttemptKey] is not true) sent--;
+                plan = ChunkPlanner.Split(systemPrompt, sourceText, fixedContext, shared, staging.InputBudget, staging.MaxParts,
+                    plan.EstimatedWholeTokens, staging.MaxPartSourceTokens);
+            }
+        }
+
+        var overBudget = new AiRequestOverBudgetException(staging.Provider, staging.InputBudget, plan.EstimatedWholeTokens,
+            staging.MaxRequestTokens, staging.MaxParts, staging.MaxPartsSetting);
+        switch (plan.Outcome)
+        {
+            case ChunkPlanOutcome.CannotSplit when sent == 0:
+                var message =
+                    $"The requirement source cannot be split for {staging.Provider}: its input budget of {staging.InputBudget:N0} tokens " +
+                    $"leaves too little room for source text next to the ~{plan.ReservedTokensPerPart:N0} tokens every request must carry " +
+                    "(instructions, context and a repair reserve). Nothing was sent and nothing was saved.";
+                throw new AiSourceCannotBeSplitException(staging.Provider, message, staging.InputBudget, plan.ReservedTokensPerPart, inner: overBudget);
+            case ChunkPlanOutcome.TooManyParts when sent == 0:
+                throw TooManyParts(overBudget, plan.Chunks.Count, logger, operationType, inputReference);
+            case ChunkPlanOutcome.SharedContextDoesNotFit when sent == 0:
+                throw SharedContextDoesNotFit(overBudget, plan, logger, operationType, inputReference);
+            case ChunkPlanOutcome.CannotSplit or ChunkPlanOutcome.TooManyParts or ChunkPlanOutcome.SharedContextDoesNotFit:
+                throw StagingExhausted(staging, sent, "the whole source", null,
+                    $"splitting it {(plan.Outcome == ChunkPlanOutcome.TooManyParts ? $"would need {plan.Chunks.Count} parts, more than {staging.MaxPartsSetting}={staging.MaxParts}" : "is not possible within the limits")}");
+        }
+
+        var anchors = SourceChunker.SectionAnchors(plan.Chunks);
+        var work = plan.Chunks
+            .Select((chunk, i) => new StagedPart(chunk, plan.SharedContextParts[i] + fixedContext, anchors[i], plan.SharedContextWhole))
+            .ToList();
+        logger.LogInformation(
+            "AI output staged: {OperationType} input={InputReference} ~{Tokens} source tokens in {Parts} parts of at most ~{MaxPart} " +
+            "source tokens ({Setting}={Configured}).",
+            operationType, inputReference, PromptBudgetReducer.EstimateTokens(sourceText), work.Count, plan.MaxPartSourceTokens,
+            staging.PartSourceSetting, staging.MaxPartSourceTokens);
+
+        var done = new List<(StagedPart Part, string Raw, TPart Parsed, string Model)>();
+        StagedPartCoverage.Ledger? ledger = null;
+        var empty = new List<(int Done, IReadOnlyList<string> Candidates)>();
+        for (var i = 0; i < work.Count;)
+        {
+            var part = work[i];
+            var number = i + 1;
+            var prompt = PartPrompt(number, work.Count, part.Chunk, string.Empty, part.Following);
+            TPart parsed;
+            string raw;
+            try
+            {
+                sent++;
+                (raw, parsed) = await CallPlannedPartAsync<TWhole, TPart>(chatClient, logger, operationType, inputReference,
+                    systemPrompt, prompt, number, work.Count, delay, knownCodes, knownRefs,
+                    validateSourceIds ? SourceIdScope.For(part.Chunk, sourceText) : null, requests, cancellationToken);
+            }
+            catch (AiOutputTruncatedException ex)
+            {
+                var label = $"Part {number} of {work.Count} of the requirement source";
+                var half = (PromptBudgetReducer.EstimateTokens(part.Chunk) + 1) / 2;
+                IReadOnlyList<string> pieces = half < MinPartSourceTokens ? new[] { part.Chunk } : SourceChunker.Split(part.Chunk, half);
+                if (pieces.Count < 2)
+                {
+                    throw StagingExhausted(staging, sent, label, ex, "it cannot be split into smaller parts");
+                }
+
+                if (work.Count - 1 + pieces.Count > staging.MaxParts)
+                {
+                    throw StagingExhausted(staging, sent, label, ex,
+                        $"splitting it would exceed {staging.MaxPartsSetting}={staging.MaxParts} parts in total");
+                }
+
+                resplits++;
+                var pieceAnchors = SourceChunker.SectionAnchors(pieces);
+                logger.LogWarning(
+                    "AI output truncated ({StopReason}): {OperationType} input={InputReference} {Label}; the response was not used. " +
+                    "Re-sending it as {Pieces} smaller parts.",
+                    ex.StopReason, operationType, inputReference, label, pieces.Count);
+                work.RemoveAt(i);
+                work.InsertRange(i, pieces.Select((p, k) => part with { Chunk = p, Section = pieceAnchors[k] ?? part.Section }));
+                continue;
+            }
+
+            if (parsed is IStagedPartResponse staged)
+            {
+                if (staged.ItemCount == 0 && StagedPartCoverage.Candidates(part.Chunk) is { Count: > 0 } candidates)
+                {
+                    if (ledger is null)
+                    {
+                        ledger = new StagedPartCoverage.Ledger(sourceText);
+                        foreach (var d in done) ledger.Add(((IStagedPartResponse)d.Parsed).CoverageClaims);
+                    }
+
+                    empty.Add((done.Count, candidates));
+
+                    // Certain already: SourceIdScope lets a later part cite only IDs written in its own text.
+                    var later = validateSourceIds
+                        ? work.Skip(i + 1).SelectMany(w => SrsIdExtractor.Extract(w.Chunk)).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                        : null;
+                    var certain = later is null
+                        ? new List<string>()
+                        : ledger.Judge(candidates).Missing.Where(id => !later.Contains(id)).ToList();
+                    if (certain.Count > 0)
+                    {
+                        throw PartsIncomplete(staging, [new StagedPartGap(number, work.Count, certain)], requests.Sent,
+                            logger, operationType, inputReference);
+                    }
+                }
+                else
+                {
+                    ledger?.Add(staged.CoverageClaims);
+                }
+            }
+
+            done.Add((part, raw, parsed, chatClient.ModelName));
+            i++;
+        }
+
+        if (ledger is not null)
+        {
+            var gaps = new List<StagedPartGap>();
+            foreach (var (index, candidates) in empty)
+            {
+                var (missing, unclassified) = ledger.Judge(candidates);
+                if (missing.Count > 0) gaps.Add(new StagedPartGap(index + 1, done.Count, missing));
+                if (unclassified.Count > 0)
+                {
+                    logger.LogWarning(
+                        "AI staged part {Part} of {Parts} produced no requirements; {Count} ID(s) it defines are left uncovered because no " +
+                        "requirement of their family was generated (glossary, reference table or out-of-scope list?): {OperationType} " +
+                        "input={InputReference} ids={Ids}",
+                        index + 1, done.Count, unclassified.Count, operationType, inputReference, string.Join(", ", unclassified.Take(20)));
+                }
+            }
+
+            if (gaps.Count > 0)
+            {
+                throw PartsIncomplete(staging, gaps, requests.Sent, logger, operationType, inputReference);
+            }
+        }
+
+        logger.LogInformation(
+            "AI output staged: {OperationType} input={InputReference} completed in {Parts} parts ({Resplits} re-split after truncation, {Sent} requests).",
+            operationType, inputReference, done.Count, resplits, sent);
+        return done.Select((d, k) => new AiPart<TPart>(k + 1, done.Count, d.Raw, d.Parsed, d.Model, d.Part.Section, d.Part.SharedContextWhole))
+            .ToList();
+    }
+
+    // Parts that define requirement IDs the AI generated nothing for (StagedPartCoverage). A single part
+    // keeps its "Part N of M" label first and its number in FailedPartKey/PartCountKey, so the API names it.
+    private static AiStagedPartIncompleteException PartsIncomplete(AiOutputStaging staging, IReadOnlyList<StagedPartGap> gaps,
+        int requestsSent, ILogger logger, string operationType, string inputReference)
+    {
+        static string Ids(IReadOnlyList<string> ids) => string.Join(", ", ids.Take(10)) + (ids.Count > 10 ? ", ..." : string.Empty);
+
+        var errors = gaps.Select(g =>
+            $"Part {g.Part} of {g.PartCount} of the requirement source defines requirement IDs ({Ids(g.MissingIds)}) but the AI response " +
+            "for it contained no requirements, and no other generated requirement quotes their text.").ToList();
+        var lead = gaps.Count == 1
+            ? errors[0]
+            : $"{gaps.Count} parts of the requirement source define requirement IDs the AI generated no requirements for: " +
+              string.Join("; ", gaps.Select(g => $"part {g.Part} of {g.PartCount} ({Ids(g.MissingIds)})")) + ".";
+        var message = lead +
+            " They would be missing from the result, so the run was stopped. Nothing was saved. " +
+            $"This run sent {requestsSent} AI request(s) to {staging.Provider} (not counting automatic retries after connection errors); " +
+            "completed requests may be billed. " +
+            "If the AI left these requirements out by chance, generating again sends every part again and may succeed. " +
+            "If these IDs are not requirements to generate (removed, out of scope, or reference entries), generating again will fail " +
+            "the same way: edit the requirement source or move them into a separate requirement source.";
+        logger.LogError(
+            "AI staged parts produced no requirements for IDs they define: {OperationType} input={InputReference} parts={Parts} requests={Requests}",
+            operationType, inputReference, string.Join("; ", gaps.Select(g => $"{g.Part}/{g.PartCount}: {Ids(g.MissingIds)}")), requestsSent);
+
+        var ex = new AiStagedPartIncompleteException(message, errors, gaps, requestsSent);
+        if (gaps.Count == 1) PartFailure(ex, gaps[0].Part, gaps[0].PartCount);
+        return ex;
+    }
+
+    // Staged output could not be completed after requests were already sent (so never "nothing was sent").
+    private static AiOutputTruncatedException StagingExhausted(
+        AiOutputStaging staging, int sent, string what, AiOutputTruncatedException? truncated, string why)
+    {
+        var message =
+            $"The AI response for {what} did not fit the output limit and {why}. No partial result was used: at least {sent} AI request(s) " +
+            $"were sent (they may be billed) and nothing was saved. Lower {staging.PartSourceSetting}, raise {staging.MaxPartsSetting}, " +
+            "or split the requirement source into smaller requirement sources.";
+        var errors = new List<string> { message };
+        if (truncated is not null) errors.AddRange(truncated.Errors);
+        return new AiOutputTruncatedException(message, errors, truncated?.StopReason ?? "max_tokens");
+    }
+
     // The user prompt of one planned part, exactly as CallAiAndParseChunkedAsync sends it (a batched
     // run, AiChunkRunService, freezes it at Start).
     public static string PartPrompt(int number, int count, string chunk, string sharedPart, string fixedContext) =>
@@ -343,20 +595,37 @@ public static class GenerationSupport
     // and failures labelled with the part. A single part (only if the provider refused a whole
     // prompt our estimate says fits) is the whole source, so it is held to TWhole's rules; the
     // caller merges nothing that could apply them later.
-    public static async Task<(string RawResponse, TPart Parsed)> CallPlannedPartAsync<TWhole, TPart>(
+    public static Task<(string RawResponse, TPart Parsed)> CallPlannedPartAsync<TWhole, TPart>(
         IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
         string systemPrompt, string prompt, int number, int count, Func<TimeSpan, CancellationToken, Task>? delay,
         IReadOnlyList<string>? knownCodes, IReadOnlyList<string>? knownRefs, SourceIdScope? sourceIds,
         CancellationToken cancellationToken)
+        where TWhole : class, TPart where TPart : class =>
+        CallPlannedPartAsync<TWhole, TPart>(chatClient, logger, operationType, inputReference, systemPrompt, prompt, number, count,
+            delay, knownCodes, knownRefs, sourceIds, null, cancellationToken);
+
+    private static async Task<(string RawResponse, TPart Parsed)> CallPlannedPartAsync<TWhole, TPart>(
+        IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
+        string systemPrompt, string prompt, int number, int count, Func<TimeSpan, CancellationToken, Task>? delay,
+        IReadOnlyList<string>? knownCodes, IReadOnlyList<string>? knownRefs, SourceIdScope? sourceIds,
+        RequestCounter? requests, CancellationToken cancellationToken)
         where TWhole : class, TPart where TPart : class
     {
         var codes = knownCodes?.ToList();
         var refs = knownRefs?.ToList();
         return count == 1
             ? await CallPartAsync<TWhole>(chatClient, logger, operationType, inputReference,
-                systemPrompt, prompt, number, count, delay, codes, refs, sourceIds, cancellationToken)
+                systemPrompt, prompt, number, count, delay, codes, refs, sourceIds, cancellationToken, requests)
             : await CallPartAsync<TPart>(chatClient, logger, operationType, inputReference,
-                systemPrompt, prompt, number, count, delay, codes, refs, sourceIds, cancellationToken);
+                systemPrompt, prompt, number, count, delay, codes, refs, sourceIds, cancellationToken, requests);
+    }
+
+    // The AI requests a staged run actually sent: every first attempt, repair attempt and rate-limit
+    // re-send made here, never a request the budget refused before sending. Transport retries after a
+    // transient error (ResilientAiChatClient) happen below this and are not visible.
+    private sealed class RequestCounter
+    {
+        public int Sent { get; set; }
     }
 
     // A source needing more parts than the provider allows is refused before any part is sent:
@@ -375,8 +644,10 @@ public static class GenerationSupport
         var message = PrimaryNote(overBudget) +
             $"The requirement source would have to be sent to {overBudget.Provider} in {parts} parts, more than the " +
             $"{overBudget.MaxParts} allowed ({setting}={overBudget.MaxParts}).{estimate} These are estimates, not a check of " +
-            $"the remaining {overBudget.Provider} quota. Nothing was sent and nothing was saved. Retry when the primary AI " +
-            "provider is available again, or split the source into smaller requirement sources.";
+            $"the remaining {overBudget.Provider} quota. Nothing was sent and nothing was saved. " +
+            (overBudget.Primary is null
+                ? $"Split the source into smaller requirement sources, or ask an administrator to review {setting}."
+                : "Retry when the primary AI provider is available again, or split the source into smaller requirement sources.");
         logger.LogWarning(
             "AI input not sent: {OperationType} input={InputReference} needs {Parts} parts for {Provider}, more than the {MaxParts} allowed.",
             operationType, inputReference, parts, overBudget.Provider, overBudget.MaxParts);
@@ -397,7 +668,10 @@ public static class GenerationSupport
         var message = PrimaryNote(overBudget) +
             $"The requirement source was split into {plan.Chunks.Count} parts for {overBudget.Provider}, but {plan.UnplacedSharedItems:N0} of its " +
             $"{plan.SharedContextItems:N0} clarifications do not fit in any part's {overBudget.InputBudget:N0}-token input budget, so " +
-            "they could not be shown to the AI. Nothing was sent. Retry when the primary AI provider is available again.";
+            "they could not be shown to the AI. Nothing was sent. " +
+            (overBudget.Primary is null
+                ? "Split the source into smaller requirement sources."
+                : "Retry when the primary AI provider is available again.");
         logger.LogWarning(
             "AI input not sent: {OperationType} input={InputReference} {Unplaced} of {Items} shared context items fit no part.",
             operationType, inputReference, plan.UnplacedSharedItems, plan.SharedContextItems);
@@ -409,7 +683,7 @@ public static class GenerationSupport
         IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
         string systemPrompt, string prompt, int number, int count,
         Func<TimeSpan, CancellationToken, Task>? delay, List<string>? knownCodes, List<string>? knownRefs,
-        SourceIdScope? sourceIds, CancellationToken cancellationToken) where T : class
+        SourceIdScope? sourceIds, CancellationToken cancellationToken, RequestCounter? requests = null) where T : class
     {
         var partReference = $"{inputReference}#part-{number}-of-{count}";
         var label = $"Part {number} of {count} of the requirement source";
@@ -420,7 +694,7 @@ public static class GenerationSupport
                 try
                 {
                     return await CallAndParseAsync<T>(chatClient, logger, operationType, partReference,
-                        systemPrompt, prompt, uncondensed: true, knownCodes, knownRefs, sourceIds, cancellationToken);
+                        systemPrompt, prompt, uncondensed: true, knownCodes, knownRefs, sourceIds, cancellationToken, requests);
                 }
                 catch (AiProviderException ex) when (attempt == 1
                     && ex is { Kind: AiFailureKind.RateLimited, QuotaExhausted: false, RetryAfter: { } wait }
@@ -450,8 +724,12 @@ public static class GenerationSupport
         }
         catch (AiOutputValidationException ex)
         {
-            throw PartFailure(new AiOutputValidationException($"{label}: {ex.Message}",
-                ex.Errors.Select(e => $"{label}: {e}").ToList(), ex.Repairable), number, count);
+            var errors = ex.Errors.Select(e => $"{label}: {e}").ToList();
+            var labelled = ex is AiOutputTruncatedException truncated
+                ? new AiOutputTruncatedException($"{label}: {ex.Message}", errors, truncated.StopReason)
+                : new AiOutputValidationException($"{label}: {ex.Message}", errors, ex.Repairable);
+            labelled.RepairAttempted = ex.RepairAttempted;
+            throw PartFailure(labelled, number, count);
         }
     }
 
@@ -465,7 +743,8 @@ public static class GenerationSupport
     private static async Task<(string RawResponse, T Parsed)> CallAndParseAsync<T>(
         IAiChatClient chatClient, ILogger logger, string operationType, string inputReference,
         string systemPrompt, string userPrompt, bool uncondensed,
-        List<string>? knownCodes, List<string>? knownRefs, SourceIdScope? sourceIds, CancellationToken cancellationToken) where T : class
+        List<string>? knownCodes, List<string>? knownRefs, SourceIdScope? sourceIds, CancellationToken cancellationToken,
+        RequestCounter? requests = null) where T : class
     {
         var prompt = userPrompt;
 
@@ -474,12 +753,19 @@ public static class GenerationSupport
             string rawResponse;
             try
             {
+                if (requests is not null) requests.Sent++;
                 rawResponse = await CallAiAsync(chatClient, logger, operationType, inputReference, systemPrompt, prompt, uncondensed, cancellationToken);
             }
-            catch (AiRequestOverBudgetException ex) when (attempt > 1)
+            catch (AiRequestOverBudgetException ex)
             {
-                // The repair prompt (request plus validation errors) is larger than the first request.
-                ex.Data[RepairAttemptKey] = true;
+                // Refused before sending, so not a request.
+                if (requests is not null) requests.Sent--;
+                if (attempt > 1)
+                {
+                    // The repair prompt (request plus validation errors) is larger than the first request.
+                    ex.Data[RepairAttemptKey] = true;
+                }
+
                 throw;
             }
 
@@ -500,6 +786,7 @@ public static class GenerationSupport
                 logger.LogError(
                     "AI response failed validation: {OperationType} input={InputReference} attempt={Attempt} errors={Errors}",
                     operationType, inputReference, attempt, string.Join(" | ", ex.Errors));
+                ex.RepairAttempted = attempt > 1;
                 throw;
             }
         }

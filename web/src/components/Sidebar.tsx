@@ -110,6 +110,8 @@ export function Sidebar() {
     const needsProject = !to && !planned;
     const tipLabel = planned ? `${mod.label} (planned)` : mod.label;
     const step = pipeline && state;
+    // Hover text names the lifecycle stage(s) the module's work serves, so nav names map onto stages.
+    const hint = mod.stages ? `${mod.description} Lifecycle stage: ${mod.stages.map(stageLabel).join(' & ')}.` : mod.description;
 
     const content = (
       <>
@@ -144,11 +146,11 @@ export function Sidebar() {
     return (
       <li key={mod.key} className={`nav-item${step ? ` step-${state}` : ''}`} onMouseEnter={showTip(tipLabel)} onMouseLeave={hideTip} onFocus={showTip(tipLabel)} onBlur={hideTip}>
         {to ? (
-          <Link to={to} className={cls} aria-label={rail ? mod.label : undefined} aria-current={active ? 'page' : undefined}>
+          <Link to={to} className={cls} aria-label={rail ? mod.label : undefined} aria-current={active ? 'page' : undefined} title={rail ? undefined : hint}>
             {content}
           </Link>
         ) : (
-          <span className={cls} aria-disabled="true" title={rail ? undefined : needsProject ? 'Open a project to use this step' : mod.description}>
+          <span className={cls} aria-disabled="true" title={rail ? undefined : needsProject ? 'Open a project to use this step' : hint}>
             {content}
           </span>
         )}
@@ -256,6 +258,15 @@ export function Sidebar() {
 
         <nav className="sidebar-scroll" aria-label="Main" onScroll={hideTip}>
           {projectCard}
+          {/* Outside a project the work-area links open the last project; say which one. */}
+          {!rail && last && (
+            <p className="nav-last-project">
+              Project links open your last project:{' '}
+              <Link to={`/projects/${last.id}`} title={last.name}>
+                {last.name}
+              </Link>
+            </p>
+          )}
           {NAV_GROUPS.map(renderGroup)}
         </nav>
 
