@@ -155,16 +155,31 @@ export function DocxOriginalView({ data, lines, reference, location, title, onNa
         const styles = doc.createElement('div');
         doc.head.append(styles, own);
 
-        const paragraphs = await renderDocx(data, doc.body, styles);
+        const rendered = await renderDocx(data, doc.body, styles);
         if (cancelled) return;
 
         let result: NavigationResult = { status: 'not-found' };
         if (location.status === 'located') {
-          const startLine = isQuote(reference) ? (location.headingLine ?? location.line) : location.line;
-          const span = alignParagraphs(paragraphs.map((p) => p.textContent ?? ''), lines, startLine, Math.max(location.endLine, startLine + 1));
+          // A section is cited from its heading; a quote only by its own paragraphs, with the heading of
+          // its section marked apart - never the whole section above it.
+          const endLine = Math.max(location.endLine, location.line + 1);
+          // Paragraphs and whole table rows, as text is extracted now; else one paragraph per line, as
+          // sources uploaded before table rows were kept together were extracted.
+          let paragraphs = rendered.blocks.map((b) => b.element);
+          let texts = rendered.blocks.map((b) => b.text);
+          let span = alignParagraphs(texts, lines, location.line, endLine);
+          if (!span) {
+            paragraphs = rendered.paragraphs.map((b) => b.element);
+            texts = rendered.paragraphs.map((b) => b.text);
+            span = alignParagraphs(texts, lines, location.line, endLine);
+          }
           if (span) {
             for (let p = span.first; p <= span.last; p++) paragraphs[p].classList.add('src-docx-cited');
-            paragraphs[span.first].classList.add('src-docx-heading');
+            const heading =
+              isQuote(reference) && location.headingLine !== null && location.headingLine < location.line
+                ? alignParagraphs(texts, lines, location.headingLine, location.headingLine + 1)
+                : null;
+            paragraphs[heading && heading.first < span.first ? heading.first : span.first].classList.add('src-docx-heading');
             let target: HTMLElement = paragraphs[span.first];
             if (isQuote(reference)) {
               const quote = normalize(reference.excerpt!);

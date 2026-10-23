@@ -199,8 +199,10 @@ public static class GenerationSupport
     // Section: the heading the part starts under (SourceChunker.SectionAnchors); null for a whole source.
     // SharedContextWhole: the part carried the whole SharedContext; false when a split source gave each
     // part only the items most relevant to it (P0-7 RequirementCompleteness reports it).
+    // SourceText: the part of the source this request carried (the whole source for a single request);
+    // null where it is not known. Analysis checks section coverage with it (AnalysisCoverage).
     public sealed record AiPart<T>(int Number, int Count, string RawResponse, T Parsed, string Model, string? Section = null,
-        bool SharedContextWhole = true);
+        bool SharedContextWhole = true, string? SourceText = null);
 
     // Estimated room kept free in every part for the repair instruction, so a part's one repair
     // attempt fits the same budget as the part itself.
@@ -281,7 +283,7 @@ public static class GenerationSupport
             var (raw, parsed) = await CallAndParseAsync<TWhole>(chatClient, logger, operationType, inputReference,
                 systemPrompt, ChunkPlanner.WholePrompt(sourceText, shared, fixedContext), uncondensed: true, knownCodes, knownRefs,
                 validateSourceIds ? SourceIdScope.For(sourceText, sourceText) : null, cancellationToken);
-            return [new AiPart<TPart>(1, 1, raw, parsed, chatClient.ModelName)];
+            return [new AiPart<TPart>(1, 1, raw, parsed, chatClient.ModelName, SourceText: sourceText)];
         }
         catch (AiRequestOverBudgetException ex)
         {
@@ -336,7 +338,7 @@ public static class GenerationSupport
             var (raw, parsed) = await CallPlannedPartAsync<TWhole, TPart>(chatClient, logger, operationType, inputReference,
                 systemPrompt, prompt, number, chunks.Count, delay, knownCodes, knownRefs,
                 validateSourceIds ? SourceIdScope.For(chunks[i], sourceText) : null, cancellationToken);
-            parts.Add(new AiPart<TPart>(number, chunks.Count, raw, parsed, chatClient.ModelName, anchors[i], plan.SharedContextWhole));
+            parts.Add(new AiPart<TPart>(number, chunks.Count, raw, parsed, chatClient.ModelName, anchors[i], plan.SharedContextWhole, chunks[i]));
         }
 
         return parts;
@@ -378,7 +380,7 @@ public static class GenerationSupport
                 var (raw, parsed) = await CallAndParseAsync<TWhole>(chatClient, logger, operationType, inputReference,
                     systemPrompt, ChunkPlanner.WholePrompt(sourceText, shared, fixedContext), uncondensed: true, knownCodes, knownRefs,
                     validateSourceIds ? SourceIdScope.For(sourceText, sourceText) : null, cancellationToken, requests);
-                return [new AiPart<TPart>(1, 1, raw, parsed, chatClient.ModelName)];
+                return [new AiPart<TPart>(1, 1, raw, parsed, chatClient.ModelName, SourceText: sourceText)];
             }
             catch (AiOutputTruncatedException ex)
             {
@@ -539,7 +541,7 @@ public static class GenerationSupport
         logger.LogInformation(
             "AI output staged: {OperationType} input={InputReference} completed in {Parts} parts ({Resplits} re-split after truncation, {Sent} requests).",
             operationType, inputReference, done.Count, resplits, sent);
-        return done.Select((d, k) => new AiPart<TPart>(k + 1, done.Count, d.Raw, d.Parsed, d.Model, d.Part.Section, d.Part.SharedContextWhole))
+        return done.Select((d, k) => new AiPart<TPart>(k + 1, done.Count, d.Raw, d.Parsed, d.Model, d.Part.Section, d.Part.SharedContextWhole, d.Part.Chunk))
             .ToList();
     }
 

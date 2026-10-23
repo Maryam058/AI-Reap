@@ -170,3 +170,57 @@ test('no wording calls a requirement verified', () => {
     for (const text of [n!.title, ...n!.details]) assert.ok(!/verified requirement|\bverified\b/i.test(text), text);
   }
 });
+
+// ---- stored analysis: reuse, staleness and section coverage --------------------------------------
+
+const coverage = (status: 'complete' | 'incomplete' | 'unverified', missingSections: string[] = []) => ({
+  status,
+  method: 'split',
+  partCount: 3,
+  sectionCount: 12,
+  sectionsCovered: status === 'complete' ? 12 : 10,
+  lineCount: 80,
+  linesCovered: status === 'complete' ? 80 : 71,
+  missingSections,
+  parts: [],
+});
+
+test('a reused, current analysis says the AI was not called again and stays informational', () => {
+  const notice = analysisCompletenessNotice({ ...analysis(flags()), reused: true, staleReasons: [], coverage: coverage('complete') })!;
+  assert.equal(notice.tone, 'info');
+  assert.equal(notice.title, 'Source analysed whole');
+  assert.ok(notice.details.includes('All 12 sections were sent to the AI.'));
+  assert.ok(notice.details.some((d) => d.startsWith('Showing the stored analysis') && d.endsWith('the AI was not called again.')));
+});
+
+test('a stale analysis is a warning that lists why and asks for an explicit regenerate', () => {
+  const reason = 'The requirement source text has changed since this analysis ran.';
+  const notice = analysisCompletenessNotice({ ...analysis(flags()), reused: true, staleReasons: [reason] })!;
+  assert.equal(notice.tone, 'warning');
+  assert.equal(notice.title, 'Stored analysis may be out of date');
+  assert.ok(notice.details.includes(reason));
+  assert.ok(notice.details.includes('Regenerate the analysis to refresh it.'));
+});
+
+test('incomplete coverage is never presented as a complete analysis', () => {
+  const notice = analysisCompletenessNotice({
+    ...analysis(flags({ contextReduction: 'split', partCount: 3 })),
+    coverage: coverage('incomplete', ['Appendix B - Business rules']),
+    staleReasons: ['This analysis did not cover the whole source.'],
+  })!;
+  assert.equal(notice.tone, 'warning');
+  assert.equal(notice.title, 'Analysis incomplete: not every section of the source was sent to the AI');
+  assert.ok(notice.details.includes('Not sent to the AI: Appendix B - Business rules.'));
+});
+
+test('unverified coverage is stated, not implied complete', () => {
+  const notice = analysisCompletenessNotice({ ...analysis(flags()), coverage: coverage('unverified') })!;
+  assert.ok(notice.details.includes('Section coverage was not verified for this run.'));
+  assert.ok(!notice.details.some((d) => d.startsWith('All ')));
+});
+
+test('a source analysed before records were kept still shows its stale reason without completeness', () => {
+  const notice = analysisCompletenessNotice({ ...analysis(undefined), reused: true, staleReasons: ['Analysed before records were kept.'] })!;
+  assert.equal(notice.tone, 'warning');
+  assert.deepEqual(notice.details.slice(-2), ['Analysed before records were kept.', 'Regenerate the analysis to refresh it.']);
+});

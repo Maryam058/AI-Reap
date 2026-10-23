@@ -10,6 +10,13 @@ import { ErrorState } from './ui/ErrorState';
 
 interface Props {
   reference: SourceReference;
+  // All the passages of the question the reference is one of (both statements of a conflict): the
+  // viewer steps between them, and the extracted text marks the others too.
+  passages?: SourceReference[];
+  // What the highlighted quote is to the question ("Conflicting statement"); "Quoted evidence" if unset.
+  purpose?: string;
+  // The whole source, with nothing highlighted: no passage of it could be verified for the question.
+  browse?: boolean;
   onClose: () => void;
 }
 
@@ -28,13 +35,16 @@ type OriginalState =
 // document is shown, at the cited page or paragraph with the heading or quote marked; otherwise - or if
 // it cannot be shown - the extracted text is, and the viewer says which it is showing and why. The page
 // underneath keeps its route and scroll position, and Dialog returns focus to the link that opened it.
-export function SourceDocumentViewer({ reference, onClose }: Props) {
+export function SourceDocumentViewer({ reference: opened, passages, purpose, browse = false, onClose }: Props) {
   const { token, hasRole } = useAuth();
   const [state, setState] = useState<ViewerState>({ status: 'loading' });
   const [original, setOriginal] = useState<OriginalState>({ status: 'none' });
   const [showText, setShowText] = useState(false);
   const [navigation, setNavigation] = useState<NavigationResult | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const steps = passages && passages.length > 1 && passages.includes(opened) ? passages : null;
+  const [step, setStep] = useState(() => (steps ? steps.indexOf(opened) : 0));
+  const reference = steps ? steps[step] : opened;
 
   useEffect(() => {
     let cancelled = false;
@@ -63,6 +73,10 @@ export function SourceDocumentViewer({ reference, onClose }: Props) {
   const source = state.status === 'ready' ? state.source : null;
   const lines = useMemo(() => (source ? sourceLines(source.rawText) : []), [source]);
   const location = useMemo<ReferenceLocation | null>(() => (source ? locateReference(lines, reference) : null), [source, lines, reference]);
+  const others = useMemo(
+    () => (source && steps ? steps.filter((p) => p !== reference).map((p) => locateReference(lines, p)) : []),
+    [source, lines, steps, reference],
+  );
   const located = location?.status === 'located' ? location : null;
   const kind = source ? originalKind(source) : null;
   const canAttach = !!source && !kind && WRITER_ROLES.some(hasRole) && /\.(pdf|docx)$/i.test(source.originalFileName ?? '');
@@ -76,7 +90,11 @@ export function SourceDocumentViewer({ reference, onClose }: Props) {
   };
 
   const heading = reference.heading ? headingTitle(reference.heading) : null;
-  const where = heading && heading !== reference.label ? `${reference.label} — ${heading}` : reference.label;
+  const where = browse ? 'the clarification question' : heading && heading !== reference.label ? `${reference.label} — ${heading}` : reference.label;
+  const goTo = (n: number) => {
+    setNavigation(null);
+    setStep(n);
+  };
   const fileName = source?.originalFileName || 'Requirement source';
 
   return (
@@ -127,10 +145,31 @@ export function SourceDocumentViewer({ reference, onClose }: Props) {
 
           {canAttach && <AttachOriginal source={source} token={token} onAttached={retry} />}
 
-          {located ? (
+          {steps && (
+            <div className="src-viewer-steps" role="group" aria-label="Passages of this question">
+              {steps.map((p, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  className={`btn btn-sm ${i === step ? 'btn-secondary' : 'btn-ghost'}`}
+                  aria-pressed={i === step}
+                  onClick={() => goTo(i)}
+                >
+                  {`Passage ${i + 1} of ${steps.length}`}
+                  {p.sectionNumber ? ` (§${p.sectionNumber})` : ` (line ${p.line + 1})`}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {browse ? (
+            <p className="src-viewer-warning" role="status">
+              No passage of this source is linked to the question, so nothing is highlighted. The whole source is shown.
+            </p>
+          ) : located ? (
             (located.excerpt ?? reference.excerpt) && (
               <blockquote className="src-viewer-evidence">
-                <span className="detail-label">{reference.excerptIsQuote ? 'Quoted evidence' : 'Section text'}</span>
+                <span className="detail-label">{reference.excerptIsQuote ? (purpose ?? 'Quoted evidence') : 'Section text'}</span>
                 {located.excerpt ?? reference.excerpt}
               </blockquote>
             )
@@ -140,7 +179,7 @@ export function SourceDocumentViewer({ reference, onClose }: Props) {
             </p>
           )}
 
-          {showingOriginal && located && <NavigationNote navigation={navigation} reference={reference} />}
+          {showingOriginal && located && !browse && <NavigationNote navigation={navigation} reference={reference} />}
 
           {showingOriginal && original.status === 'loading' && (
             <p className="src-viewer-status" role="status">
@@ -150,6 +189,7 @@ export function SourceDocumentViewer({ reference, onClose }: Props) {
 
           {showingOriginal && original.status === 'ready' && kind === 'pdf' && (
             <PdfOriginalView
+              key={step}
               data={original.data}
               lines={lines}
               reference={reference}
@@ -162,6 +202,7 @@ export function SourceDocumentViewer({ reference, onClose }: Props) {
           )}
           {showingOriginal && original.status === 'ready' && kind === 'docx' && (
             <DocxOriginalView
+              key={step}
               data={original.data}
               lines={lines}
               reference={reference}
@@ -172,7 +213,7 @@ export function SourceDocumentViewer({ reference, onClose }: Props) {
             />
           )}
 
-          {!showingOriginal && <ExtractedTextView lines={lines} reference={reference} location={location} />}
+          {!showingOriginal && <ExtractedTextView lines={lines} reference={reference} location={location} others={others} />}
         </div>
       )}
     </Dialog>
@@ -267,7 +308,19 @@ function NavigationNote({ navigation, reference }: { navigation: NavigationResul
 
 // The text extracted at upload, as numbered lines with the cited range marked: for sources without a
 // kept original, and as the fallback when the original cannot be shown.
-function ExtractedTextView({ lines, reference, location }: { lines: string[]; reference: SourceReference; location: ReferenceLocation }) {
+// others: where the question's other passages are - marked too, more lightly, so a conflict's two
+// statements are both visible.
+function ExtractedTextView({
+  lines,
+  reference,
+  location,
+  others = [],
+}: {
+  lines: string[];
+  reference: SourceReference;
+  location: ReferenceLocation;
+  others?: ReferenceLocation[];
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const targetRef = useRef<HTMLDivElement>(null);
   const located = location.status === 'located' ? location : null;
@@ -284,8 +337,11 @@ function ExtractedTextView({ lines, reference, location }: { lines: string[]; re
       {lines.map((text, i) => {
         const inRange = !!located && i >= located.line && i < located.endLine;
         const isHeading = !!located && i === located.headingLine;
+        const isOther = !inRange && others.some((o) => o.status === 'located' && i >= o.line && i < o.endLine);
         const marked = inRange && reference.excerptIsQuote ? markExcerpt(text, reference.excerpt) : null;
-        const className = ['src-line', inRange && 'src-line-cited', isHeading && 'src-line-heading'].filter(Boolean).join(' ');
+        const className = ['src-line', inRange && 'src-line-cited', isOther && 'src-line-related', isHeading && 'src-line-heading']
+          .filter(Boolean)
+          .join(' ');
         return (
           <div
             key={i}

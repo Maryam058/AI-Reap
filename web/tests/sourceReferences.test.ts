@@ -6,15 +6,21 @@ import { test } from 'node:test';
 import type { SourceReference } from '../src/api/types.ts';
 import {
   alignParagraphs,
+  docxLineKeys,
+  evidenceHeading,
+  evidencePurpose,
   findMatches,
   headingTitle,
+  isLocatedEvidence,
   locateReference,
   markExcerpt,
   matchesBefore,
+  occurrenceNote,
   occurrenceOf,
   originalKind,
   pageForLine,
   reasonSegments,
+  recoveryNote,
   referenceAriaLabel,
   sourceFormatNote,
   sourceLines,
@@ -245,4 +251,60 @@ test('which match on a page is the cited line counts matches inside longer lines
   assert.equal(matchesBefore(page, 0, 0, 'Scope'), 0);
   assert.equal(matchesBefore(page, 0, 2, 'Scope'), 2); // the heading on line 2 is the third match
   assert.equal(matchesBefore(page, 2, 2, 'Scope'), 0);
+});
+
+test('a DOCX line with its automatic number, a table row or a note reference is aligned to the block the viewer draws', () => {
+  // As DocumentTextExtractor writes them: the number before a tab, a row's cells joined by " | ".
+  const lines = ['1	Introduction', '3.2	Leave approval', 'Leave type | Approver', 'Annual leave | Line manager', 'Refunds take five days.[^1]'];
+  // As docx-preview draws them: the number is a CSS counter, not text; a note reference is its number.
+  const blocks = ['Introduction', 'Leave approval', 'Leave type | Approver', 'Annual leave | Line manager', 'Refunds take five days.1'];
+  assert.deepEqual(alignParagraphs(blocks, lines, 1, 2), { first: 1, last: 1 });
+  assert.deepEqual(alignParagraphs(blocks, lines, 3, 5), { first: 3, last: 4 });
+  // A row is not matched by one of its cells alone.
+  assert.equal(alignParagraphs(['Annual leave', 'Line manager'], lines, 3, 4), null);
+  // A contents entry keeps its own text as a key, so it is still found whole.
+  assert.deepEqual(docxLineKeys('Actors and Roles	9'), ['actors and roles 9', '9']);
+  assert.deepEqual(docxLineKeys('FR-1:	Users sign in.'), ['fr-1: users sign in.', 'users sign in.']);
+  assert.deepEqual(docxLineKeys(''), []);
+});
+
+// ---- a question's evidence (ClarificationQuestionCard) ----------------------------------------------
+
+const evidence = (over: Partial<SourceReference> = {}): SourceReference => ({
+  label: 'The portal shall confirm a booking promptly.',
+  start: 0,
+  sourceId: SOURCE_ID,
+  line: 4,
+  endLine: 5,
+  anchor: 'L4',
+  excerpt: 'The portal shall confirm a booking promptly.',
+  excerptIsQuote: true,
+  ...over,
+});
+
+test('only evidence the server placed in the source can be opened', () => {
+  assert.equal(isLocatedEvidence(evidence()), true);
+  assert.equal(isLocatedEvidence(evidence({ line: -1, endLine: -1 })), false); // verified words, no place
+  assert.equal(isLocatedEvidence(evidence({ sourceId: '' })), false);
+  assert.equal(isLocatedEvidence(null), false);
+});
+
+test('evidence is introduced by what the question is about, and missing information is never presented as quoted', () => {
+  assert.match(evidenceHeading('missing', 1), /not written there/);
+  assert.equal(evidenceHeading('ambiguous', 1), 'The ambiguous statement');
+  assert.equal(evidenceHeading('contradiction', 2), 'The conflicting statements');
+  assert.equal(evidenceHeading(null, 1), 'The passage that raised this question'); // an older question
+  assert.equal(evidencePurpose('missing'), 'Context for the missing information');
+  assert.equal(evidencePurpose('contradiction'), 'Conflicting statement');
+  assert.equal(evidencePurpose(undefined), 'Quoted evidence');
+});
+
+test('a recovered passage says how it was linked, and repeated wording asks the reader to check', () => {
+  assert.match(recoveryNote('generation-response')!, /analysis quoted/);
+  assert.match(recoveryNote('quoted-in-question')!, /words this question quotes/);
+  assert.match(recoveryNote('requirement-id')!, /requirement this question names/);
+  assert.equal(recoveryNote(null), null);
+  assert.match(occurrenceNote(evidence({ occurrences: 3 }))!, /appear 3 times/);
+  assert.equal(occurrenceNote(evidence({ occurrences: 1 })), null);
+  assert.equal(occurrenceNote(evidence()), null);
 });

@@ -125,7 +125,8 @@ public class ClaudeLargeSrsPipelineTests
     }
 
     private static RequirementAnalysisService Analysis(InMemoryAiReapDb db, IAiChatClient ai) =>
-        new(ai, db, new OfflineCurrentUser(), new AllowAllProjectAccess(), new BatchModeOff(), NullLogger<RequirementAnalysisService>.Instance);
+        new(ai, db, new OfflineCurrentUser(), new AllowAllProjectAccess(), new NoDocumentsRetriever(), new BatchModeOff(),
+            NullLogger<RequirementAnalysisService>.Instance);
 
     internal static RequirementGenerationService Generation(InMemoryAiReapDb db, IAiChatClient ai) =>
         new(ai, db, new OfflineCurrentUser(), new AllowAllProjectAccess(), new NoDocumentsRetriever(), new BatchModeOff(),
@@ -157,7 +158,9 @@ public class ClaudeLargeSrsPipelineTests
         Assert.Equal(RequirementCompleteness.NoReduction, result.Completeness!.ContextReduction);
         Assert.Equal(1, result.Completeness.PartCount);
         Assert.Equal([Model], result.Completeness.Models);
-        Assert.Equal(Model, Assert.Single(InMemoryAiReapDb.Rows(db.AIExecutions)).Model); // audit attribution
+        // audit attribution (the analysis record next to it is deterministic, not a model call)
+        Assert.Equal(Model, Assert.Single(InMemoryAiReapDb.Rows(db.AIExecutions), e => e.OperationType == "RequirementAnalysis").Model);
+        Assert.Equal(AnalysisCoverageReport.Complete, result.Coverage!.Status);
     }
 
     // ---- over the application budget: lossless split with coverage ------------------------------
@@ -178,6 +181,16 @@ public class ClaudeLargeSrsPipelineTests
         Assert.InRange(requests.Count, 2, claude.Budget.MaxChunkedParts);
         Assert.Equal(requests.Count, result.Completeness!.PartCount);
         Assert.Equal(RequirementCompleteness.Split, result.Completeness.ContextReduction);
+
+        // The analysis itself reports every section as sent, and which part carried each.
+        var coverage = result.Coverage!;
+        Assert.Equal(AnalysisCoverageReport.Complete, coverage.Status);
+        Assert.Equal("split", coverage.Method);
+        Assert.True(coverage.SectionCount > 290, $"expected the filler sections to be counted, got {coverage.SectionCount}");
+        Assert.Equal(coverage.SectionCount, coverage.SectionsCovered);
+        Assert.Empty(coverage.MissingSections);
+        Assert.Equal(coverage.SectionCount, coverage.Parts.Sum(p => p.Sections.Count));
+        Assert.Empty(result.StaleReasons!);
 
         // Every part fits the budget it was planned for (estimated the way the budget is enforced).
         Assert.All(requests, r => Assert.True(

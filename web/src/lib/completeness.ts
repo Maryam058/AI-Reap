@@ -44,14 +44,40 @@ function modelsLine(c: RequirementCompleteness): string | null {
   return c.models.length > 0 ? `Served by ${c.models.join(', ')}.` : null;
 }
 
+// Analysis also reports (when the API sends them) whether the stored analysis was reused rather than
+// re-run, why it may be stale, and whether every section of the source was sent. Incomplete coverage
+// or staleness makes the notice a warning; coverage that was not verified is said so, never implied.
 export function analysisCompletenessNotice(result: AnalyzeRequirementResult | null | undefined): CompletenessNotice | null {
-  const c = result?.completeness;
-  if (!c) return null;
-  return {
-    tone: 'info',
-    title: c.contextReduction === 'split' ? `Source analysed in ${c.partCount} parts` : 'Source analysed whole',
-    details: [processingLine(c, 'Analysed'), modelsLine(c)].filter((l): l is string => l !== null),
-  };
+  if (!result) return null;
+  const c = result.completeness;
+  const stale = result.staleReasons ?? [];
+  const coverage = result.coverage;
+  const incomplete = coverage?.status === 'incomplete';
+  if (!c && stale.length === 0 && !incomplete) return null;
+
+  const details = c ? [processingLine(c, 'Analysed'), modelsLine(c)].filter((l): l is string => l !== null) : [];
+  if (coverage?.status === 'complete' && coverage.sectionCount > 0) {
+    details.push(`All ${plural(coverage.sectionCount, 'section was', 'sections were')} sent to the AI.`);
+  } else if (incomplete) {
+    details.push(`Not sent to the AI: ${coverage!.missingSections.join('; ') || `${coverage!.lineCount - coverage!.linesCovered} source lines`}.`);
+  } else if (coverage?.status === 'unverified') {
+    details.push('Section coverage was not verified for this run.');
+  }
+  if (result.reused) {
+    const when = result.analyzedAt ? ` from ${new Date(result.analyzedAt).toLocaleString()}` : '';
+    details.push(`Showing the stored analysis${when}; the AI was not called again.`);
+  }
+  details.push(...stale);
+  if (stale.length > 0) details.push('Regenerate the analysis to refresh it.');
+
+  const title = incomplete
+    ? 'Analysis incomplete: not every section of the source was sent to the AI'
+    : stale.length > 0
+      ? 'Stored analysis may be out of date'
+      : c!.contextReduction === 'split'
+        ? `Source analysed in ${c!.partCount} parts`
+        : 'Source analysed whole';
+  return { tone: incomplete || stale.length > 0 ? 'warning' : 'info', title, details };
 }
 
 export function generationCompletenessNotice(result: GenerateRequirementsResult | null | undefined): CompletenessNotice | null {

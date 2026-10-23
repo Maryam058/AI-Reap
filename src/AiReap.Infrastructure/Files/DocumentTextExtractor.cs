@@ -11,8 +11,9 @@ namespace AiReap.Infrastructure.Files;
 
 // IDocumentTextExtractor for TXT/PDF/DOCX (§6/§26, ADR-001 §4). PDF via PdfPig (per-page text, one
 // line per text line - see PageText; no OCR - scanned/image-only PDFs will extract empty text, which
-// is a known limitation, not a bug to silently paper over). DOCX via DocumentFormat.OpenXml (paragraph text only - tables,
-// headers/footers, and embedded objects are out of scope for a first pass).
+// is a known limitation, not a bug to silently paper over). DOCX via DocumentFormat.OpenXml: paragraphs
+// with their automatic numbering, table rows, notes, headers and footers (DocxText); what it cannot read
+// is named in the text, not dropped silently.
 public class DocumentTextExtractor : IDocumentTextExtractor
 {
     private static readonly string[] SupportedExtensions = { ".txt", ".pdf", ".docx" };
@@ -80,7 +81,8 @@ public class DocumentTextExtractor : IDocumentTextExtractor
                         throw new InvalidDocumentException("Macro-enabled Word documents and templates are not accepted; upload a plain .docx.");
                     }
 
-                    return new ExtractedDocument(DocxText(wordDocument), OriginalDocumentFormats.Docx, null, DocxText(wordDocument, legacy: true));
+                    return new ExtractedDocument(DocxText(wordDocument), OriginalDocumentFormats.Docx, null,
+                        DocxText(wordDocument, legacy: true), ParagraphText(wordDocument));
                 }
                 catch (Exception ex) when (ex is not (OperationCanceledException or InvalidDocumentException))
                 {
@@ -333,6 +335,21 @@ public class DocumentTextExtractor : IDocumentTextExtractor
         return DocxText(wordDocument);
     }
 
+    // The text of a Word document, in document order (DocxStructure):
+    //   * a paragraph is one line; its automatic number, when Word would show one, comes first and is
+    //     followed by a tab ("3.2\tLeave approval", "FR-1:\tUsers sign in.") - bullets are left out;
+    //   * a table row is one line, its cells joined by " | " (a cell's paragraphs joined by spaces, a
+    //     table inside a cell flattened into it), so the cells of a row stay together;
+    //   * a footnote or endnote reference is "[^1]" / "[^e1]" where it is made;
+    //   * after the body, under the heading "Headers, footers and notes (from the Word document):": each
+    //     distinct header and footer line once ("[Header] ...", "[Footer] ..."; bare page numbers left
+    //     out), each referenced footnote and endnote ("[Footnote 1] ..."), text boxes ("[Text box] ...")
+    //     and an "[Extraction note]" naming what is in the document but not in this text (pictures,
+    //     charts and drawings; equations; embedded objects and documents).
+    // legacy: Paragraph.InnerText of every paragraph, as the earliest uploads were extracted
+    // (ExtractedDocument.LegacyText); it also returns field instructions ("Actors and RolesPAGEREF _Toc123
+    // \h 9"). ParagraphText: the visible text of every paragraph, as uploads were extracted until the
+    // document structure was kept (ExtractedDocument.ParagraphText).
     private static string DocxText(WordprocessingDocument wordDocument, bool legacy = false)
     {
         var body = wordDocument.MainDocumentPart?.Document?.Body;
@@ -341,29 +358,14 @@ public class DocumentTextExtractor : IDocumentTextExtractor
             return string.Empty;
         }
 
-        // Only the visible run text, tabs kept: Paragraph.InnerText also returns field instructions
-        // (w:instrText) and drops tabs, so a table-of-contents entry read "Actors and RolesPAGEREF _Toc123 \h 9"
-        // instead of "Actors and Roles\t9" - which SourceReferenceIndex recognises as a contents entry.
-        // legacy: InnerText, as earlier uploads were extracted (ExtractedDocument.LegacyText).
-        var paragraphs = body.Descendants<Paragraph>().Select(p => legacy ? p.InnerText : VisibleText(p));
-        return string.Join("\n", paragraphs);
+        return legacy
+            ? string.Join("\n", body.Descendants<Paragraph>().Select(p => p.InnerText))
+            : new DocxStructure(wordDocument.MainDocumentPart!).Text(body);
     }
 
-    private static string VisibleText(Paragraph paragraph)
+    private static string ParagraphText(WordprocessingDocument wordDocument)
     {
-        var text = new StringBuilder();
-        foreach (var element in paragraph.Descendants())
-        {
-            if (element is Text t)
-            {
-                text.Append(t.Text);
-            }
-            else if (element is TabChar)
-            {
-                text.Append('\t');
-            }
-        }
-
-        return text.ToString();
+        var body = wordDocument.MainDocumentPart?.Document?.Body;
+        return body is null ? string.Empty : string.Join("\n", body.Descendants<Paragraph>().Select(p => DocxStructure.VisibleText(p)));
     }
 }

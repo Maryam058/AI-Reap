@@ -1,6 +1,7 @@
 using System.Text;
 using AiReap.Api.Controllers;
 using AiReap.Application.Ai;
+using AiReap.Application.Ai.Pipeline;
 using AiReap.Infrastructure.Files;
 using AiReap.Tests.SrsEval;
 using Microsoft.AspNetCore.Http;
@@ -80,59 +81,83 @@ public class DocumentExtractionTests(ITestOutputHelper output)
         Assert.Equal(GoldenFixture.Expected(GoldenFixture.ClinicBooking).SourceIds.Defined, SourceIdCoverage.Classify(text).Defined);
     }
 
+    // Formerly a cell-per-line test plus a G8 characterization (a table row was flattened to one line
+    // per cell, so nothing marked which cells belonged together). Fixed: each row is one line, its cells
+    // joined by " | ", and every requirement ID still starts its line and is defined.
     [Fact]
-    public async Task Docx_table_keeps_every_cell_in_row_order_with_each_id_defined_and_followed_by_its_text()
+    public async Task Docx_table_row_is_one_line_with_its_cells_in_order_and_each_id_defined()
     {
         var rows = ClinicRequirements("FR-").Take(6).Select(r => (r.Id, r.Text, "High")).ToList();
         var text = await ExtractAsync(DocxFixtureBuilder.Table("Booking requirements", rows), "table.docx");
         var lines = text.Split('\n').ToList();
 
-        foreach (var (id, requirement, priority) in rows)
-        {
-            var at = lines.IndexOf(id);
-            Assert.True(at >= 0, $"{id} not found on its own line");
-            Assert.Equal(requirement, lines[at + 1]);
-            Assert.Equal(priority, lines[at + 2]);
-        }
-
+        Assert.Equal(
+            new[] { "Booking requirements", "ID | Requirement | Priority" }
+                .Concat(rows.Select(r => $"{r.Id} | {r.Text} | {r.Item3}"))
+                .Append("End of requirements table."),
+            lines);
         Assert.Equal(rows.Select(r => r.Id), SourceIdCoverage.Classify(text).Defined);
     }
 
-    // CHARACTERIZATION (G8): a table row is flattened to one line per cell; nothing in the extracted
-    // text marks which cells belonged to one row. Transition when fixed: assert that each row is
-    // rendered as one line (e.g. "FR-001 | <text> | High") and remove the KnownGap trait.
+    // The text as uploads were extracted before rows were kept together is still produced, so an
+    // original can be attached to a source stored then (RequirementSourceService.AttachOriginalAsync).
     [Fact]
-    [Trait("KnownGap", "G8")]
-    public async Task Characterization_docx_table_row_structure_is_flattened()
+    public async Task Docx_paragraph_text_as_earlier_uploads_were_extracted_is_kept_for_matching_originals()
     {
-        var rows = ClinicRequirements("FR-").Take(3).Select(r => (r.Id, r.Text, "High")).ToList();
-        var text = await ExtractAsync(DocxFixtureBuilder.Table("Booking requirements", rows), "table.docx");
+        var rows = ClinicRequirements("FR-").Take(2).Select(r => (r.Id, r.Text, "High")).ToList();
+        var extracted = await Extractor.ExtractDocumentAsync(DocxFixtureBuilder.Table("Booking requirements", rows), "table.docx");
 
-        Assert.DoesNotContain(text.Split('\n'), l => rows.Any(r => l.Contains(r.Id) && l.Contains(r.Text)));
+        Assert.Equal(
+            string.Join("\n", new[] { "Booking requirements", "ID", "Requirement", "Priority" }
+                .Concat(rows.SelectMany(r => new[] { r.Id, r.Text, r.Item3 })).Append("End of requirements table.")),
+            extracted.ParagraphText);
+
+        // A document without tables, numbering or notes reads the same either way.
+        var plain = await Extractor.ExtractDocumentAsync(DocxFixtureBuilder.Plain(["3.2 User Roles", "Administrators manage access."]), "plain.docx");
+        Assert.Equal(plain.ParagraphText, plain.Text);
     }
 
-    // CHARACTERIZATION (G8): requirement IDs produced by Word automatic numbering ("FR-1:", "FR-2:")
-    // live in the numbering definitions, not in the paragraph text, and are lost: the text survives but
-    // no requirement ID does, so source-ID coverage reports not_applicable. Transition when fixed:
-    // assert that "FR-1" ... "FR-n" are extracted in order and Classify reports them as defined.
+    // Formerly a G8 characterization (IDs made by Word automatic numbering were lost). Fixed: the
+    // number Word shows comes first on its line, followed by a tab, so "FR-1" ... "FR-n" are found in
+    // order and each is defined.
     [Fact]
-    [Trait("KnownGap", "G8")]
-    public async Task Characterization_docx_auto_numbered_requirement_ids_are_lost()
+    public async Task Docx_auto_numbered_requirement_ids_are_extracted_in_order_and_defined()
     {
         var requirements = ClinicRequirements("FR-").Take(5).Select(r => r.Text).ToList();
         var text = await ExtractAsync(DocxFixtureBuilder.AutoNumbered(requirements, "3. Booking"), "numbered.docx");
+        var ids = Enumerable.Range(1, 5).Select(n => $"FR-{n}").ToList();
 
-        Assert.All(requirements, r => Assert.Contains(r, text));
-        Assert.Empty(SrsIdExtractor.Extract(text));
-        Assert.Equal(SourceIdCoverage.NotApplicable, SourceIdCoverage.Compute(text, []).Status);
+        Assert.Equal(new[] { "3. Booking" }.Concat(requirements.Select((r, i) => $"FR-{i + 1}:\t{r}")), text.Split('\n'));
+        Assert.Equal(ids, SourceIdCoverage.Classify(text).Defined);
     }
 
-    // CHARACTERIZATION (G8): only the main document body is read; text in page headers, page footers
-    // and footnotes is dropped without any warning. Transition when fixed: assert the header, footer
-    // and footnote sentences are extracted (or reported as skipped) and remove the KnownGap trait.
+    // Headings numbered through their styles (a multi-level list), and a lettered list: each number is
+    // the one Word shows, so the sections can be found by number.
     [Fact]
-    [Trait("KnownGap", "G8")]
-    public async Task Characterization_docx_header_footer_and_footnote_text_is_dropped()
+    public async Task Docx_numbered_headings_keep_their_numbers_and_can_be_referenced_by_section()
+    {
+        var bytes = DocxFixtureBuilder.NumberedHeadings(
+            [(1, "Introduction", "Intro body."), (2, "Scope", "Scope body."), (2, "Users", "Users body."),
+             (1, "Approval", "Approval body."), (2, "Rules", "Rules body.")],
+            ["First rule.", "Second rule."]);
+        var text = await ExtractAsync(bytes, "headings.docx");
+        output.WriteLine(text);
+
+        Assert.Equal(
+            ["1.\tIntroduction", "Intro body.", "1.1\tScope", "Scope body.", "1.2\tUsers", "Users body.",
+             "2.\tApproval", "Approval body.", "2.1\tRules", "Rules body.", "a)\tFirst rule.", "b)\tSecond rule."],
+            text.Split('\n'));
+        var index = SourceReferenceIndex.Build(Guid.Empty, text);
+        Assert.Equal(["1", "1.1", "1.2", "2", "2.1"], index.Sections.Select(s => s.Number));
+        var users = Assert.Single(index.Resolve("The roles are listed in section 1.2."));
+        Assert.Equal("Users body.", text.Split('\n')[users.Line + 1]);
+    }
+
+    // Formerly a G8 characterization (header, footer and footnote text was dropped without warning).
+    // Fixed: the footnote reference is marked where it is made, and the header, footer and footnote
+    // follow the body under a heading of their own, each labelled.
+    [Fact]
+    public async Task Docx_header_footer_and_footnote_text_is_extracted_and_labelled()
     {
         const string body = "FR-001: Receptionists must be able to book a consultation room for a named clinician and a time slot.";
         const string header = "FR-020: Every page of the booking screen shows the clinic name.";
@@ -140,10 +165,59 @@ public class DocumentExtractionTests(ITestOutputHelper output)
         const string footnote = "FR-022: Deposits are refunded within five working days.";
         var text = await ExtractAsync(DocxFixtureBuilder.HeaderFooterFootnote(body, header, footer, footnote), "parts.docx");
 
-        Assert.Contains(body, text);
-        Assert.DoesNotContain("FR-020", text);
-        Assert.DoesNotContain("FR-021", text);
-        Assert.DoesNotContain("FR-022", text);
+        Assert.Equal(
+            [body + "[^1]", "", "Headers, footers and notes (from the Word document):", $"[Header] {header}", $"[Footer] {footer}", $"[Footnote 1] {footnote}"],
+            text.Split('\n'));
+        // The notes are a section of their own, not part of the body's last section.
+        Assert.Contains(SourceReferenceIndex.Build(Guid.Empty, text).Sections, s => s.Title.StartsWith("Headers, footers and notes"));
+    }
+
+    // A header and footer repeated in every section appear once; a bare page number is left out.
+    [Fact]
+    public async Task Docx_repeated_headers_and_footers_are_extracted_once_and_page_numbers_are_left_out()
+    {
+        var text = await ExtractAsync(DocxFixtureBuilder.RepeatedHeaderFooter(
+            "Leave Management SRS v1.0 - Confidential", "Printed copies are uncontrolled.", "Appendix pages are informative.", ["Intro."]), "sections.docx");
+        output.WriteLine(text);
+        var lines = text.Split('\n');
+
+        Assert.Single(lines, l => l == "[Header] Leave Management SRS v1.0 - Confidential");
+        Assert.Single(lines, l => l == "[Footer] Printed copies are uncontrolled.");
+        Assert.Single(lines, l => l == "[Footer] Appendix pages are informative.");
+        Assert.DoesNotContain(lines, l => l.Contains("Page 3 of 9"));
+    }
+
+    // What cannot be read as text is named, not dropped silently.
+    [Fact]
+    public async Task Docx_pictures_and_equations_are_reported_as_not_extracted()
+    {
+        var text = await ExtractAsync(DocxFixtureBuilder.WithPictureAndEquation("FR-001: Rooms are booked."), "figures.docx");
+
+        Assert.Contains("FR-001: Rooms are booked.", text);
+        Assert.DoesNotContain("mc2", text);
+        Assert.EndsWith("[Extraction note] Not in this text: 1 picture, chart or drawing, 1 equation. Their content was not extracted.", text);
+    }
+
+    // The appendix-table case end to end: a question answered by a DOCX table row is recognised as
+    // answered from the extracted text, and was not from the text as it was extracted before.
+    [Fact]
+    public async Task Docx_appendix_table_row_answers_a_clarification_question_from_the_extracted_text()
+    {
+        const string evidence = "FR-010: Each leave request is routed for approval as set out in Appendix B.";
+        var extracted = await Extractor.ExtractDocumentAsync(DocxFixtureBuilder.ParagraphsThenTable(
+            ["2. Approval", evidence], "Appendix B - Approval matrix",
+            [["Leave type", "Approver"], ["Annual leave", "Line manager"], ["Sick leave", "HR officer"]]), "appendix.docx");
+        var candidate = new ClarificationCandidate("Approval", "Who must approve an annual leave request?", "No approver is named.", "missing",
+            "Decides the approval workflow.", [evidence]);
+
+        CandidateVerdict Validate(string text) =>
+            ClarificationCandidateValidator.ValidateOne(new ClarificationCandidateValidator.Context(Guid.Empty, text, []), candidate);
+
+        var now = Validate(extracted.Text);
+        var answered = Assert.Single(now.Rejections);
+        Assert.Equal("answered-in-source", answered.Code);
+        Assert.Contains("Approver: Line manager", answered.Message);
+        Assert.True(Validate(extracted.ParagraphText!).Accepted); // cells on separate lines: the row's answer was missed
     }
 
     // ---- PDF ----------------------------------------------------------------------------------

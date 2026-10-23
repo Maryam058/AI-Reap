@@ -62,7 +62,8 @@ vi.mock('../../src/lib/documentRenderers', () => ({
       article.append(p);
     }
     body.replaceChildren(article);
-    return Array.from(article.querySelectorAll('p'));
+    const paragraphs = Array.from(article.querySelectorAll('p')).map((element) => ({ element, text: element.textContent ?? '' }));
+    return { blocks: paragraphs, paragraphs };
   },
 }));
 
@@ -332,5 +333,129 @@ describe('viewer states', () => {
     expect(await screen.findByText(/<img src=x onerror=/)).toBeTruthy();
     expect(document.querySelector('.src-viewer-doc img, .src-viewer-doc script')).toBeNull();
     expect((window as unknown as { __pwned?: number }).__pwned).toBeUndefined();
+  });
+});
+
+// ---- the passage behind a question (ClarificationQuestionCard evidence) ----------------------------
+
+function cardWith(data: Record<string, unknown>) {
+  const artifact = {
+    id: 'a2',
+    code: 'CQ-007',
+    requirementSourceId: SOURCE_ID,
+    data: { question: 'Which decline categories apply?', clarificationStatus: 'Open', sourceReferences: [], ...data },
+  } as unknown as ArtifactSummary;
+  return render(
+    <ul>
+      <ClarificationQuestionCard artifact={artifact} canAnswer={false} onAnswer={async () => {}} />
+    </ul>,
+  );
+}
+
+// A quote reference to one whole line of LINES, as the server places evidence.
+const quoteAt = (line: number, heading: string, sectionNumber: string | null, over: Partial<SourceReference> = {}) =>
+  ref({ label: LINES[line], start: 0, line, endLine: line + 1, anchor: `L${line}`, excerpt: LINES[line], excerptIsQuote: true, heading, sectionNumber, ...over });
+
+const decline = quoteAt(10, '12.7 Decline Categories', '12.7');
+const invoices = quoteAt(3, '1 Billing', '1');
+const passwords = quoteAt(8, '2 Security', '2');
+
+describe('a question linked to the passage that raised it', () => {
+  test('an ambiguous statement: "Why it matters" links to it, and the original PDF highlights exactly it', async () => {
+    api.getById.mockResolvedValue(source('pdf'));
+    cardWith({ kind: 'ambiguous', reason: 'The popup is not described.', impact: 'Decides what the popup offers.', sourceEvidence: [decline], sourceLinkStatus: 'passage' });
+
+    expect(screen.getByText('The ambiguous statement')).toBeTruthy();
+    openLink(/^Source passage: open the requirement source at §12\.7/);
+
+    const dialog = await screen.findByRole('dialog', { name: 'Triage SRS.pdf' });
+    await screen.findByText(/Page 3: the cited passage is highlighted/);
+    // The statement itself is the place navigated to; its heading is marked too, for context.
+    expect(dialog.querySelector('.src-pdf-page[data-page="3"] mark.src-hit[aria-current="location"]')!.textContent).toBe(LINES[10]);
+    expect(dialog.querySelector('.src-viewer-evidence')!.textContent).toContain('Ambiguous statement');
+  });
+
+  test('in the original DOCX only the quoted paragraph is cited, with its section heading marked apart', async () => {
+    api.getById.mockResolvedValue(source('docx'));
+    cardWith({ kind: 'ambiguous', reason: 'r', impact: 'i', sourceEvidence: [decline] });
+
+    openLink(/^The eight decline categories.*: open/);
+
+    await screen.findByText(/the cited passage is highlighted/);
+    const doc = (document.querySelector('iframe.src-docx') as HTMLIFrameElement).contentDocument!;
+    expect(Array.from(doc.querySelectorAll('.src-docx-cited')).map((p) => p.textContent)).toEqual([LINES[10]]);
+    const heading = doc.querySelector('.src-docx-heading')!;
+    expect(heading.textContent).toBe('12.7 Decline Categories');
+    expect(heading.classList.contains('src-docx-cited')).toBe(false);
+    expect(doc.querySelector('mark.src-hit')!.textContent).toBe(LINES[10]);
+  });
+
+  test('a conflict: both statements can be opened from one viewer, and the other is marked in the text', async () => {
+    api.getById.mockResolvedValue(source(null));
+    cardWith({ kind: 'contradiction', reason: 'r', impact: 'i', sourceEvidence: [invoices, passwords] });
+
+    expect(screen.getByText('The conflicting statements')).toBeTruthy();
+    openLink(/^Invoices are sent monthly\.: open/);
+
+    await screen.findByRole('group', { name: 'Passages of this question' });
+    await waitFor(() => expect(document.querySelector('.src-line-cited')?.getAttribute('data-line')).toBe('3'));
+    expect(document.querySelector('.src-line-related')!.getAttribute('data-line')).toBe('8');
+    expect(document.querySelector('.src-viewer-evidence')!.textContent).toContain('Conflicting statement');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Passage 2 of 2 (§2)' }));
+
+    expect(document.querySelector('.src-line-cited')!.getAttribute('data-line')).toBe('8');
+    expect(document.querySelector('.src-line-related')!.getAttribute('data-line')).toBe('3');
+    expect(document.querySelector('.src-line-cited mark')!.textContent).toBe('Passwords are stored hashed.');
+  });
+
+  test('missing information is shown as the context of what is missing, never as the missing detail', async () => {
+    api.getById.mockResolvedValue(source(null));
+    cardWith({ kind: 'missing', reason: 'Who may decline is not stated.', impact: 'i', sourceEvidence: [decline] });
+
+    expect(screen.getByText(/Context in the source — the information asked for is not written there/)).toBeTruthy();
+    openLink(/^Source passage: open/);
+
+    const label = await screen.findByText('Context for the missing information');
+    expect(label.closest('.src-viewer-evidence')!.textContent).toContain(LINES[10]);
+    expect(document.querySelector('.src-line-cited')!.getAttribute('data-line')).toBe('10');
+  });
+
+  test('an older question whose "Why it matters" names no place links to its recovered passage, and says how it was found', async () => {
+    api.getById.mockResolvedValue(source(null));
+    cardWith({
+      reason: 'Reviewers cannot tell which categories apply.',
+      sourceEvidence: [{ ...decline, recovery: 'generation-response' }],
+      sourceLinkStatus: 'passage',
+    });
+
+    const why = screen.getByText('Why it matters:').closest('.cq-reason')!;
+    expect(why.textContent).toContain('Source passage');
+    expect(screen.getByText(/Linked from the passage the analysis quoted/)).toBeTruthy();
+
+    openLink(/^Source passage: open/);
+    await screen.findByRole('dialog');
+    await waitFor(() => expect(document.querySelector('.src-line-cited')?.getAttribute('data-line')).toBe('10'));
+  });
+
+  test('repeated wording asks the reader to check the place, and unplaced evidence has no link', () => {
+    cardWith({ kind: 'ambiguous', reason: 'r', impact: 'i', sourceEvidence: [{ ...decline, occurrences: 2 }, quoteAt(3, '1 Billing', '1', { line: -1, endLine: -1 })] });
+
+    expect(screen.getByText(/These words appear 2 times in the source/)).toBeTruthy();
+    expect(screen.getByText(/not located in the current source text/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Invoices are sent monthly\.: open/ })).toBeNull();
+  });
+
+  test('an unresolved question says so, and browsing opens the whole source with nothing highlighted', async () => {
+    api.getById.mockResolvedValue(source('pdf'));
+    cardWith({ reason: 'Nothing in the source covers this.', sourceLinkStatus: 'unresolved' });
+
+    expect(screen.getByRole('note').textContent).toContain('could be verified as the reason for this question');
+    openLink(/^Browse the source$/);
+
+    await screen.findByText(/nothing is highlighted\. The whole source is shown/);
+    await waitFor(() => expect(renderers.pdfRendered).toEqual([1]));
+    expect(document.querySelector('mark, .src-line-cited')).toBeNull();
+    expect(screen.queryByText(/could not be located in this source/)).toBeNull();
   });
 });

@@ -302,7 +302,14 @@ export interface SourceReference {
   anchor: string;
   excerpt?: string | null;
   excerptIsQuote?: boolean;
+  // Evidence only: how many places in the source hold the quoted words (null: one).
+  occurrences?: number | null;
+  // Evidence only: how a question saved without verified evidence was linked to this passage when read.
+  recovery?: 'generation-response' | 'quoted-in-question' | 'requirement-id' | null;
 }
+
+// How far a clarification question is linked to its source (ClarificationSourceReferences.WithSourceLinks).
+export type SourceLinkStatus = 'passage' | 'section' | 'unresolved';
 
 export interface ClarificationQuestionData {
   question: string;
@@ -311,6 +318,25 @@ export interface ClarificationQuestionData {
   answer?: string | null;
   // Absent for a caller who may not read raw sources (S2).
   sourceReferences?: SourceReference[] | null;
+  // Set on questions raised from RequirementAnalysis-v3 onwards (ClarificationCandidateValidator).
+  kind?: ClarificationKind | null;
+  impact?: string | null;
+  // Server-verified quotes from the source (both statements for a contradiction); absent for S2 callers.
+  sourceEvidence?: SourceReference[] | null;
+  // The requirement IDs or sections the evidence sits in.
+  requirementRefs?: string[] | null;
+  // Project document passages that may bear on the question (retrieval); absent for S2 callers.
+  relatedDocuments?: RelatedDocumentPassage[] | null;
+  // Set by the server on every read for callers who may open the source; absent for S2 callers.
+  sourceLinkStatus?: SourceLinkStatus | null;
+}
+
+export type ClarificationKind = 'missing' | 'ambiguous' | 'contradiction' | 'undefined-rule';
+
+export interface RelatedDocumentPassage {
+  reference: string;
+  score: number;
+  excerpt: string;
 }
 
 export interface FunctionalRequirementData extends RequirementEvidenceData {
@@ -549,6 +575,59 @@ export interface AnalyzeRequirementResult {
   skippedDuplicates?: number;
   // P0-7 — absent from older API versions.
   completeness?: RequirementCompleteness | null;
+  // True when the stored analysis was returned and the AI was not called.
+  reused?: boolean;
+  stale?: boolean;
+  staleReasons?: string[] | null;
+  analysisVersion?: string | null;
+  analyzedAt?: string | null;
+  coverage?: AnalysisCoverageReport | null;
+  rejectedCandidates?: RejectedClarification[] | null;
+  retrieval?: AnalysisRetrievalReport | null;
+  reconciliation?: AnalysisReconciliation | null;
+}
+
+// Whether every line and section of the source was sent to the AI (AnalysisCoverage.cs).
+export interface AnalysisCoverageReport {
+  status: 'complete' | 'incomplete' | 'unverified';
+  method: 'whole' | 'split' | string;
+  partCount: number;
+  sectionCount: number;
+  sectionsCovered: number;
+  lineCount: number;
+  linesCovered: number;
+  missingSections: string[];
+  parts: { part: number; sections: string[] }[];
+  note?: string | null;
+}
+
+export interface CandidateRejection {
+  code: string;
+  message: string;
+  relatedCode?: string | null;
+  location?: string | null;
+}
+
+// A question the AI proposed that the deterministic validator did not save.
+export interface RejectedClarification {
+  topic: string;
+  question: string;
+  kind?: string | null;
+  reasons: CandidateRejection[];
+}
+
+export interface AnalysisRetrievalReport {
+  sourcePassages: string;
+  projectDocuments: 'used' | 'no-documents' | 'stale-only' | 'failed' | 'not-run' | string;
+  queries: number;
+  passagesAttached: number;
+  error?: string | null;
+}
+
+export interface AnalysisReconciliation {
+  existingQuestions: number;
+  raisedAgain: string[];
+  notRaisedAgain: string[];
 }
 
 // P0-7 — how complete an Analyze/Generate result is; response-only (RequirementCompleteness.cs).

@@ -72,8 +72,10 @@ public class CompletenessFlagsTests
 
         var (analyzeStatus, analysis) = await ba.PostAsync($"/api/requirement-sources/{sourceId}/analyze");
         Assert.Equal(200, analyzeStatus);
-        // Analyze: existing fields unchanged and in order; completeness appended, without evidence counts.
-        Assert.Equal(["actors", "capabilities", "dataElements", "notes", "clarificationQuestions", "skippedDuplicates", "completeness"],
+        // Analyze: existing fields unchanged and in order; completeness appended, without evidence counts;
+        // then the stored-analysis fields (reuse, staleness, coverage, rejected candidates, retrieval).
+        Assert.Equal(["actors", "capabilities", "dataElements", "notes", "clarificationQuestions", "skippedDuplicates", "completeness",
+                "reused", "staleReasons", "analysisVersion", "analyzedAt", "coverage", "rejectedCandidates", "retrieval", "reconciliation", "stale"],
             analysis!.AsObject().Select(kv => kv.Key));
         var analyzed = analysis["completeness"]!;
         Assert.Equal(CompletenessKeys, analyzed.AsObject().Select(kv => kv.Key));

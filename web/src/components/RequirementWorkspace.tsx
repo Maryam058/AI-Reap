@@ -31,7 +31,6 @@ import { ClarificationQuestionCard } from './ClarificationQuestionCard';
 import { ArtifactCard } from './ArtifactCard';
 import { CollectionGroup, CollectionGroups, CollectionSection, GeneratedOverview, type OverviewItem } from './GeneratedCollection';
 import { EmptyState } from './ui/EmptyState';
-import { AiPlanSummary } from './AiPlanSummary';
 import { AiRunPanel } from './AiRunPanel';
 import { IconAlert, IconCheck, IconCheckCircle, IconChevronDown, IconDocument, IconInbox, IconLock, IconSparkles, IconUpload } from './icons';
 
@@ -114,13 +113,17 @@ export function RequirementWorkspace({
 
   const loadDerived = async (sourceId: string) => {
     try {
-      const [q, a, m] = await Promise.all([
+      const [q, a, m, stored] = await Promise.all([
         requirementSourcesApi.getClarificationQuestions(sourceId, token),
         artifactsApi.listForProject(projectId, token, { requirementSourceId: sourceId }),
         // Grouping is a presentation nicety: without the links the lists simply render ungrouped.
         traceabilityApi.getMatrix(projectId, token).catch(() => null),
+        // The stored analysis (read-only, never calls the AI): revisiting a source shows it instead of
+        // asking for a new run. Roles that may not read it simply get no summary.
+        requirementSourcesApi.getAnalysis(sourceId, token).catch(() => undefined),
       ]);
       setQuestions(q);
+      setAnalysis(stored ?? null);
       setArtifacts(a.filter((x) => x.artifactType !== ARTIFACT_TYPE_VALUES.ClarificationQuestion));
       setMatrix(m);
       setLoadedFor(sourceId);
@@ -223,13 +226,26 @@ export function RequirementWorkspace({
       setSelectedId(created.id);
     });
 
-  const onAnalyze = () =>
-    selectedId &&
-    runAction('analyze', async () => {
-      const result = await requirementSourcesApi.analyze(selectedId, token);
-      setAnalysis(result);
+  // A source that already has an analysis is only analysed again on an explicit, confirmed regenerate;
+  // otherwise the server returns the stored analysis without calling the AI.
+  const analysisDone = analysis !== null || questions.length > 0;
+  const onAnalyze = () => {
+    if (!selectedId) return;
+    const regenerate = analysisDone;
+    if (
+      regenerate &&
+      !window.confirm(
+        'Regenerate the analysis? The source is sent to the AI again. Saved clarification questions, answers and reviews are kept unchanged; only new questions that do not duplicate saved ones are added.',
+      )
+    ) {
+      return;
+    }
+    return runAction('analyze', async () => {
+      const result = await requirementSourcesApi.analyze(selectedId, token, regenerate);
       await loadDerived(selectedId);
+      setAnalysis(result);
     });
+  };
 
   const onAnswer = (artifactId: string, answer: string, notApplicable: boolean) =>
     runAction(`answer-${artifactId}`, async () => {
@@ -641,12 +657,17 @@ export function RequirementWorkspace({
           {canWrite && view === 'analysis' && (
             <div className="req-pipeline" id="sec-ai-analysis">
               <PipelineStep n={1} title="Analyze">
-                {generateButton('analyze', 'Run AI analysis', 'Analyzing…', onAnalyze, false, true, planButtonHint(plansForSelected?.analyze ?? null))}
-                <AiPlanSummary
-                  plan={plansForSelected?.analyze ?? null}
-                  loading={plansForSelected?.loading ?? true}
-                  failed={plansForSelected?.failed ?? false}
-                />
+                {generateButton(
+                  'analyze',
+                  !analysisDone ? 'Run AI analysis' : analysis?.stale ? 'Regenerate analysis (out of date)' : 'Regenerate analysis',
+                  'Analyzing…',
+                  onAnalyze,
+                  false,
+                  !analysisDone || analysis?.stale === true,
+                  analysisDone
+                    ? 'This source is already analysed. Regenerating calls the AI again and adds only questions not already saved.'
+                    : planButtonHint(plansForSelected?.analyze ?? null),
+                )}
                 {selectedId && (
                   <AiRunPanel
                     sourceId={selectedId}
@@ -663,15 +684,9 @@ export function RequirementWorkspace({
                 )}
               </PipelineStep>
               <PipelineStep n={2} title="Specify">
-                {generateButton('generate-requirements', 'Generate FR / NFR', 'Generating…', onGenerateRequirements, questions.length === 0, false, questions.length === 0 ? 'Run AI analysis first' : planButtonHint(plansForSelected?.generate ?? null), functionalRequirements.length + nonFunctionalRequirements.length)}
-                {questions.length > 0 && (
-                  <AiPlanSummary
-                    plan={plansForSelected?.generate ?? null}
-                    loading={plansForSelected?.loading ?? true}
-                    failed={plansForSelected?.failed ?? false}
-                  />
-                )}
-                {questions.length > 0 && selectedId && (
+                {/* An analysis that raised no questions is complete: Generate depends on the analysis, not on a question count. */}
+                {generateButton('generate-requirements', 'Generate FR / NFR', 'Generating…', onGenerateRequirements, !analysisDone, false, !analysisDone ? 'Run AI analysis first' : planButtonHint(plansForSelected?.generate ?? null), functionalRequirements.length + nonFunctionalRequirements.length)}
+                {analysisDone && selectedId && (
                   <AiRunPanel
                     sourceId={selectedId}
                     operation="generate"
@@ -767,7 +782,11 @@ export function RequirementWorkspace({
               compact
               icon={<IconCheckCircle width={18} height={18} />}
               title="No clarification questions"
-              description="Questions appear here after Requirements Analysis flags missing or ambiguous information."
+              description={
+                analysis
+                  ? 'The analysis found no material ambiguity, contradiction or missing information that needs a question.'
+                  : 'Questions appear here after Requirements Analysis flags missing or ambiguous information.'
+              }
             />
           )}
 
@@ -1005,6 +1024,62 @@ function AnalysisSummaryPanel({ analysis }: { analysis: AnalyzeRequirementResult
               <ExpandableText text={analysis.notes.join(' ')} />
             </div>
           </div>
+        )}
+        <AnalysisChecks analysis={analysis} />
+      </div>
+    </div>
+  );
+}
+
+const RETRIEVAL_LABELS: Record<string, string> = {
+  used: 'searched for each accepted question',
+  'no-documents': 'not searched: the project has no indexed documents',
+  'stale-only': 'not searched: the project documents need re-indexing',
+  failed: 'search failed; questions were saved without document passages',
+  'not-run': 'not searched: no question was accepted',
+};
+
+// What the server checked before saving questions: the AI's rejected proposals (with reasons), how
+// project documents were searched, and - after a regeneration - how the run relates to saved questions.
+function AnalysisChecks({ analysis }: { analysis: AnalyzeRequirementResult }) {
+  const [open, setOpen] = useState(false);
+  const rejected = analysis.rejectedCandidates ?? [];
+  const retrieval = analysis.retrieval;
+  const reconciliation = analysis.reconciliation;
+  if (rejected.length === 0 && !retrieval && !reconciliation) return null;
+  const bodyId = 'req-analysis-checks-body';
+  return (
+    <div className="req-notes">
+      <button type="button" className="gen-toggle req-notes-toggle" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((v) => !v)}>
+        <IconChevronDown width={14} height={14} className="gen-chevron" />
+        <span className="detail-label">
+          Question validation · {rejected.length} proposed question{rejected.length === 1 ? '' : 's'} not saved
+        </span>
+      </button>
+      <div id={bodyId} hidden={!open}>
+        {retrieval && (
+          <p className="req-notes-text">
+            Project documents: {RETRIEVAL_LABELS[retrieval.projectDocuments] ?? retrieval.projectDocuments}
+            {retrieval.projectDocuments === 'used' && ` (${retrieval.queries} searches, ${retrieval.passagesAttached} passages attached)`}
+            {retrieval.error && ` — ${retrieval.error}`}. Answered-elsewhere checks search the source text itself.
+          </p>
+        )}
+        {reconciliation && (
+          <p className="req-notes-text">
+            Regenerated against {reconciliation.existingQuestions} saved question{reconciliation.existingQuestions === 1 ? '' : 's'}
+            {reconciliation.raisedAgain.length > 0 && `; raised again (not re-added): ${reconciliation.raisedAgain.join(', ')}`}
+            {reconciliation.notRaisedAgain.length > 0 && `; open questions this run did not raise: ${reconciliation.notRaisedAgain.join(', ')} (kept — review them)`}.
+          </p>
+        )}
+        {rejected.length > 0 && (
+          <ul className="req-rejected-list">
+            {rejected.map((r, i) => (
+              <li key={`${i}-${r.question}`}>
+                <span className="req-rejected-question">{r.question}</span>
+                <span className="req-rejected-reasons">{r.reasons.map((x) => x.message).join(' ')}</span>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
     </div>

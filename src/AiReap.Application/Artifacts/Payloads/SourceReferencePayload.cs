@@ -29,4 +29,13 @@ public class SourceReferencePayload
     // (ExcerptIsQuote), otherwise the start of the section.
     public string? Excerpt { get; set; }
     public bool ExcerptIsQuote { get; set; }
+
+    // Evidence only (ClarificationEvidenceLocator). How many places in the source hold the quoted words;
+    // when more than one, which one this is was chosen from the question's other evidence or the sections
+    // it cites - or, with nothing to tell them apart, it is the first and the viewer says so. Null: one.
+    public int? Occurrences { get; set; }
+
+    // Evidence only: how a question saved without verified evidence was linked to this passage when it
+    // was read (ClarificationSourceLinks.Recovery*). Null for evidence verified when the question was made.
+    public string? Recovery { get; set; }
 }

@@ -40,7 +40,8 @@ public class SrsPipelineReplayTests(ITestOutputHelper output)
             NullLogger<RequirementGenerationService>.Instance);
 
     private static RequirementAnalysisService Analysis(InMemoryAiReapDb db, ScriptedAiChatClient ai) =>
-        new(ai, db, new OfflineCurrentUser(), new AllowAllProjectAccess(), new BatchModeOff(), NullLogger<RequirementAnalysisService>.Instance);
+        new(ai, db, new OfflineCurrentUser(), new AllowAllProjectAccess(), new NoDocumentsRetriever(), new BatchModeOff(),
+            NullLogger<RequirementAnalysisService>.Instance);
 
     // A candidate in the RequirementGeneration-v4 response shape the service parses.
     private static string GenerationResponse(CandidateOutput candidate)
@@ -107,6 +108,20 @@ public class SrsPipelineReplayTests(ITestOutputHelper output)
     {
         var (db, source) = Seed();
         var candidate = GoldenFixture.Candidate("analysis-good");
+        // RequirementAnalysis-v3 asks for kind, impact and verbatim evidence; the evidence here is the
+        // fixture's planted anchor quotes. "Room types" has nothing in the source to quote (it addresses no
+        // planted gap or contradiction), so the validator must reject it.
+        var grounding = new Dictionary<string, (string Kind, string[] Evidence)>
+        {
+            ["Deposit"] = ("missing", ["Patients pay a deposit when a room is booked for a private consultation"]),
+            ["Priority patients"] = ("ambiguous", ["Priority patients must be offered the earliest available room"]),
+            ["Retention period"] = ("missing", ["Booking records are retained as required by law"]),
+            ["Cancellation window"] = ("contradiction",
+                ["cancel a booking up to 24 hours before its start time", "Bookings can be cancelled up to 48 hours before the start time"]),
+            ["Deleting bookings"] = ("contradiction",
+                ["Receptionists may delete bookings that were created by mistake", "Only administrators may delete bookings"]),
+            ["Room types"] = ("missing", [])
+        };
         var response = new JsonObject
         {
             ["actors"] = new JsonArray("Receptionist", "Clinician", "Administrator"),
@@ -114,7 +129,12 @@ public class SrsPipelineReplayTests(ITestOutputHelper output)
             ["dataElements"] = new JsonArray("Booking"),
             ["notes"] = new JsonArray(),
             ["missingInformation"] = new JsonArray(candidate.Clarifications
-                .Select(c => (JsonNode)new JsonObject { ["topic"] = c.Topic, ["question"] = c.Question, ["reason"] = c.Reason }).ToArray())
+                .Select(c => (JsonNode)new JsonObject
+                {
+                    ["kind"] = grounding[c.Topic].Kind, ["topic"] = c.Topic, ["question"] = c.Question, ["reason"] = c.Reason,
+                    ["impact"] = "Needed to specify and test the requirement.",
+                    ["evidence"] = new JsonArray(grounding[c.Topic].Evidence.Select(e => (JsonNode)e).ToArray())
+                }).ToArray())
         }.ToJsonString();
         var ai = new ScriptedAiChatClient(response);
 
@@ -122,7 +142,10 @@ public class SrsPipelineReplayTests(ITestOutputHelper output)
 
         Assert.Single(ai.Prompts);
         Assert.Contains(Source, ai.Prompts[0].User);
-        Assert.Equal(6, result.ClarificationQuestions.Count);
+        Assert.Equal(5, result.ClarificationQuestions.Count);
+        var rejected = Assert.Single(result.RejectedCandidates!);
+        Assert.Equal("Room types", rejected.Topic);
+        Assert.Contains(rejected.Reasons, r => r.Code == "no-evidence");
 
         var replayed = SrsQualityScorer.Score("replay", Source, Expected,
             SrsQualityScorer.FromArtifacts(Persisted(db, ArtifactType.ClarificationQuestion)));
@@ -130,7 +153,8 @@ public class SrsPipelineReplayTests(ITestOutputHelper output)
 
         Assert.Equal(new Ratio(3, 3), replayed.Analysis.GapRecall);
         Assert.Equal(new Ratio(2, 2), replayed.Analysis.ContradictionRecallHeuristic);
-        Assert.Equal(SrsQualityScorer.Score("replay", Source, Expected, candidate).Analysis, replayed.Analysis, AnalysisComparer.Instance);
+        var grounded = candidate with { Clarifications = candidate.Clarifications.Where(c => c.Topic != "Room types").ToList() };
+        Assert.Equal(SrsQualityScorer.Score("replay", Source, Expected, grounded).Analysis, replayed.Analysis, AnalysisComparer.Instance);
     }
 
     [Fact]

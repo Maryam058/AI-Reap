@@ -39,8 +39,18 @@ export const requirementSourcesApi = {
     return (await response.json()) as RequirementSource;
   },
 
-  analyze: (sourceId: string, token: string | null) =>
-    apiClient.post<AnalyzeRequirementResult>(`/api/requirement-sources/${sourceId}/analyze`, {}, token),
+  // Returns the stored analysis (no AI call) when the source has one; regenerate analyses it again,
+  // adding only questions that do not duplicate saved ones.
+  analyze: (sourceId: string, token: string | null, regenerate = false) =>
+    apiClient.post<AnalyzeRequirementResult>(
+      `/api/requirement-sources/${sourceId}/analyze${regenerate ? '?regenerate=true' : ''}`,
+      {},
+      token,
+    ),
+
+  // The stored analysis, read without any AI call; undefined (204) when the source was never analysed.
+  getAnalysis: (sourceId: string, token: string | null) =>
+    apiClient.get<AnalyzeRequirementResult | undefined>(`/api/requirement-sources/${sourceId}/analysis`, token),
 
   // Dry run: how each configured AI provider would take this source. Contacts no AI provider.
   aiPlan: (sourceId: string, operation: AiPlanOperation, token: string | null) =>

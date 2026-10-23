@@ -185,6 +185,66 @@ export function sourceFormatNote(fileName: string | null | undefined): string {
   }
 }
 
+// ---- a question's evidence (ClarificationQuestionCard) -----------------------------------------------
+
+// Whether an evidence passage can be opened and highlighted: it was placed in the source by the server.
+export const isLocatedEvidence = (reference: unknown): reference is SourceReference => isUsable(reference);
+
+// How a question's evidence is introduced, by what the question is about - so a question about missing
+// information never reads as if the missing detail were quoted.
+export function evidenceHeading(kind: string | null | undefined, count: number): string {
+  switch (kind) {
+    case 'missing':
+      return 'Context in the source — the information asked for is not written there';
+    case 'ambiguous':
+      return count > 1 ? 'The ambiguous statements' : 'The ambiguous statement';
+    case 'contradiction':
+      return count > 1 ? 'The conflicting statements' : 'The conflicting statement';
+    case 'undefined-rule':
+      return 'Where the rule is referred to';
+    default:
+      return count > 1 ? 'The passages that raised this question' : 'The passage that raised this question';
+  }
+}
+
+// What the viewer calls the highlighted passage, by the same rule.
+export function evidencePurpose(kind: string | null | undefined): string {
+  switch (kind) {
+    case 'missing':
+      return 'Context for the missing information';
+    case 'ambiguous':
+      return 'Ambiguous statement';
+    case 'contradiction':
+      return 'Conflicting statement';
+    case 'undefined-rule':
+      return 'Where the rule is referred to';
+    default:
+      return 'Quoted evidence';
+  }
+}
+
+// Why a recovered passage is linked, for a question saved before its evidence was kept.
+export function recoveryNote(recovery: SourceReference['recovery']): string | null {
+  switch (recovery) {
+    case 'generation-response':
+      return 'Linked from the passage the analysis quoted when it raised this question.';
+    case 'quoted-in-question':
+      return 'Linked from the words this question quotes.';
+    case 'requirement-id':
+      return 'Linked from the requirement this question names.';
+    default:
+      return null;
+  }
+}
+
+// Said when the quoted words are written in more than one place in the source: the server picks the
+// one in a section the question cites or nearest its other evidence, else the first - so the reader
+// is asked to check rather than told it is certain.
+export function occurrenceNote(reference: SourceReference): string | null {
+  const n = reference.occurrences;
+  return typeof n === 'number' && n > 1 ? `These words appear ${n} times in the source — check that the highlighted one is the place meant.` : null;
+}
+
 // The accessible name of a link: what it opens, not only its words.
 export function referenceAriaLabel(reference: SourceReference): string {
   const where = reference.heading ? `"${reference.heading}"` : `"${reference.label}"`;
@@ -239,25 +299,40 @@ export interface ParagraphSpan {
   last: number; // inclusive
 }
 
-// The original's paragraphs that hold text lines [line, endLine). DOCX text is extracted one line per
-// paragraph, so the paragraph at the same position is tried first; if the rendering has more or fewer
-// paragraphs, the same repeat of the line's text is used instead. Following paragraphs are included
-// only while they still match their lines. Null when the line's text is not among the paragraphs.
+// The texts a rendered DOCX paragraph or table row may have for one extracted line, normalized: the
+// line itself, and the line without the automatic number the extractor puts before it ("3.2\tScope" -
+// the viewer draws that number, it is not in the paragraph's text). A note reference "[^1]" / "[^e1]"
+// is drawn as its number. Empty for a blank line.
+export function docxLineKeys(line: string): string[] {
+  const text = line.replace(/\[\^e?(\d+)\]/g, '$1');
+  const keys = [normalize(text)];
+  const unnumbered = text.match(/^[^\t]{1,24}\t(.*)$/s);
+  if (unnumbered) keys.push(normalize(unnumbered[1]));
+  return keys.filter((k, i) => k && keys.indexOf(k) === i);
+}
+
+// The original's paragraphs (or table rows) that hold text lines [line, endLine). DOCX text is
+// extracted one line per paragraph or table row, so the block at the same position is tried first; if
+// the rendering has more or fewer blocks, the same repeat of the line's text is used instead. Following
+// blocks are included only while they still match their lines. Null when the line's text is not among
+// them. Lines are compared as docxLineKeys reads them.
 export function alignParagraphs(
   paragraphTexts: readonly string[],
   lines: readonly string[],
   line: number,
   endLine: number,
 ): ParagraphSpan | null {
-  const want = normalize(lines[line] ?? '');
-  if (!want) return null;
-  const same = (p: number, l: number) => p < paragraphTexts.length && normalize(paragraphTexts[p]) === normalize(lines[l] ?? '');
+  const want = docxLineKeys(lines[line] ?? '');
+  if (!want.length) return null;
+  const matches = (text: string, l: number) => docxLineKeys(lines[l] ?? '').includes(normalize(text));
+  const same = (p: number, l: number) => p < paragraphTexts.length && matches(paragraphTexts[p], l);
+  // Which repeat of the line's text this is, counted as same() compares.
+  const nth = lines.slice(0, line).filter((l) => docxLineKeys(l).some((k) => want.includes(k))).length;
 
-  let first = same(line, line) && occurrenceOf(paragraphTexts, line) === occurrenceOf(lines, line) ? line : -1;
+  let first = same(line, line) && occurrenceOf(paragraphTexts, line) === nth ? line : -1;
   if (first < 0) {
-    const nth = occurrenceOf(lines, line);
     for (let p = 0, seen = 0; p < paragraphTexts.length; p++) {
-      if (normalize(paragraphTexts[p]) === want && seen++ === nth) {
+      if (matches(paragraphTexts[p], line) && seen++ === nth) {
         first = p;
         break;
       }

@@ -196,7 +196,7 @@ public class RequirementSourceService : IRequirementSourceService
 
     // An original for a source that has none: a PDF/DOCX upload made before originals were kept. The
     // source's text is never changed - the file is accepted only when extracting it gives that text
-    // (for a DOCX, as it is extracted now or as it was then), so the viewer's line references into the
+    // (for a DOCX, as it is extracted now or as it was by an earlier extractor), so the viewer's line references into the
     // text find the same places in the file. Membership, S2 and OriginalDocuments:Enabled apply as for
     // an upload; stored and committed together as CreateFromUploadAsync does.
     public async Task<AttachOriginalResult> AttachOriginalAsync(
@@ -223,7 +223,7 @@ public class RequirementSourceService : IRequirementSourceService
 
         var lines = SourceReferenceIndex.Lines(source.RawText);
         bool Same(string? text) => text is not null && SourceReferenceIndex.Lines(text).SequenceEqual(lines);
-        if (!Same(extracted.Text) && !Same(extracted.LegacyText))
+        if (!Same(extracted.Text) && !Same(extracted.LegacyText) && !Same(extracted.ParagraphText))
         {
             return new AttachOriginalResult(AttachOriginalStatus.TextMismatch);
         }

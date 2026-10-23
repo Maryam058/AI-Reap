@@ -18,7 +18,7 @@ public class StubAiChatClient : IAiChatClient
         var response = systemPrompt switch
         {
             _ when systemPrompt.Contains("readinessSummary") => ReviewResponse,
-            _ when systemPrompt.Contains("missingInformation") => AnalysisResponse,
+            _ when systemPrompt.Contains("missingInformation") => AnalysisResponse(userPrompt),
             _ when systemPrompt.Contains("functionalRequirements") => RequirementsResponse,
             _ when systemPrompt.Contains("userStories") => UserStoriesResponse,
             _ when systemPrompt.Contains("acceptanceCriteria") => AcceptanceCriteriaResponse,
@@ -88,18 +88,60 @@ public class StubAiChatClient : IAiChatClient
         }
         """;
 
-    private const string AnalysisResponse = """
+    // Clarification questions must quote the source they are about (ClarificationCandidateValidator), so
+    // the stub grounds its two questions in the text it was sent: the first two statements of at least
+    // four words (or the whole text when it has none), each quoted verbatim and named in its question.
+    private static string AnalysisResponse(string userPrompt)
+    {
+        var text = userPrompt.StartsWith("[AI-REAP note:", StringComparison.Ordinal) && userPrompt.IndexOf("]\n\n", StringComparison.Ordinal) is var end and > 0
+            ? userPrompt[(end + 3)..]
+            : userPrompt;
+        var statements = text.Split('\n')
+            .Select(l => l.Trim())
+            .Where(l => l.Length > 0 && !l.StartsWith('#') && !System.Text.RegularExpressions.Regex.IsMatch(l, @"^\d+(\.\d+)*\.?\s+\S+$"))
+            .SelectMany(l => System.Text.RegularExpressions.Regex.Split(l, @"(?<=[.;!?])\s+"))
+            .Select(s => s.Trim())
+            .Where(s => s.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length >= 4)
+            .Take(2)
+            .ToList();
+        if (statements.Count == 0 && text.Trim().Length > 0) statements.Add(text.Trim());
+        if (statements.Count == 1) statements.Add(statements[0]);
+
+        static string Short(string statement) =>
+            string.Join(' ', statement.TrimEnd('.', ';', '!', '?', ':').Replace("?", string.Empty).Replace("\"", "'")
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(6));
+
+        var questions = statements.Count == 0
+            ? new System.Text.Json.Nodes.JsonArray()
+            : new System.Text.Json.Nodes.JsonArray(
+                new System.Text.Json.Nodes.JsonObject
+                {
+                    ["kind"] = "ambiguous",
+                    ["topic"] = $"Who may: {Short(statements[0])}",
+                    ["question"] = $"Which user roles are allowed to perform \"{Short(statements[0])}\"?",
+                    ["reason"] = "The statement does not say which roles it applies to.",
+                    ["impact"] = "Access rules and the acceptance tests depend on it.",
+                    ["evidence"] = new System.Text.Json.Nodes.JsonArray(statements[0])
+                },
+                new System.Text.Json.Nodes.JsonObject
+                {
+                    ["kind"] = "missing",
+                    ["topic"] = $"Acceptance: {Short(statements[1])}",
+                    ["question"] = $"What measurable acceptance condition confirms \"{Short(statements[1])}\" is met?",
+                    ["reason"] = "No measurable outcome is stated for this statement.",
+                    ["impact"] = "Without it the requirement cannot be verified.",
+                    ["evidence"] = new System.Text.Json.Nodes.JsonArray(statements[1])
+                });
+
+        return new System.Text.Json.Nodes.JsonObject
         {
-          "actors": ["Employee", "Manager"],
-          "capabilities": ["Submit request", "Review request", "Approve or reject request"],
-          "dataElements": ["Request type", "Start date", "End date", "Status"],
-          "notes": ["This is a stub response — configure Ai:Gemini:ApiKey for a real model."],
-          "missingInformation": [
-            {"topic": "Approval hierarchy", "question": "Can approval be delegated, and is multi-level approval required?", "reason": "Not stated in the raw requirement."},
-            {"topic": "Notifications", "question": "Should the submitter be notified when the request is approved or rejected?", "reason": "Not stated in the raw requirement."}
-          ]
-        }
-        """;
+            ["actors"] = new System.Text.Json.Nodes.JsonArray("Employee", "Manager"),
+            ["capabilities"] = new System.Text.Json.Nodes.JsonArray("Submit request", "Review request", "Approve or reject request"),
+            ["dataElements"] = new System.Text.Json.Nodes.JsonArray("Request type", "Start date", "End date", "Status"),
+            ["notes"] = new System.Text.Json.Nodes.JsonArray("This is a stub response — configure Ai:Gemini:ApiKey for a real model."),
+            ["missingInformation"] = questions
+        }.ToJsonString();
+    }
 
     private const string RequirementsResponse = """
         {

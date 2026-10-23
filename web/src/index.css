@@ -1185,6 +1185,91 @@ pre {
   text-transform: none;
 }
 
+/* Kind chip and requirement references next to a clarification question's code. */
+.cq-kind {
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.cq-refs {
+  font-size: 0.75rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* Server-verified quotes the question is grounded in. */
+.cq-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8rem;
+}
+
+.cq-evidence blockquote {
+  margin: 0;
+  padding: 0.25rem 0.6rem;
+  border-left: 3px solid var(--border);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.cq-evidence-block > .detail-label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.8rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* How a passage was linked (recovered, repeated wording, not located). */
+.cq-evidence-note {
+  margin: 0.15rem 0 0 0.6rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+blockquote .cq-evidence-note {
+  margin: 0;
+}
+
+/* A question no passage of the source could be verified for: said, never highlighted. */
+.cq-source-unresolved {
+  margin: 0 0 0.75rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--warning-soft);
+  color: var(--warning-strong);
+  font-size: 0.8rem;
+}
+
+.req-rejected-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.82rem;
+}
+
+.req-rejected-question {
+  display: block;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.req-rejected-reasons {
+  display: block;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 /* A verified link from "Why it matters" into the requirement source (SourceDocumentViewer). */
 .source-link {
   display: inline-flex;
@@ -1322,6 +1407,18 @@ pre {
 .src-line-heading {
   border-left-color: var(--primary);
   font-weight: 700;
+}
+
+/* The question's other passages (the other side of a conflict), marked more lightly. */
+.src-line-related {
+  border-left-color: var(--warning);
+  background: var(--surface);
+}
+
+.src-viewer-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
 }
 
 .src-line mark {

@@ -191,6 +191,130 @@ public sealed partial class SourceReferenceIndex
         return section is null ? null : ForSection(label, start, section);
     }
 
+    // Where a verbatim quote sits in the source, with the section containing it; null when it is not
+    // found as one continuous passage (FindQuote). Label is the quote as written in the source.
+    public SourceReferencePayload? LocateQuote(string? quote)
+    {
+        if (FindQuote(quote) is not { } found)
+        {
+            return null;
+        }
+
+        var containing = Containing(found.Line);
+        return new SourceReferencePayload
+        {
+            Label = found.Text,
+            SourceId = _sourceId,
+            SectionNumber = containing?.Number,
+            Heading = containing?.HeadingLine,
+            Line = found.Line,
+            EndLine = found.EndLine,
+            Anchor = $"L{found.Line}",
+            Excerpt = found.Text,
+            ExcerptIsQuote = true
+        };
+    }
+
+    // The passage at character range [start, end) of the source, as a quote reference: its excerpt is the
+    // source's own text there (surrounding whitespace dropped). Null for an empty or out-of-range span.
+    public SourceReferencePayload? LocateRange(int start, int end)
+    {
+        start = Math.Clamp(start, 0, _text.Length);
+        end = Math.Clamp(end, start, _text.Length);
+        while (start < end && char.IsWhiteSpace(_text[start])) start++;
+        while (end > start && char.IsWhiteSpace(_text[end - 1])) end--;
+        if (start == end)
+        {
+            return null;
+        }
+
+        var line = LineOf(start);
+        var containing = Containing(line);
+        var text = _text[start..end];
+        return new SourceReferencePayload
+        {
+            Label = text,
+            SourceId = _sourceId,
+            SectionNumber = containing?.Number,
+            Heading = containing?.HeadingLine,
+            Line = line,
+            EndLine = LineOf(end - 1) + 1,
+            Anchor = $"L{line}",
+            Excerpt = text,
+            ExcerptIsQuote = true
+        };
+    }
+
+    // The innermost section (table of contents left out) a line is in.
+    public SourceSection? SectionOf(int line) => Containing(line);
+
+    // Every place a phrase is written in the source as whole words (compared as FindQuote compares), as
+    // character ranges [Start, End). For short phrases - a term a question quotes - that the quote
+    // check (SourceEvidenceIndex, four words at least) does not take.
+    public IReadOnlyList<(int Start, int End)> PhraseOccurrences(string? phrase)
+    {
+        var (needle, _) = Normalize(phrase?.Trim() ?? string.Empty);
+        needle = needle.Trim();
+        var found = new List<(int Start, int End)>();
+        if (needle.Length == 0)
+        {
+            return found;
+        }
+
+        bool WordChar(int at) => at >= 0 && at < _normalized.Length && char.IsLetterOrDigit(_normalized[at]);
+        for (var at = _normalized.IndexOf(needle, StringComparison.Ordinal); at >= 0;
+             at = _normalized.IndexOf(needle, at + 1, StringComparison.Ordinal))
+        {
+            if (!WordChar(at - 1) && !WordChar(at + needle.Length))
+            {
+                found.Add((_normalizedMap[at], _normalizedMap[at + needle.Length - 1] + 1));
+            }
+        }
+
+        return found;
+    }
+
+    // The sentence of its line that holds character range [start, end): from the previous sentence end
+    // (". ", "; ", "! ", "? ") or the line start, to the next one or the line end.
+    public (int Start, int End) SentenceAround(int start, int end)
+    {
+        var line = LineOf(start);
+        var lineStart = _lineStarts[line];
+        var lineEnd = lineStart + _lines[line].Length;
+        var from = start;
+        while (from > lineStart && !(char.IsWhiteSpace(_text[from - 1]) && from - 2 >= lineStart && ".;!?".Contains(_text[from - 2])))
+        {
+            from--;
+        }
+
+        var to = Math.Min(Math.Max(end, start), lineEnd);
+        while (to < lineEnd && !(".;!?".Contains(_text[to]) && (to + 1 == lineEnd || char.IsWhiteSpace(_text[to + 1]))))
+        {
+            to++;
+        }
+
+        return (from, Math.Min(to < lineEnd ? to + 1 : to, lineEnd));
+    }
+
+    // Whether a stored reference still holds in this source: a quote's excerpt is within its lines, a
+    // section's heading is on its line. A reference to another source, or with no usable lines, does not.
+    public bool Holds(SourceReferencePayload reference)
+    {
+        if (reference.SourceId != _sourceId || reference.Line < 0 || reference.EndLine <= reference.Line || reference.EndLine > _lines.Length)
+        {
+            return false;
+        }
+
+        if (reference.ExcerptIsQuote)
+        {
+            var (excerpt, _) = Normalize(reference.Excerpt ?? string.Empty);
+            var (lines, _) = Normalize(string.Join("\n", _lines[reference.Line..reference.EndLine]));
+            return excerpt.Trim().Length > 0 && lines.Contains(excerpt.Trim(), StringComparison.Ordinal);
+        }
+
+        return reference.Heading is { Length: > 0 } heading && _lines[reference.Line].Trim() == heading.Trim();
+    }
+
     private SourceReferencePayload ForSection(string label, int start, SourceSection section) => new()
     {
         Label = label,

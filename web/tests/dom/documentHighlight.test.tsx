@@ -2,6 +2,7 @@
 // cited text is marked by moving existing text into <mark>, never by writing HTML.
 import { describe, expect, test, vi } from 'vitest';
 import { markOccurrence, sanitizeRenderedDocument } from '../../src/lib/documentHighlight';
+import { docxBlocks } from '../../src/lib/documentRenderers';
 
 // docx-preview stand-in that renders what a malicious DOCX could make it produce.
 vi.mock('docx-preview', () => ({
@@ -31,7 +32,7 @@ describe('sanitizeRenderedDocument', () => {
     document.body.appendChild(frame);
     const doc = frame.contentDocument!;
 
-    const paragraphs = await renderDocx(new ArrayBuffer(8), doc.body, doc.head);
+    const { blocks, paragraphs } = await renderDocx(new ArrayBuffer(8), doc.body, doc.head);
 
     const html = doc.documentElement.innerHTML;
     expect(doc.querySelector('script, iframe')).toBeNull();
@@ -41,7 +42,9 @@ describe('sanitizeRenderedDocument', () => {
     expect(doc.querySelectorAll('style')).toHaveLength(1);
     expect((window as unknown as { __pwned?: boolean }).__pwned).toBeUndefined();
     // Body paragraphs only, in order: not the header, footer or notes the extracted text lacks.
-    expect(paragraphs.map((p) => p.textContent?.trim())).toEqual(['3.2 User Roles', 'Administrators manage access.', '', 'external jump']);
+    expect(paragraphs.map((p) => p.element.textContent?.trim())).toEqual(['3.2 User Roles', 'Administrators manage access.', '', 'external jump']);
+    // With no table, the blocks are those same paragraphs.
+    expect(blocks.map((b) => b.element)).toEqual(paragraphs.map((p) => p.element));
     frame.remove();
   });
 
@@ -79,5 +82,23 @@ describe('markOccurrence', () => {
     const [mark] = markOccurrence(p, '<img src=x onerror=alert(1)>');
     expect(mark.textContent).toBe('<img src=x onerror=alert(1)>');
     expect(p.querySelector('img')).toBeNull();
+  });
+});
+
+describe('docxBlocks', () => {
+  test('reads each table row as one block of cells, line breaks as spaces, and keeps every paragraph for older sources', () => {
+    const body = document.createElement('div');
+    body.innerHTML = `
+      <section><article>
+        <p>Appendix B</p>
+        <table><tr><td><p>Leave type</p></td><td><p>Approver</p></td></tr>
+          <tr><td><p>Annual</p><p>leave</p></td><td><p>Line<br>manager</p><table><tr><td><p>nested</p></td></tr></table></td></tr></table>
+        <p>After</p>
+        <ol><li><p>Footnote</p></li></ol>
+      </article></section>`;
+    const { blocks, paragraphs } = docxBlocks(body);
+    expect(blocks.map((b) => b.text)).toEqual(['Appendix B', 'Leave type | Approver', 'Annual leave | Line manager nested', 'After']);
+    expect(blocks[2].element.tagName).toBe('TR');
+    expect(paragraphs.map((p) => p.text)).toEqual(['Appendix B', 'Leave type', 'Approver', 'Annual', 'leave', 'Line manager', 'nested', 'After']);
   });
 });

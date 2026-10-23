@@ -335,6 +335,7 @@ public sealed partial class SourceEvidenceIndex
     private readonly string _joined;
     private readonly int[] _joinedStarts;
     private readonly Dictionary<string, List<(int Start, int End)>> _passagesById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<(int Start, int End)>> _definitionsById = new(StringComparer.OrdinalIgnoreCase);
 
     private SourceEvidenceIndex(string text)
     {
@@ -410,6 +411,31 @@ public sealed partial class SourceEvidenceIndex
 
         return new QuoteCheck(quote, sourceId, EvidenceStatus.Verified, null, mode, matches.Count);
     }
+
+    // Where a quote that Check verifies is written: the character range [Start, End) in the source text
+    // of each match, in source order, found the way Check found it (strictly, else SpacingTolerant). An
+    // ellipsis quote's range runs from its first fragment to its last. Empty unless the quote is Verified.
+    public IReadOnlyList<(int Start, int End)> Locate(string? quote)
+    {
+        if (Check(quote).Status != EvidenceStatus.Verified)
+        {
+            return [];
+        }
+
+        var fragments = SourceEvidence.Fragments(quote!);
+        var (matches, _) = Find(fragments, tolerant: false);
+        if (matches.Count == 0)
+        {
+            (matches, _) = Find(fragments, tolerant: true);
+        }
+
+        return matches.Select(m => (_tokens[m.Start].Start, _tokens[m.End - 1].End)).ToList();
+    }
+
+    // The character ranges of the passages that define a requirement ID (see IndexPassages); empty for
+    // an ID the source only mentions, or does not hold.
+    public IReadOnlyList<(int Start, int End)> DefinitionsOf(string id) =>
+        _definitionsById.TryGetValue(id.Trim(), out var passages) ? passages : [];
 
     public EvidenceAssessment Assess(IEnumerable<(string? Quote, string? SourceId)>? evidence)
     {
@@ -710,6 +736,10 @@ public sealed partial class SourceEvidenceIndex
                 ? definingLines
                 : Enumerable.Range(0, lines.Count).Where(i => mentions[i].Contains(id, StringComparer.OrdinalIgnoreCase)).ToList();
             _passagesById[id] = passageLines.Select(i => (lines[i].Start, PassageEnd(i))).ToList();
+            if (definingLines.Count > 0)
+            {
+                _definitionsById[id] = _passagesById[id];
+            }
         }
     }
 

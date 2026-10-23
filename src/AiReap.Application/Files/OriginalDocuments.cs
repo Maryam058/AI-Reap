@@ -107,7 +107,10 @@ public class InvalidDocumentException(string message) : Exception(message);
 // Format is null for TXT (its text is the file). PageLineStarts: PDF only, see RequirementSourceFile.
 // LegacyText: DOCX only, the text as uploads were extracted before field instructions were dropped
 // ("Actors and RolesPAGEREF _Toc123 \h 9"), so an original can be matched to a source stored then.
-public record ExtractedDocument(string Text, string? Format, IReadOnlyList<int>? PageLineStarts, string? LegacyText = null);
+// ParagraphText: DOCX only, the text as uploads were extracted after that and before table rows,
+// numbering, notes, headers and footers were kept (one line per paragraph), for the same purpose.
+public record ExtractedDocument(
+    string Text, string? Format, IReadOnlyList<int>? PageLineStarts, string? LegacyText = null, string? ParagraphText = null);
 
 // An original to keep with a new source.
 public record OriginalDocumentUpload(ReadOnlyMemory<byte> Content, string Format, IReadOnlyList<int>? PageLineStarts);

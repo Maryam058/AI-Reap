@@ -237,14 +237,31 @@ public class RequirementSourcesController : ControllerBase
         return coverage is null ? NotFound() : Ok(coverage);
     }
 
-    // §7/§8 — analyze the raw source and generate clarification questions for anything missing.
+    // §7/§8 — analyze the raw source and raise clarification questions for material unresolved issues.
+    // Returns the stored analysis (no AI call) when the source has one; ?regenerate=true analyses again,
+    // adding only questions that are not already saved.
     [HttpPost("api/requirement-sources/{id:guid}/analyze")]
     [Authorize(Roles = WriterRoles)]
-    public async Task<ActionResult<AnalyzeRequirementResult>> Analyze(Guid id, CancellationToken cancellationToken)
+    public async Task<ActionResult<AnalyzeRequirementResult>> Analyze(Guid id, [FromQuery] bool regenerate, CancellationToken cancellationToken)
     {
         try
         {
-            return Ok(await _analysisService.AnalyzeAsync(id, cancellationToken));
+            return Ok(await _analysisService.AnalyzeAsync(id, regenerate, cancellationToken));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+    }
+
+    // The stored analysis of a source, read without any AI call; 204 when it has never been analysed.
+    [HttpGet("api/requirement-sources/{id:guid}/analysis")]
+    [Authorize(Roles = ReviewerRoles)]
+    public async Task<ActionResult<AnalyzeRequirementResult>> GetAnalysis(Guid id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _analysisService.GetLatestAsync(id, cancellationToken) is { } stored ? Ok(stored) : NoContent();
         }
         catch (KeyNotFoundException)
         {
