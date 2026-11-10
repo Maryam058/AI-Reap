@@ -12,6 +12,7 @@ export function CollectionSection({
   title,
   count,
   summary,
+  description,
   actions,
   bulkControls = false,
   reveal,
@@ -21,6 +22,8 @@ export function CollectionSection({
   title: string;
   count: number;
   summary?: string;
+  /** A plain-language line saying what these items are, for readers new to the terms. */
+  description?: string;
   actions?: ReactNode;
   /** Show "Expand all" / "Collapse all" for the groups and cards inside. */
   bulkControls?: boolean;
@@ -58,6 +61,7 @@ export function CollectionSection({
           </div>
         )}
       </div>
+      {description && <p className="gen-desc">{description}</p>}
       <div id={bodyId} className="gen-section-body" hidden={!open}>
         <BulkDisclosureContext.Provider value={bulk}>{children}</BulkDisclosureContext.Provider>
       </div>

@@ -39,10 +39,24 @@ public class DocumentsController : ControllerBase
             return BadRequest("Only .txt, .pdf, and .docx uploads are supported.");
         }
 
-        string text;
-        using (var stream = file.OpenReadStream())
+        // The same checked extraction as a requirement-source upload: the content must match its
+        // extension, a DOCX's expanded size and entry count are checked before anything is inflated (a
+        // small ZIP can expand to gigabytes), macro-enabled documents are refused, and a damaged file is
+        // a 400 with a plain explanation rather than an unhandled parser exception.
+        var content = new byte[file.Length];
+        await using (var stream = file.OpenReadStream())
         {
-            text = await _textExtractor.ExtractAsync(stream, file.FileName, cancellationToken);
+            await stream.ReadExactlyAsync(content, cancellationToken);
+        }
+
+        string text;
+        try
+        {
+            text = (await _textExtractor.ExtractDocumentAsync(content, file.FileName, cancellationToken)).Text;
+        }
+        catch (InvalidDocumentException ex)
+        {
+            return BadRequest(ex.Message);
         }
 
         if (string.IsNullOrWhiteSpace(text))

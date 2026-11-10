@@ -1,4 +1,4 @@
-// Opening a CQ's source link (ClarificationQuestionCard -> SourceDocumentViewer): the modal opens over
+// Opening a source passage (ClarificationQuestionCard -> SourceDocumentViewer): the modal opens over
 // the same route, fetches through the (mocked) authorized API, shows the original PDF at the cited page
 // or the original DOCX at the cited paragraphs with the heading or quote marked, falls back to the
 // extracted text with a reason, and on close returns focus to the link without moving the page.
@@ -67,7 +67,10 @@ vi.mock('../../src/lib/documentRenderers', () => ({
   },
 }));
 
+import { useState } from 'react';
 import { ClarificationQuestionCard } from '../../src/components/ClarificationQuestionCard';
+import { SourceDocumentViewer } from '../../src/components/SourceDocumentViewer';
+import { referenceAriaLabel } from '../../src/lib/sourceReferences';
 
 const ref = (over: Partial<SourceReference> = {}): SourceReference => ({
   label: 'Section 12.7',
@@ -95,17 +98,26 @@ function source(format: 'pdf' | 'docx' | null): RequirementSource {
   } as RequirementSource;
 }
 
-function card(reason: string, references: SourceReference[]) {
-  const artifact = {
-    id: 'a1',
-    code: 'CQ-004',
-    data: { question: 'Which decline categories apply?', reason, clarificationStatus: 'Open', sourceReferences: references },
-  } as unknown as ArtifactSummary;
+// The viewer opened on a section reference from a link (the card itself links only verified passages,
+// tested below): what is tested here is the viewer's navigation, highlighting and fallbacks.
+function SectionLinks({ references }: { references: SourceReference[] }) {
+  const [opened, setOpened] = useState<SourceReference | null>(null);
+  return (
+    <>
+      {references.map((r, i) => (
+        <button key={i} type="button" aria-label={referenceAriaLabel(r)} onClick={() => setOpened(r)}>
+          {r.label}
+        </button>
+      ))}
+      {opened && <SourceDocumentViewer reference={opened} onClose={() => setOpened(null)} />}
+    </>
+  );
+}
+
+function card(_reason: string, references: SourceReference[]) {
   return render(
     <div>
-      <ul>
-        <ClarificationQuestionCard artifact={artifact} canAnswer={false} onAnswer={async () => {}} />
-      </ul>
+      <SectionLinks references={references} />
     </div>,
   );
 }
@@ -239,7 +251,7 @@ describe('opening a source link', () => {
     expect(document.activeElement).toBe(link);
     expect(window.scrollY).toBe(640);
     expect(window.scrollTo).not.toHaveBeenCalled();
-    expect(screen.getByText('Which decline categories apply?')).toBeTruthy(); // the same CQ, still open
+    expect(link.isConnected).toBe(true); // the page underneath was kept, not re-rendered
   });
 });
 
@@ -361,12 +373,33 @@ const invoices = quoteAt(3, '1 Billing', '1');
 const passwords = quoteAt(8, '2 Security', '2');
 
 describe('a question linked to the passage that raised it', () => {
-  test('an ambiguous statement: "Why it matters" links to it, and the original PDF highlights exactly it', async () => {
+  test('the card shows the question and one source link named by its section - no "Why it matters", reason or impact', () => {
+    cardWith({
+      kind: 'ambiguous',
+      reason: 'The popup is not described.',
+      impact: 'Decides what the popup offers.',
+      requirementRefs: ['12.7 Decline Categories'],
+      sourceEvidence: [decline],
+      sourceLinkStatus: 'passage',
+    });
+
+    const card = document.querySelector('.cq-card')!;
+    expect(card.querySelector('.cq-question')!.textContent).toBe('Which decline categories apply?');
+    expect(card.textContent).not.toMatch(/Why it matters/i);
+    expect(card.textContent).not.toContain('The popup is not described.');
+    expect(card.textContent).not.toContain('Decides what the popup offers.');
+    expect(card.textContent).not.toMatch(/could be verified|Browse the source|line \d/);
+    const links = screen.getAllByRole('button', { name: /highlighted passage/ });
+    expect(links).toHaveLength(1);
+    expect(links[0].textContent).toBe('12.7 Decline Categories');
+    expect(links[0].getAttribute('aria-label')).toBe('Open “12.7 Decline Categories” in the requirement source at the highlighted passage');
+  });
+
+  test('an ambiguous statement: the source link opens the original PDF and highlights exactly it', async () => {
     api.getById.mockResolvedValue(source('pdf'));
     cardWith({ kind: 'ambiguous', reason: 'The popup is not described.', impact: 'Decides what the popup offers.', sourceEvidence: [decline], sourceLinkStatus: 'passage' });
 
-    expect(screen.getByText('The ambiguous statement')).toBeTruthy();
-    openLink(/^Source passage: open the requirement source at §12\.7/);
+    openLink(/^Open “12\.7 Decline Categories” in the requirement source/);
 
     const dialog = await screen.findByRole('dialog', { name: 'Triage SRS.pdf' });
     await screen.findByText(/Page 3: the cited passage is highlighted/);
@@ -377,9 +410,9 @@ describe('a question linked to the passage that raised it', () => {
 
   test('in the original DOCX only the quoted paragraph is cited, with its section heading marked apart', async () => {
     api.getById.mockResolvedValue(source('docx'));
-    cardWith({ kind: 'ambiguous', reason: 'r', impact: 'i', sourceEvidence: [decline] });
+    cardWith({ kind: 'ambiguous', sourceEvidence: [decline] });
 
-    openLink(/^The eight decline categories.*: open/);
+    openLink(/^Open “12\.7 Decline Categories”/);
 
     await screen.findByText(/the cited passage is highlighted/);
     const doc = (document.querySelector('iframe.src-docx') as HTMLIFrameElement).contentDocument!;
@@ -390,72 +423,87 @@ describe('a question linked to the passage that raised it', () => {
     expect(doc.querySelector('mark.src-hit')!.textContent).toBe(LINES[10]);
   });
 
-  test('a conflict: both statements can be opened from one viewer, and the other is marked in the text', async () => {
+  test('a conflict: each statement has its own link, and both can be stepped through and highlighted in one viewer', async () => {
     api.getById.mockResolvedValue(source(null));
-    cardWith({ kind: 'contradiction', reason: 'r', impact: 'i', sourceEvidence: [invoices, passwords] });
+    cardWith({ kind: 'contradiction', sourceEvidence: [invoices, passwords] });
 
-    expect(screen.getByText('The conflicting statements')).toBeTruthy();
-    openLink(/^Invoices are sent monthly\.: open/);
+    const links = screen.getAllByRole('button', { name: /highlighted passage/ });
+    expect(links.map((l) => l.querySelector('.cq-source-label')!.textContent)).toEqual(['1 Billing', '2 Security']);
+    expect(links.map((l) => l.querySelector('.cq-source-statement')!.textContent)).toEqual(['Statement 1', 'Statement 2']);
+    openLink(/^Statement 1: Open “1 Billing”/);
 
     await screen.findByRole('group', { name: 'Passages of this question' });
     await waitFor(() => expect(document.querySelector('.src-line-cited')?.getAttribute('data-line')).toBe('3'));
     expect(document.querySelector('.src-line-related')!.getAttribute('data-line')).toBe('8');
     expect(document.querySelector('.src-viewer-evidence')!.textContent).toContain('Conflicting statement');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Passage 2 of 2 (§2)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Passage 2 of 2 (2 Security)' }));
 
     expect(document.querySelector('.src-line-cited')!.getAttribute('data-line')).toBe('8');
     expect(document.querySelector('.src-line-related')!.getAttribute('data-line')).toBe('3');
     expect(document.querySelector('.src-line-cited mark')!.textContent).toBe('Passwords are stored hashed.');
   });
 
-  test('missing information is shown as the context of what is missing, never as the missing detail', async () => {
+  test('missing information: the link opens the requirement that lacks the detail, as its context', async () => {
     api.getById.mockResolvedValue(source(null));
     cardWith({ kind: 'missing', reason: 'Who may decline is not stated.', impact: 'i', sourceEvidence: [decline] });
 
-    expect(screen.getByText(/Context in the source — the information asked for is not written there/)).toBeTruthy();
-    openLink(/^Source passage: open/);
+    openLink(/^Open “12\.7 Decline Categories”/);
 
     const label = await screen.findByText('Context for the missing information');
     expect(label.closest('.src-viewer-evidence')!.textContent).toContain(LINES[10]);
     expect(document.querySelector('.src-line-cited')!.getAttribute('data-line')).toBe('10');
   });
 
-  test('an older question whose "Why it matters" names no place links to its recovered passage, and says how it was found', async () => {
-    api.getById.mockResolvedValue(source(null));
-    cardWith({
-      reason: 'Reviewers cannot tell which categories apply.',
-      sourceEvidence: [{ ...decline, recovery: 'generation-response' }],
-      sourceLinkStatus: 'passage',
-    });
+  test('a passage outside any section is linked without inventing a heading', () => {
+    cardWith({ kind: 'ambiguous', sourceEvidence: [quoteAt(0, '', null, { heading: null })] });
 
-    const why = screen.getByText('Why it matters:').closest('.cq-reason')!;
-    expect(why.textContent).toContain('Source passage');
-    expect(screen.getByText(/Linked from the passage the analysis quoted/)).toBeTruthy();
-
-    openLink(/^Source passage: open/);
-    await screen.findByRole('dialog');
-    await waitFor(() => expect(document.querySelector('.src-line-cited')?.getAttribute('data-line')).toBe('10'));
+    const link = screen.getByRole('button', { name: /highlighted passage/ });
+    expect(link.textContent).toBe('Source passage');
+    expect(link.getAttribute('aria-label')).toBe('Open the requirement source at the highlighted passage');
   });
 
-  test('repeated wording asks the reader to check the place, and unplaced evidence has no link', () => {
-    cardWith({ kind: 'ambiguous', reason: 'r', impact: 'i', sourceEvidence: [{ ...decline, occurrences: 2 }, quoteAt(3, '1 Billing', '1', { line: -1, endLine: -1 })] });
+  test('evidence the server could not place, or a caller who gets no passages (S2), has no link and no warning', () => {
+    cardWith({ kind: 'ambiguous', sourceEvidence: [quoteAt(3, '1 Billing', '1', { line: -1, endLine: -1 })] });
+    expect(screen.queryByRole('button', { name: /highlighted passage/ })).toBeNull();
+    cleanup();
 
-    expect(screen.getByText(/These words appear 2 times in the source/)).toBeTruthy();
-    expect(screen.getByText(/not located in the current source text/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /^Invoices are sent monthly\.: open/ })).toBeNull();
+    cardWith({ kind: 'ambiguous' });
+    expect(screen.queryByRole('button', { name: /highlighted passage/ })).toBeNull();
+    expect(document.querySelector('.cq-card')!.textContent).not.toMatch(/verified|Browse/);
   });
 
-  test('an unresolved question says so, and browsing opens the whole source with nothing highlighted', async () => {
+  test('answering still works from the card', async () => {
+    const onAnswer = vi.fn(async () => {});
+    const artifact = {
+      id: 'a3',
+      code: 'CQ-009',
+      requirementSourceId: SOURCE_ID,
+      data: { question: 'Who may decline?', clarificationStatus: 'Open', kind: 'missing', sourceEvidence: [decline] },
+    } as unknown as ArtifactSummary;
+    render(
+      <ul>
+        <ClarificationQuestionCard artifact={artifact} canAnswer onAnswer={onAnswer} />
+      </ul>,
+    );
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Answer for CQ-009' }), { target: { value: 'Senior nurses' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit answer' }));
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith('a3', 'Senior nurses', false));
+    fireEvent.click(screen.getByRole('button', { name: 'Not applicable' }));
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith('a3', 'Senior nurses', true));
+  });
+
+  test('opening a source link only reads the source - no analysis or AI endpoint is called', async () => {
     api.getById.mockResolvedValue(source('pdf'));
-    cardWith({ reason: 'Nothing in the source covers this.', sourceLinkStatus: 'unresolved' });
+    cardWith({ kind: 'ambiguous', sourceEvidence: [decline] });
 
-    expect(screen.getByRole('note').textContent).toContain('could be verified as the reason for this question');
-    openLink(/^Browse the source$/);
-
-    await screen.findByText(/nothing is highlighted\. The whole source is shown/);
-    await waitFor(() => expect(renderers.pdfRendered).toEqual([1]));
-    expect(document.querySelector('mark, .src-line-cited')).toBeNull();
-    expect(screen.queryByText(/could not be located in this source/)).toBeNull();
+    openLink(/^Open “12\.7 Decline Categories”/);
+    await screen.findByRole('dialog');
+    await waitFor(() => expect(api.getOriginal).toHaveBeenCalledTimes(1));
+    expect(api.getById).toHaveBeenCalledTimes(1);
+    // The mocked API holds only the read endpoints: an analysis or regeneration call would have failed.
+    expect(Object.keys(api).sort()).toEqual(['attachOriginal', 'getById', 'getOriginal']);
+    expect(api.attachOriginal).not.toHaveBeenCalled();
   });
 });

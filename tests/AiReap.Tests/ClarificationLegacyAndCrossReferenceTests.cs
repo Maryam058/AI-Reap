@@ -126,7 +126,9 @@ public class ClarificationLegacyAndCrossReferenceTests(ITestOutputHelper output)
     }
 
     // Through the real analysis service: a pre-v3 question in the database is compared against and left
-    // exactly as it was.
+    // exactly as it was. It is shown because the passage its reason quotes verifies (ClarificationVisibility);
+    // an open legacy question that is not shown does not block a grounded rewording
+    // (ClarificationGroundingTests).
     [Fact]
     public async Task Regeneration_does_not_save_a_reworded_copy_of_a_legacy_question_and_leaves_it_unchanged()
     {
@@ -139,7 +141,7 @@ public class ClarificationLegacyAndCrossReferenceTests(ITestOutputHelper output)
         };
         var legacyJson = JsonSerializer.Serialize(new ClarificationQuestionPayload
         {
-            Question = "Who authorises leave requests?", Reason = "The approver is not named.", ClarificationStatus = "Open"
+            Question = "Who authorises leave requests?", Reason = $"\"{RoutedForApproval}\" does not name the approver.", ClarificationStatus = "Open"
         });
         var legacy = new Artifact
         {

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AiReap.Application.Ai.Pipeline;
 using AiReap.Application.Artifacts.Payloads;
 using AiReap.Application.Common;
 using AiReap.Application.Persistence;
@@ -41,7 +42,8 @@ public class ArtifactService : IArtifactService
             query = query.Where(a => a.RequirementSourceId == requirementSourceId);
         }
 
-        var artifacts = await query.OrderBy(a => a.Code).ToListAsync(cancellationToken);
+        // A clarification question without verified source evidence is never listed (ClarificationVisibility).
+        var artifacts = await ClarificationVisibility.FilterAsync(_db, await query.OrderBy(a => a.Code).ToListAsync(cancellationToken), cancellationToken);
 
         var openNotices = await _db.ArtifactImpactNotices
             .Where(n => n.ProjectId == projectId && n.AcknowledgedAt == null)
@@ -63,7 +65,8 @@ public class ArtifactService : IArtifactService
         }
 
         await _projectAccess.EnsureMemberAsync(artifact.ProjectId, cancellationToken);
-        if (!_currentUser.CanSee(artifact))
+        if (!_currentUser.CanSee(artifact)
+            || artifact.ArtifactType == ArtifactType.ClarificationQuestion && (await ClarificationVisibility.FilterAsync(_db, [artifact], cancellationToken)).Count == 0)
         {
             return null;
         }

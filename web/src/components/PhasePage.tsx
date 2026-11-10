@@ -2,30 +2,19 @@ import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useProject } from '../context/ProjectContext';
 import { stageLabel, stageState } from '../lib/lifecycle';
-import { nextWorkArea, phasePath, previousWorkArea, workArea } from '../lib/workAreas';
-import { PageHeader } from './ui/PageHeader';
-import { LifecycleStepper } from './LifecycleStepper';
-import { IconArrowLeft, IconArrowRight, IconSparkles } from './icons';
+import { phasePath, workArea } from '../lib/workAreas';
+import type { StageKey } from '../lib/stages';
+import { StageHeader, StageNextStep } from './stage/StageHeader';
+import { IconSparkles } from './icons';
 
 /**
- * Shared frame for every work area (gathering, analysis, validation, design, development, testing,
- * traceability): title, purpose, the lifecycle stage(s) the area's work serves, the project's
- * actual lifecycle position, the content, and previous/next work-area navigation. Work areas are
- * navigation; the lifecycle stage is Project.status and only moves on the project overview.
+ * Shared frame for every work-area stage (gathering, analysis, validation, design, development,
+ * testing, traceability): the stage header (number, purpose, derived status), a plain-language
+ * "What happens in this stage?" panel, how the page relates to the project's lifecycle status, the
+ * content, and the next step. Stages are navigation; the lifecycle status is Project.status and
+ * only moves on the project overview.
  */
-export function PhasePage({
-  phaseKey,
-  title,
-  description,
-  actions,
-  children,
-}: {
-  phaseKey: string;
-  title: string;
-  description: string;
-  actions?: ReactNode;
-  children: ReactNode;
-}) {
+export function PhasePage({ phaseKey, actions, children }: { phaseKey: StageKey; actions?: ReactNode; children: ReactNode }) {
   const { project } = useProject();
   const area = workArea(phaseKey);
   const serves = area?.serves ?? [];
@@ -39,17 +28,15 @@ export function PhasePage({
       : relation === 'completed'
         ? `This page supports ${servesText}, already passed`
         : `This page supports ${servesText}, a later stage`;
-  const prev = previousWorkArea(phaseKey);
-  const next = nextWorkArea(phaseKey);
 
   return (
     <>
-      <PageHeader
-        title={title}
-        subtitle={description}
+      <StageHeader
+        stageKey={phaseKey}
+        project={project}
         badge={
           serves.length > 0 && (
-            <span className={`phase-badge ${relation}`} title={`This page's work serves the ${servesText} stage${serves.length > 1 ? 's' : ''}`}>
+            <span className={`phase-badge ${relation}`} title={`This page's work serves the ${servesText} lifecycle status${serves.length > 1 ? 'es' : ''}`}>
               Project is in <strong>{stageLabel(project.status)}</strong> · {relationText}
             </span>
           )
@@ -64,34 +51,9 @@ export function PhasePage({
         }
       />
 
-      <div className="phase-strip">
-        <LifecycleStepper status={project.status} compact highlight={serves} to={`/projects/${project.id}#lifecycle`} />
-      </div>
-
       <div className="phase-body">{children}</div>
 
-      <nav className="phase-nav" aria-label="Work area navigation">
-        {prev ? (
-          <Link to={phasePath(project.id, prev.segment)} className="phase-nav-link prev">
-            <IconArrowLeft width={16} height={16} />
-            <span>
-              <small>Previous work area</small>
-              {prev.navLabel}
-            </span>
-          </Link>
-        ) : (
-          <span />
-        )}
-        {next && (
-          <Link to={phasePath(project.id, next.segment)} className="phase-nav-link next">
-            <span>
-              <small>Next work area</small>
-              {next.navLabel}
-            </span>
-            <IconArrowRight width={16} height={16} />
-          </Link>
-        )}
-      </nav>
+      <StageNextStep stageKey={phaseKey} project={project} />
     </>
   );
 }

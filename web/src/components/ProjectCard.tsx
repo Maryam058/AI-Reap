@@ -1,13 +1,15 @@
 import { Link } from 'react-router-dom';
 import type { Project, ProjectLifecycleState } from '../api/types';
-import { isGatedStage, lifecycleProgress, LIFECYCLE_STAGES, stageLabel } from '../lib/lifecycle';
+import { isGatedStage, lifecycleProgress, stageLabel } from '../lib/lifecycle';
+import { activeStagesLabel, currentStage, STAGE_COUNT } from '../lib/stages';
 import { formatRelativeTime, statusLabel, statusVariant } from '../lib/format';
 import { ProgressBar } from './ui/ProgressBar';
-import { LifecycleDots } from './LifecycleStepper';
+import { StageDots } from './stage/StageNavigator';
+import { StageIcon } from './stage/StageIcon';
 import { ProjectActionsMenu } from './ProjectActionsMenu';
 import { IconAlert, IconArrowRight, IconLock } from './icons';
 
-/** A project in the list: its lifecycle stage (Project.status), progress across the 8 stages, and any pending request. */
+/** A project in the list: its lifecycle status (Project.status), where its work is among the nine stages, progress, and any pending request. */
 export function ProjectCard({
   project,
   lifecycle,
@@ -22,6 +24,7 @@ export function ProjectCard({
   const progress = lifecycleProgress(project.status);
   const pending = lifecycle?.pendingTransition ?? null;
   const gaps = lifecycle?.evidenceGaps.length ?? 0;
+  const focus = currentStage(project.status);
 
   return (
     <article className="project-card">
@@ -60,15 +63,26 @@ export function ProjectCard({
         </span>
       </div>
 
+      <div className="project-card-work">
+        <span className="project-card-work-icon" aria-hidden="true">
+          <StageIcon stage={focus.key} width={15} height={15} />
+        </span>
+        <span>
+          {progress.finished ? 'Ready for' : 'Work now in'} <strong>{progress.finished ? focus.name : activeStagesLabel(project.status)}</strong>
+          <small>
+            {' '}
+            · stage {focus.number} of {STAGE_COUNT}
+          </small>
+        </span>
+      </div>
+
       <div className="project-card-progress">
         <div className="progress-meta">
-          <span>
-            Stage {progress.stageNumber} of {LIFECYCLE_STAGES.length}
-          </span>
+          <span>Overall progress</span>
           <strong>{progress.percent}%</strong>
         </div>
         <ProgressBar percent={progress.percent} />
-        <LifecycleDots status={project.status} pending={!!pending} />
+        <StageDots status={project.status} signals={lifecycle} />
         {gaps > 0 && (
           <span className="lc-gap-note">
             <IconAlert width={12} height={12} /> Evidence gap in {gaps} earlier {gaps === 1 ? 'stage' : 'stages'}

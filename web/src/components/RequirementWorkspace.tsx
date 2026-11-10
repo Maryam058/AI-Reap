@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { glossary } from '../lib/glossary';
 import { Link, useSearchParams } from 'react-router-dom';
 import { phasePath } from '../lib/workAreas';
 import { sectionForArtifactType } from '../lib/checkGuidance';
@@ -19,8 +20,11 @@ import {
   type QualityFinding,
   type RequirementSource,
   type SourceIdCoverage,
+  type TraceabilityGaps,
   type TraceabilityRow,
 } from '../api/types';
+import { nfrTestRows, orphansAmong } from '../lib/traceabilityGaps';
+import { artifactTypeName } from '../lib/lifecycleReview';
 import { coverageNotice } from '../lib/sourceIdCoverage';
 import { canGenerateDownstream } from '../lib/downstreamGeneration';
 import { analysisCompletenessNotice, generationCompletenessNotice, type CompletenessNotice } from '../lib/completeness';
@@ -69,6 +73,8 @@ export function RequirementWorkspace({
   const [busy, setBusy] = useState<string | null>(null);
   // Read-only traceability links, used only to group generated items by their requirement.
   const [matrix, setMatrix] = useState<TraceabilityRow[] | null>(null);
+  // NFR test coverage and work linked to no requirement (traceability-gaps); null when unavailable.
+  const [gaps, setGaps] = useState<TraceabilityGaps | null>(null);
   // Requirements whose test-case generation succeeded in this session (used when links are unavailable).
   const [testsGeneratedFor, setTestsGeneratedFor] = useState<ReadonlySet<string>>(new Set());
   // Open-and-show requests: a section (overview jump) or a requirement group (after generating its tests).
@@ -113,7 +119,7 @@ export function RequirementWorkspace({
 
   const loadDerived = async (sourceId: string) => {
     try {
-      const [q, a, m, stored] = await Promise.all([
+      const [q, a, m, stored, g] = await Promise.all([
         requirementSourcesApi.getClarificationQuestions(sourceId, token),
         artifactsApi.listForProject(projectId, token, { requirementSourceId: sourceId }),
         // Grouping is a presentation nicety: without the links the lists simply render ungrouped.
@@ -121,11 +127,14 @@ export function RequirementWorkspace({
         // The stored analysis (read-only, never calls the AI): revisiting a source shows it instead of
         // asking for a new run. Roles that may not read it simply get no summary.
         requirementSourcesApi.getAnalysis(sourceId, token).catch(() => undefined),
+        // Like the matrix: without it NFR test cases are listed ungrouped and no unlinked-work notice is shown.
+        traceabilityApi.getGaps(projectId, token).catch(() => null),
       ]);
       setQuestions(q);
       setAnalysis(stored ?? null);
       setArtifacts(a.filter((x) => x.artifactType !== ARTIFACT_TYPE_VALUES.ClarificationQuestion));
       setMatrix(m);
+      setGaps(g);
       setLoadedFor(sourceId);
     } catch (err) {
       setError(apiErrorText(err, 'Failed to load requirement data.'));
@@ -388,6 +397,16 @@ export function RequirementWorkspace({
   const needsFrHint = needsFr ? 'Generate functional requirements first' : undefined;
 
   const isGathering = view === 'gathering';
+  // This stage's artifacts that trace to no requirement (generated when no cited code could be linked).
+  const stageTypes: Record<WorkspaceView, number[]> = {
+    gathering: [],
+    analysis: [ARTIFACT_TYPE_VALUES.BusinessRule, ARTIFACT_TYPE_VALUES.UserStory, ARTIFACT_TYPE_VALUES.AcceptanceCriterion],
+    validation: [],
+    design: [ARTIFACT_TYPE_VALUES.DataEntity, ARTIFACT_TYPE_VALUES.ApiSpecification],
+    development: [ARTIFACT_TYPE_VALUES.ImplementationTask],
+    testing: [ARTIFACT_TYPE_VALUES.TestCase],
+  };
+  const unlinked = orphansAmong(gaps, artifacts.map((a) => a.id)).filter((o) => stageTypes[view].includes(o.artifactType));
   const phaseArtifactCount =
     view === 'analysis'
       ? functionalRequirements.length + nonFunctionalRequirements.length + businessRules.length + userStories.length + acceptanceCriteria.length
@@ -417,7 +436,11 @@ export function RequirementWorkspace({
     groupByValue(implementationTasks, byField('taskType'), 'Other');
   const taskGroupedByType = taskGroups !== null && !taskGroups.some((g) => g.requirementId);
   // Testing lists every requirement (for QA, including those without tests yet) so generation happens in place.
-  const testGroups = groupByRequirement(testCases, functionalRequirements, matrix, 'testCases', { includeEmpty: canManageTests });
+  // Test cases verify functional and non-functional requirements alike; NFR rows come from traceability-gaps.
+  const testRequirements = [...functionalRequirements, ...nonFunctionalRequirements];
+  const testGroups = groupByRequirement(testCases, testRequirements, matrix ? [...matrix, ...nfrTestRows(gaps)] : null, 'testCases', {
+    includeEmpty: canManageTests,
+  });
   const coveredRequirements = testGroups ? testGroups.filter((g) => g.requirementId && g.items.length > 0).length : 0;
 
   const reveal = (id: string) => (revealSection?.id === id ? revealSection.request : null);
@@ -489,7 +512,7 @@ export function RequirementWorkspace({
 
   // Test-case generation for one requirement: Generate → Generating… → ✓ Generated (+ Generate more, which adds another set).
   const testGenerateActions = (frId: string, generated: boolean) => {
-    const fr = functionalRequirements.find((a) => a.id === frId);
+    const fr = testRequirements.find((a) => a.id === frId);
     if (fr && !canGenerateDownstream(fr.status)) return null;
     const key = `generate-tc-${frId}`;
     if (busy === key) {
@@ -536,52 +559,65 @@ export function RequirementWorkspace({
 
       {isGathering && canWrite && (
         <div className="req-intake">
-          {/* Plain textarea, not a rich-text editor — intentional (PDF §6), not an oversight.
-              This raw text is sent to the LLM as a flat string either way, so WYSIWYG
-              formatting would be stored and displayed but never consumed by the pipeline. */}
-          <label className="field">
-            <span className="field-label">Raw requirement / meeting notes</span>
-            <textarea
-              className="req-textarea"
-              value={newText}
-              onChange={(e) => setNewText(e.target.value)}
-              rows={4}
-              placeholder="Paste stakeholder notes, an email thread, or a rough brief…"
-            />
-          </label>
-          <div className="req-intake-actions">
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={!newText.trim() || busy === 'create-source'}
-              onClick={onCreateSource}
-            >
-              {busy === 'create-source' ? 'Saving…' : 'Add requirement source'}
-            </button>
-
-            <span className="req-or">or</span>
-
-            <div className="req-upload">
-              <label className="btn btn-secondary req-file-btn">
-                <IconUpload width={15} height={15} />
-                {uploadFile ? 'Change file' : 'Choose file'}
-                <input
-                  type="file"
-                  accept=".txt,.pdf,.docx"
-                  onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+          <div className="intake-head">
+            <h3>Add your requirements</h3>
+            <p>Upload your Software Requirements Specification (SRS), or paste notes. The original text is kept exactly as you add it.</p>
+          </div>
+          <div className="intake-options">
+            <div className="intake-option intake-upload">
+              <h4>
+                <IconUpload width={16} height={16} aria-hidden="true" /> Upload a document
+              </h4>
+              <p className="intake-formats">Supported formats: PDF (.pdf), Word (.docx) and plain text (.txt).</p>
+              <div className="req-upload">
+                <label className="btn btn-secondary req-file-btn">
+                  <IconUpload width={15} height={15} />
+                  {uploadFile ? 'Change file' : 'Choose file'}
+                  <input
+                    type="file"
+                    accept=".txt,.pdf,.docx"
+                    onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+                  />
+                </label>
+                <span className="req-file-name" title={uploadFile?.name}>
+                  {uploadFile ? uploadFile.name : 'No file chosen'}
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={!uploadFile || busy === 'upload-source'}
+                  onClick={onUploadFile}
+                >
+                  {busy === 'upload-source' ? 'Uploading…' : 'Upload'}
+                </button>
+              </div>
+            </div>
+            <div className="intake-option">
+              {/* Plain textarea, not a rich-text editor — intentional (PDF §6), not an oversight.
+                  This raw text is sent to the LLM as a flat string either way, so WYSIWYG
+                  formatting would be stored and displayed but never consumed by the pipeline. */}
+              <label className="field">
+                <span className="field-label intake-label">
+                  <IconDocument width={16} height={16} aria-hidden="true" /> Or paste text
+                </span>
+                <textarea
+                  className="req-textarea"
+                  value={newText}
+                  onChange={(e) => setNewText(e.target.value)}
+                  rows={4}
+                  placeholder="Paste stakeholder notes, an email thread, or a rough brief…"
                 />
               </label>
-              <span className="req-file-name" title={uploadFile?.name}>
-                {uploadFile ? uploadFile.name : '.txt, .pdf or .docx'}
-              </span>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={!uploadFile || busy === 'upload-source'}
-                onClick={onUploadFile}
-              >
-                {busy === 'upload-source' ? 'Uploading…' : 'Upload'}
-              </button>
+              <div className="req-intake-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={!newText.trim() || busy === 'create-source'}
+                  onClick={onCreateSource}
+                >
+                  {busy === 'create-source' ? 'Saving…' : 'Add requirement source'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -729,6 +765,17 @@ export function RequirementWorkspace({
               <PipelineStep n={1} title="Plan implementation">
                 {generateButton('generate-tasks', 'Implementation tasks', 'Generating…', onGenerateTasks, needsFr, true, needsFrHint, implementationTasks.length)}
               </PipelineStep>
+            </div>
+          )}
+
+          {!isGathering && unlinked.length > 0 && (
+            <div className="alert alert-warning req-alert" role="status">
+              <IconAlert width={16} height={16} />
+              <span>
+                {unlinked.length} item{unlinked.length === 1 ? ' is' : 's are'} not linked to any requirement, so traceability cannot follow{' '}
+                {unlinked.length === 1 ? 'it' : 'them'}: {unlinked.map((o) => `${o.code} (${artifactTypeName(o.artifactType).toLowerCase()})`).join(', ')}.{' '}
+                <Link to={phasePath(projectId, 'traceability')}>Link them in Traceability</Link>.
+              </span>
             </div>
           )}
 
@@ -897,7 +944,7 @@ export function RequirementWorkspace({
             <>
               {testGroups ? (
                 // Grouped by requirement: each requirement shows its test cases and generates them in place.
-                (testCases.length > 0 || (canManageTests && functionalRequirements.length > 0)) && (
+                (testCases.length > 0 || (canManageTests && testRequirements.length > 0)) && (
                   <ArtifactSection
                     id="sec-tests"
                     title="Test Cases"
@@ -905,7 +952,7 @@ export function RequirementWorkspace({
                     items={testCases}
                     groups={testGroups}
                     emptyGroupLabel="Not generated yet"
-                    summary={`${coveredRequirements} of ${functionalRequirements.length} requirements covered`}
+                    summary={`${coveredRequirements} of ${testRequirements.length} requirements covered`}
                     groupActions={canManageTests ? (g) => g.requirementId && testGenerateActions(g.requirementId, g.items.length > 0) : undefined}
                     groupReveal={(g) => (revealGroup && revealGroup.key === g.key ? revealGroup.request : null)}
                     reveal={reveal('sec-tests')}
@@ -915,14 +962,14 @@ export function RequirementWorkspace({
                 )
               ) : (
                 <>
-                  {canManageTests && functionalRequirements.length > 0 && (
+                  {canManageTests && testRequirements.length > 0 && (
                     <section className="req-section">
                       <div className="req-section-head">
                         <h3>Generate test cases per requirement</h3>
-                        <span className="req-count">{functionalRequirements.length}</span>
+                        <span className="req-count">{testRequirements.length}</span>
                       </div>
                       <ul className="tc-source-list">
-                        {functionalRequirements.map((fr) => (
+                        {testRequirements.map((fr) => (
                           <li key={fr.id}>
                             <span className="code">{fr.code}</span>
                             <span className="tc-source-title">{fr.title}</span>
@@ -1132,6 +1179,20 @@ function SummaryRow({ label, items }: { label: string; items: string[] }) {
   );
 }
 
+/** The glossary entry that explains each artifact section (lib/glossary). */
+const SECTION_GLOSSARY: Record<string, string> = {
+  'sec-functional': 'fr',
+  'sec-nonfunctional': 'nfr',
+  'sec-rules': 'businessRule',
+  'sec-stories': 'userStory',
+  'sec-criteria': 'acceptanceCriteria',
+  'sec-architecture': 'designArtifact',
+  'sec-data': 'dataEntity',
+  'sec-api': 'apiSpec',
+  'sec-tasks': 'task',
+  'sec-tests': 'testCase',
+};
+
 function ArtifactSection({
   id,
   title,
@@ -1141,6 +1202,7 @@ function ArtifactSection({
   groupEyebrow,
   emptyGroupLabel,
   summary,
+  description,
   reveal,
   groupActions,
   groupReveal,
@@ -1165,6 +1227,8 @@ function ArtifactSection({
   groupEyebrow?: string;
   emptyGroupLabel?: string;
   summary?: string;
+  /** What these items are, in plain words; defaults to the glossary entry for the section. */
+  description?: string;
   reveal?: DisclosureRequest | null;
   groupActions?: (group: ArtifactGroup) => ReactNode;
   groupReveal?: (group: ArtifactGroup) => DisclosureRequest | null;
@@ -1218,6 +1282,7 @@ function ArtifactSection({
       title={title}
       count={items.length}
       summary={summary ?? statusSummary(items)}
+      description={description ?? (id ? SECTION_GLOSSARY[id] && glossary(SECTION_GLOSSARY[id])?.definition : undefined)}
       bulkControls={collapsible || (groups?.length ?? 0) > 1}
       reveal={reveal}
     >
@@ -1286,6 +1351,7 @@ function ClarificationSection({
       title="Clarification questions"
       count={questions.length}
       summary={openCount > 0 ? `${openCount} open` : 'All addressed'}
+      description={glossary('clarification')?.definition}
       bulkControls={groups.length > 1}
     >
       {groups.length > 1 ? (

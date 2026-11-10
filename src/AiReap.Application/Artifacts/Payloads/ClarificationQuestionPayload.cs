@@ -19,6 +19,7 @@ public class ClarificationQuestionPayload
     public string? Kind { get; set; }
 
     // Why the answer matters to requirements, design, implementation or acceptance (the model's words).
+    // Kept for generation and audit; not shown as its own section (the question links to its passage).
     public string? Impact { get; set; }
 
     // Server-owned: the model's evidence quotes that were found verbatim in the source, located there
@@ -30,7 +31,8 @@ public class ClarificationQuestionPayload
 
     // Server-owned, set when the question is read (ClarificationSourceReferences.WithSourceLinks): how
     // far it is linked to its source - "passage" (located evidence to highlight), "section" (only its
-    // reason's section links), or "unresolved" (no place in the source could be verified).
+    // reason's section links), or "unresolved" (no place in the source could be verified). Only a
+    // "passage" question whose evidence it is about is ever shown (ClarificationVisibility).
     public string? SourceLinkStatus { get; set; }
 
     // Server-owned: project document passages retrieved for the question (KnowledgeRetriever). Shown to

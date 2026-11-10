@@ -30,7 +30,7 @@ public static class GenerationInputs
 
     // R1 — a source whose FRs were all rejected has nothing left to build on: generating from its raw
     // text alone would override every one of those decisions. A source with no FRs at all is not this
-    // case (stages there keep generating from the raw text, as before), nor is one with any FR left.
+    // case (EnsureNotAllRejectedAsync refuses it separately, with its own message), nor is one with any FR left.
     public static async Task<bool> AllFunctionalRequirementsRejectedAsync(
         IAiReapDbContext db, Guid requirementSourceId, CancellationToken cancellationToken) =>
         await db.Artifacts.AnyAsync(
@@ -42,13 +42,25 @@ public static class GenerationInputs
         $"Every functional requirement for this source has been rejected, so there is nothing to {what}. " +
         "Rework a requirement (return it to Draft or Under Review) first.";
 
-    // A direct generation request (HTTP 409) for such a source is refused before any AI call.
+    // The refusal when a source has no functional requirements at all.
+    public static string NoRequirementsMessage(string what) =>
+        $"This source has no functional requirements yet, so there is nothing to {what}. " +
+        "Generate functional requirements from it first, so that everything built from it traces to a requirement.";
+
+    // A direct generation request (HTTP 409) is refused before any AI call when the source has no FR left
+    // to build on: every FR rejected (R1), or - release rule - no FR at all. Downstream stages never
+    // generate from the raw text alone, because nothing they produced could be linked to a requirement.
     public static async Task EnsureNotAllRejectedAsync(
         IAiReapDbContext db, Guid requirementSourceId, string what, CancellationToken cancellationToken)
     {
         if (await AllFunctionalRequirementsRejectedAsync(db, requirementSourceId, cancellationToken))
         {
             throw new ConflictException(AllRejectedMessage(what));
+        }
+
+        if (!await For(db.Artifacts, requirementSourceId, ArtifactType.FunctionalRequirement).AnyAsync(cancellationToken))
+        {
+            throw new ConflictException(NoRequirementsMessage(what));
         }
     }
 

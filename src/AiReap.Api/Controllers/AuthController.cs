@@ -13,6 +13,11 @@ public class AuthController : ControllerBase
     private readonly UserManager<ApplicationUser> _userManager;
     private readonly JwtTokenService _tokenService;
 
+    // A hash of a random password, made once with the configured hasher, for the unknown-email path.
+    private static readonly ApplicationUser UnknownUser = new();
+    private static readonly Lazy<string> UnknownUserHash = new(() =>
+        new PasswordHasher<ApplicationUser>().HashPassword(UnknownUser, Guid.NewGuid().ToString("N")));
+
     public AuthController(UserManager<ApplicationUser> userManager, JwtTokenService tokenService)
     {
         _userManager = userManager;
@@ -43,13 +48,35 @@ public class AuthController : ControllerBase
     }
 
     [HttpPost("login")]
-    public async Task<ActionResult<AuthResponse>> Login(LoginRequest request)
+    public async Task<ActionResult<AuthResponse>> Login(LoginRequest request, [FromServices] LoginThrottle throttle)
     {
-        var user = await _userManager.FindByEmailAsync(request.Email);
-        if (user is null || !await _userManager.CheckPasswordAsync(user, request.Password))
+        // Refused before the password is checked, so a blocked account cannot be guessed at (LoginThrottle).
+        var address = HttpContext.Connection.RemoteIpAddress?.ToString();
+        if (throttle.RetryAfter(request.Email, address) is { } wait)
         {
+            var minutes = Math.Max(1, (int)Math.Ceiling(wait.TotalMinutes));
+            Response.Headers.RetryAfter = ((int)Math.Ceiling(wait.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            return StatusCode(StatusCodes.Status429TooManyRequests,
+                $"Too many failed sign-in attempts for this account. Try again in {minutes} minute{(minutes == 1 ? "" : "s")}.");
+        }
+
+        var user = await _userManager.FindByEmailAsync(request.Email);
+        if (user is null)
+        {
+            // An unknown email costs the same password-hash check as a known one, so the response time
+            // does not tell which addresses have accounts.
+            _userManager.PasswordHasher.VerifyHashedPassword(UnknownUser, UnknownUserHash.Value, request.Password ?? string.Empty);
+            throttle.RecordFailure(request.Email, address);
             return Unauthorized("Invalid email or password.");
         }
+
+        if (!await _userManager.CheckPasswordAsync(user, request.Password))
+        {
+            throttle.RecordFailure(request.Email, address);
+            return Unauthorized("Invalid email or password.");
+        }
+
+        throttle.RecordSuccess(request.Email, address);
 
         if (await _userManager.IsLockedOutAsync(user))
         {

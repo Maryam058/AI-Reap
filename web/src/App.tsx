@@ -16,6 +16,7 @@ import { AnalysisPage, CopilotPage, DesignPage, DevelopmentPage, GatheringPage, 
 import { LifecycleReviewPage } from './pages/LifecycleReviewPage';
 import { UsersPage } from './pages/UsersPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { AiUsagePage } from './pages/AiUsagePage';
 import { RolesPage } from './pages/RolesPage';
 import { AuditLogsPage } from './pages/AuditLogsPage';
 
@@ -87,6 +88,14 @@ function App() {
                   element={
                     <ProtectedRoute role="Administrator">
                       <SettingsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/admin/ai-usage"
+                  element={
+                    <ProtectedRoute role="Administrator">
+                      <AiUsagePage />
                     </ProtectedRoute>
                   }
                 />

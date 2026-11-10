@@ -148,7 +148,7 @@ export function AgentPipelinePanel({
                   </option>
                 ))}
               </select>
-              <button type="button" disabled={busy || !sourceId} onClick={() => act(() => agentsApi.start(sourceId, token))}>
+              <button type="button" className="btn btn-primary" disabled={busy || !sourceId} onClick={() => act(() => agentsApi.start(sourceId, token))}>
                 {busy ? 'Running agent…' : 'Start agent run'}
               </button>
             </>
@@ -296,16 +296,16 @@ function StepRow(props: {
             <>
               <input type="text" placeholder="Optional comment" value={props.comment} onChange={(e) => props.onComment(e.target.value)} disabled={busy} />
               {step.status === 2 && (
-                <button type="button" disabled={busy} onClick={props.onApprove}>
+                <button type="button" className="btn btn-primary" disabled={busy} onClick={props.onApprove}>
                   {busy ? 'Working…' : review ? 'Approve step & finish run' : 'Approve step & continue'}
                 </button>
               )}
               {step.status === 5 && (
-                <button type="button" disabled={busy} onClick={props.onRetry}>
+                <button type="button" className="btn btn-primary" disabled={busy} onClick={props.onRetry}>
                   {busy ? 'Working…' : 'Retry step'}
                 </button>
               )}
-              <button type="button" className="secondary" disabled={busy} onClick={props.onReject}>
+              <button type="button" className="btn btn-secondary btn-reject" disabled={busy} onClick={props.onReject}>
                 {step.status === 5 ? 'Abandon run' : 'Reject step'}
               </button>
             </>

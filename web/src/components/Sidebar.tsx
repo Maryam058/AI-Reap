@@ -3,12 +3,13 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useSidebar } from '../context/SidebarContext';
 import { readLastProject, useProjectContext } from '../context/ProjectContext';
-import { NAV_GROUPS, SEGMENT_DEFAULT_TAB, type NavGroup, type NavModule } from '../navigation/navConfig';
+import { ALL_MODULES, NAV_GROUPS, SEGMENT_DEFAULT_TAB, type NavGroup, type NavModule } from '../navigation/navConfig';
 import { phasePath } from '../lib/workAreas';
-import { LAST_STAGE, lifecycleProgress, LIFECYCLE_STAGES, stageLabel, stageState, type StageState } from '../lib/lifecycle';
+import { lifecycleProgress, stageLabel } from '../lib/lifecycle';
+import { activeStages, activeStagesLabel, STAGE_COUNT, STAGE_STATUS_LABEL, stageByKey, STAGES, stageStatus, type StageStatus } from '../lib/stages';
 import { useProjectLifecycle } from '../hooks/useLifecycle';
 import { initials, statusLabel, statusVariant } from '../lib/format';
-import { IconCheck, IconChevronDown, IconFolder, IconPanelLeft, IconSelector, IconSparkles, IconX } from './icons';
+import { IconAlert, IconCheck, IconChevronDown, IconFolder, IconPanelLeft, IconSelector, IconX } from './icons';
 
 const SECTIONS_KEY = 'aireap.nav-sections-closed';
 
@@ -76,21 +77,15 @@ export function Sidebar() {
     if (mod.key === 'projects') return pathname === '/projects' || /^\/projects\/[^/]+(\/edit)?\/?$/.test(pathname);
     if (mod.to) return pathname === mod.to || pathname.startsWith(`${mod.to}/`);
     if (!projectId || !mod.segment || !pathname.startsWith(phasePath(projectId, mod.segment))) return false;
-    // Modules sharing one route are told apart by tab. The agent pipeline owns its own tab;
-    // every other assistant tab (documents, audit) belongs to the assistant.
-    const fallback = SEGMENT_DEFAULT_TAB[mod.segment];
-    if (!fallback) return true;
-    if (mod.segment === 'copilot') return (tab === 'pipeline') === (mod.tab === 'pipeline');
-    return (tab ?? fallback) === (mod.tab ?? fallback);
+    // Modules sharing one route are told apart by tab: a tool owns its tab (stakeholders, agent
+    // pipeline); the stage owns every other tab of its route.
+    if (mod.tab) return tab === mod.tab;
+    return !ALL_MODULES.some((m) => m.tab && m.segment === mod.segment && m.tab === tab);
   };
 
-  /** Where the project's lifecycle stage is relative to the stages a module serves; only once a project is open. */
-  const moduleState = (mod: NavModule): StageState | undefined => {
-    if (!project || !mod.stages) return undefined;
-    const states = mod.stages.map((s) => stageState(s, project.status));
-    if (states.every((s) => s === 'completed')) return 'completed';
-    return states.includes('current') ? 'current' : 'upcoming';
-  };
+  /** The derived status of a stage entry; only once a project is open. */
+  const moduleStatus = (mod: NavModule): StageStatus | undefined => (project && mod.stageKey ? stageStatus(stageByKey(mod.stageKey)!, project.status) : undefined);
+  const nowKeys = new Set(project ? activeStages(project.status).map((s) => s.key) : []);
 
   const showTip = (label: string) => (e: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
     if (!rail) return;
@@ -99,28 +94,23 @@ export function Sidebar() {
   };
   const hideTip = () => setTip(null);
 
-  /** `pipeline`: the group is drawn as a lifecycle stepper, the stage marker standing in for the icon. */
-  const renderModule = (mod: NavModule, pipeline: boolean) => {
+  const renderModule = (mod: NavModule) => {
     const Icon = mod.icon;
     const active = isActive(mod);
     const suffix = mod.tab && mod.tab !== SEGMENT_DEFAULT_TAB[mod.segment ?? ''] ? `?tab=${mod.tab}` : '';
     const to = mod.to ?? (mod.status !== 'planned' && targetProjectId && mod.segment ? `${phasePath(targetProjectId, mod.segment)}${suffix}` : null);
-    const state = moduleState(mod);
+    const status = moduleStatus(mod);
+    const stage = mod.stageKey ? stageByKey(mod.stageKey) : undefined;
+    const isNow = !!mod.stageKey && nowKeys.has(mod.stageKey);
     const planned = mod.status === 'planned';
     const needsProject = !to && !planned;
-    const tipLabel = planned ? `${mod.label} (planned)` : mod.label;
-    const step = pipeline && state;
-    // Hover text names the lifecycle stage(s) the module's work serves, so nav names map onto stages.
-    const hint = mod.stages ? `${mod.description} Lifecycle stage: ${mod.stages.map(stageLabel).join(' & ')}.` : mod.description;
+    const tipLabel = stage ? `${stage.number}. ${mod.label}${status ? ` — ${STAGE_STATUS_LABEL[status]}` : ''}` : planned ? `${mod.label} (planned)` : mod.label;
 
     const content = (
       <>
-        {step ? (
-          <span
-            className={`nav-step ${state}`}
-            {...(state === 'upcoming' ? { 'aria-hidden': true } : { role: 'img', 'aria-label': state === 'completed' ? 'Lifecycle stage passed' : 'Current lifecycle stage' })}
-          >
-            {state === 'completed' && <IconCheck width={11} height={11} strokeWidth={3.25} />}
+        {stage ? (
+          <span className={`nav-stage-node${status ? ` st-${status}` : ''}${isNow ? ' now' : ''}`} aria-hidden="true">
+            {status === 'completed' ? <IconCheck width={11} height={11} strokeWidth={3.25} /> : status === 'attention' ? <IconAlert width={11} height={11} strokeWidth={2.5} /> : stage.number}
           </span>
         ) : (
           <Icon />
@@ -128,29 +118,24 @@ export function Sidebar() {
         {!rail && (
           <>
             <span className="nav-label">{mod.label}</span>
+            {status && <span className="sr-only">, {STAGE_STATUS_LABEL[status]}</span>}
             {planned && <span className="nav-soon">Soon</span>}
-            {step && state === 'current' && <span className="nav-step-tag">In progress</span>}
-            {!step && state === 'completed' && (
-              <span className="nav-state completed" role="img" aria-label="Lifecycle stage passed">
-                <IconCheck width={10} height={10} strokeWidth={3.5} />
-              </span>
-            )}
-            {!step && state === 'current' && <span className="nav-state current" role="img" aria-label="Current lifecycle stage" />}
+            {isNow && status !== 'ready' && <span className="nav-step-tag">Now</span>}
           </>
         )}
-        {rail && !step && state === 'current' && <span className="nav-rail-dot" aria-hidden="true" />}
+        {rail && isNow && <span className="nav-rail-dot" aria-hidden="true" />}
       </>
     );
 
     const cls = `nav-link${active ? ' active' : ''}${mod.ai ? ' ai' : ''}${to ? '' : ' disabled'}`;
     return (
-      <li key={mod.key} className={`nav-item${step ? ` step-${state}` : ''}`} onMouseEnter={showTip(tipLabel)} onMouseLeave={hideTip} onFocus={showTip(tipLabel)} onBlur={hideTip}>
+      <li key={mod.key} className={`nav-item${stage ? ' nav-stage' : ''}`} onMouseEnter={showTip(tipLabel)} onMouseLeave={hideTip} onFocus={showTip(tipLabel)} onBlur={hideTip}>
         {to ? (
-          <Link to={to} className={cls} aria-label={rail ? mod.label : undefined} aria-current={active ? 'page' : undefined} title={rail ? undefined : hint}>
+          <Link to={to} className={cls} aria-label={rail ? mod.label : undefined} aria-current={active ? 'page' : undefined} title={rail ? undefined : mod.description}>
             {content}
           </Link>
         ) : (
-          <span className={cls} aria-disabled="true" title={rail ? undefined : needsProject ? 'Open a project to use this step' : hint}>
+          <span className={cls} aria-disabled="true" title={rail ? undefined : needsProject ? 'Open a project to use this' : mod.description}>
             {content}
           </span>
         )}
@@ -162,30 +147,28 @@ export function Sidebar() {
     const modules = group.modules.filter((m) => !m.role || hasRole(m.role));
     if (modules.length === 0) return null;
     const open = rail || !group.collapsible || !closed[group.key];
-    const meta = group.key === 'sdlc' && progress ? `${progress.percent}%` : null;
-    // A group whose every step maps to lifecycle stages reads as a pipeline once a project is open.
-    const pipeline = !!project && modules.every((m) => m.stages);
+    const meta = group.key === 'lifecycle' && progress ? `${progress.percent}%` : null;
     return (
-      <section className={`nav-group${pipeline ? ' pipeline' : ''}`} key={group.key} aria-label={group.label}>
+      <section className={`nav-group nav-group-${group.key}`} key={group.key} aria-label={group.label}>
         {rail ? (
           <div className="nav-rail-sep" />
         ) : group.collapsible ? (
           <button type="button" className="nav-group-toggle" aria-expanded={open} onClick={() => toggleSection(group.key)}>
             <span className="nav-group-text">{group.label}</span>
             <IconChevronDown className={`nav-group-chevron${open ? '' : ' closed'}`} width={12} height={12} />
-            {group.key === 'ai' && (
-              <span className="nav-ai-chip" aria-hidden="true">
-                <IconSparkles width={9} height={9} /> AI
+            {meta && (
+              <span className="nav-group-meta" title="Overall lifecycle progress">
+                {meta}
               </span>
             )}
-            {meta && <span className="nav-group-meta">{meta}</span>}
           </button>
         ) : (
           <div className="nav-group-label">{group.label}</div>
         )}
         <div className={`nav-collapse${open ? ' open' : ''}`}>
           <div className="nav-collapse-inner" {...(open ? {} : { inert: true })}>
-            <ul className="nav-list">{modules.map((m) => renderModule(m, pipeline))}</ul>
+            {!rail && group.hint && <p className="nav-group-hint">{group.hint}</p>}
+            <ul className="nav-list">{modules.map((m) => renderModule(m))}</ul>
           </div>
         </div>
       </section>
@@ -297,7 +280,7 @@ export function Sidebar() {
   );
 }
 
-/** The open project's lifecycle position: stage, 8-segment track, and any pending Reviewer request. */
+/** The open project's position: overall progress, the nine stages as a track, and any pending Reviewer request. */
 function SidebarLifecycle({ projectId, status, stamp }: { projectId: string; status: number; stamp: string }) {
   const { state } = useProjectLifecycle(projectId, `${status}|${stamp}`);
   const progress = lifecycleProgress(status);
@@ -305,17 +288,15 @@ function SidebarLifecycle({ projectId, status, stamp }: { projectId: string; sta
   return (
     <>
       <div className="nav-project-meta">
-        <span>
-          Stage {progress.stageNumber} of {LIFECYCLE_STAGES.length}
+        <span title="Overall progress through the lifecycle">Overall progress {progress.percent}%</span>
+        <span className={`status-pill tone-${statusVariant(status)}`} title="Lifecycle status">
+          {statusLabel(status)}
         </span>
-        <span className={`status-pill tone-${statusVariant(status)}`}>{statusLabel(status)}</span>
       </div>
-      <ol className={`phase-track${progress.finished ? ' finished' : ''}`} aria-label="Project lifecycle">
-        {LIFECYCLE_STAGES.map((s) => {
-          // As in LifecycleStepper: the final stage, once reached, is finished rather than current.
-          const reached = stageState(s.status, status);
-          const st = reached === 'current' && s.status === LAST_STAGE ? 'completed' : reached;
-          return <li key={s.status} className={`phase-seg ${st}${pending && st === 'current' ? ' awaiting' : ''}`} title={`${s.status + 1}. ${s.label}`} />;
+      <ol className={`phase-track stages${progress.finished ? ' finished' : ''}`} aria-label={`Project stages, ${STAGE_COUNT} in total`}>
+        {STAGES.map((s) => {
+          const st = stageStatus(s, status, state);
+          return <li key={s.key} className={`phase-seg st-${st}`} title={`${s.number}. ${s.name}: ${STAGE_STATUS_LABEL[st]}`} />;
         })}
       </ol>
       <div className="nav-project-phase">
@@ -329,7 +310,7 @@ function SidebarLifecycle({ projectId, status, stamp }: { projectId: string; sta
           </>
         ) : (
           <>
-            <span className="nav-state current" aria-hidden="true" /> Now: <strong>{stageLabel(status)}</strong>
+            <span className="nav-state current" aria-hidden="true" /> Now: <strong>{activeStagesLabel(status)}</strong>
           </>
         )}
       </div>

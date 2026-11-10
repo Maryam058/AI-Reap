@@ -20,6 +20,28 @@ public record TraceabilityRow(
 
 public record TraceRef(Guid Id, string Code, string Title);
 
+// §21 — what the FR-row matrix cannot show. An orphan is a downstream artifact with no link to the
+// requirement (or story) it should trace to, so it appears in no matrix row; a generator that could not
+// resolve any cited requirement code still saves the artifact, and this is where that becomes visible.
+// Rejected artifacts are left out. Read-only.
+public record TraceabilityGapsResponse(
+    IReadOnlyList<TraceabilityOrphan> Orphans,
+    IReadOnlyList<TraceRef> UntracedNonFunctionalRequirements,
+    int NonFunctionalRequirementCount)
+{
+    // Each NFR the caller can see (not rejected) with the test cases that verify it (TestedBy), in code
+    // order: the matrix has rows for functional requirements only.
+    public IReadOnlyList<NfrTestCoverage> NonFunctionalTestCoverage { get; init; } = [];
+}
+
+public record LinkToRequirementRequest(Guid TargetArtifactId);
+
+public record NfrTestCoverage(Guid Id, string Code, string Title, string? Category, IReadOnlyList<TraceRef> TestCases);
+
+// MissingLink names the upstream link that is absent, e.g. "functional requirement".
+public record TraceabilityOrphan(
+    Guid Id, string Code, string Title, Domain.Enums.ArtifactType ArtifactType, Domain.Enums.ArtifactStatus Status, string MissingLink);
+
 // §21 — each objective and the requirements that serve it; an empty list is a coverage gap.
 public record BusinessObjectiveResponse(Guid Id, string Code, string Title, IReadOnlyList<TraceRef> Requirements);
 

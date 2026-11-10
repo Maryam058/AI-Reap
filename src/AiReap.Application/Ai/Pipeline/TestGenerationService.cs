@@ -53,10 +53,43 @@ public class TestGenerationService : ITestGenerationService
         _logger = logger;
     }
 
-    public async Task<IReadOnlyList<ArtifactResponse>?> GenerateAsync(Guid functionalRequirementArtifactId, CancellationToken cancellationToken = default)
+    // NFR test cases: the quality is verified by how it is measured, under which conditions, and against
+    // which pass criterion - and a target nobody has confirmed is never tested as if it were agreed.
+    private const string NfrPromptTemplateVersion = "NfrTestCaseGeneration-v1";
+
+    private const string NfrSystemPrompt = """
+        You are a QA engineer (§20 of an SDLC automation spec). Given a non-functional requirement - a
+        quality the system must have (performance, security, availability, scalability, usability,
+        maintainability, compliance or observability) - write test cases that verify that quality. Each
+        test case states how the quality is measured or checked, the conditions it is checked under
+        (load, data volume, user roles, environment, failure being simulated) and the pass/fail
+        criterion. Cover what applies to the category - for example load and response-time checks for
+        performance, access-control and input-handling checks for security, failover and recovery for
+        availability - and do not force a kind that doesn't apply.
+
+        Never invent a numerical limit (an amount, duration, size, rate or count). Use the target value
+        as the pass criterion only when "Target status" says it is confirmed. When the target is a
+        proposed assumption, or there is none, write the expected result against "the agreed target"
+        and say in the test case that the value is to be confirmed. A number listed under "Numbers not
+        found in verified quotes" is unconfirmed. "Evidence status" says only whether the requirement's
+        quotes were found in the source text, not whether the requirement is correct.
+
+        Respond with ONLY a single JSON object, no markdown fences, no commentary:
+        {
+          "testCases": [
+            {"title": "string", "preconditions": "string or null", "steps": ["string"],
+             "expectedResult": "string",
+             "testKind": "performance|load|security|availability|reliability|scalability|usability|accessibility|maintainability|compliance|observability|positive|negative|boundary|permission|validation"}
+          ]
+        }
+        """;
+
+    private static readonly JsonSerializerOptions ReadOptions = new() { PropertyNameCaseInsensitive = true };
+
+    public async Task<IReadOnlyList<ArtifactResponse>?> GenerateAsync(Guid requirementArtifactId, CancellationToken cancellationToken = default)
     {
-        var fr = await _db.Artifacts.FirstOrDefaultAsync(a => a.Id == functionalRequirementArtifactId, cancellationToken);
-        if (fr is null || fr.ArtifactType != ArtifactType.FunctionalRequirement)
+        var fr = await _db.Artifacts.FirstOrDefaultAsync(a => a.Id == requirementArtifactId, cancellationToken);
+        if (fr is null || fr.ArtifactType is not (ArtifactType.FunctionalRequirement or ArtifactType.NonFunctionalRequirement))
         {
             return null;
         }
@@ -64,15 +97,21 @@ public class TestGenerationService : ITestGenerationService
         await _projectAccess.EnsureMemberAsync(fr.ProjectId, cancellationToken);
         GenerationInputs.EnsureTestCaseTarget(fr);
 
-        var frPayload = FunctionalRequirementContext.Read(fr);
+        var isNfr = fr.ArtifactType == ArtifactType.NonFunctionalRequirement;
+        var userPrompt = isNfr ? NfrPrompt(fr) : FrPrompt(fr);
 
-        var userPrompt =
-            $"{fr.Code}: {fr.Title}\nActor: {frPayload.Actor}\nPreconditions: {frPayload.Preconditions}\n" +
-            $"Processing: {frPayload.Processing}\nExpected result: {frPayload.ExpectedResult}" +
-            FunctionalRequirementContext.EvidenceLines(frPayload);
-
-        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseLosslessAsync<TestCaseAiResponse>(
-            _chatClient, _logger, "TestCaseGeneration", fr.Id.ToString(), SystemPrompt, userPrompt, cancellationToken);
+        string rawResponse;
+        TestCaseAiResponse parsed;
+        if (isNfr)
+        {
+            (rawResponse, parsed) = await GenerationSupport.CallAiAndParseLosslessAsync<NfrTestCaseAiResponse>(
+                _chatClient, _logger, "TestCaseGeneration", fr.Id.ToString(), NfrSystemPrompt, userPrompt, cancellationToken);
+        }
+        else
+        {
+            (rawResponse, parsed) = await GenerationSupport.CallAiAndParseLosslessAsync<TestCaseAiResponse>(
+                _chatClient, _logger, "TestCaseGeneration", fr.Id.ToString(), SystemPrompt, userPrompt, cancellationToken);
+        }
 
         // G2 — one save of the test cases not already saved for this requirement (ArtifactFingerprints,
         // scoped to the FR: the same wording under another FR is a different test case). Existing test
@@ -90,6 +129,51 @@ public class TestGenerationService : ITestGenerationService
         }
 
         return new GeneratedArtifacts(testArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList(), skipped);
+    }
+
+    // The FR prompt, exactly as before NFR support.
+    private static string FrPrompt(Artifact fr)
+    {
+        var frPayload = FunctionalRequirementContext.Read(fr);
+        return
+            $"{fr.Code}: {fr.Title}\nActor: {frPayload.Actor}\nPreconditions: {frPayload.Preconditions}\n" +
+            $"Processing: {frPayload.Processing}\nExpected result: {frPayload.ExpectedResult}" +
+            FunctionalRequirementContext.EvidenceLines(frPayload);
+    }
+
+    // The NFR's category, description and target - with whether a person has confirmed that target
+    // (NfrAssumption) - and its evidence results, labelled as the FR prompt labels them.
+    public static string NfrPrompt(Artifact nfr)
+    {
+        var p = JsonSerializer.Deserialize<NonFunctionalRequirementPayload>(nfr.DataJson, ReadOptions) ?? new NonFunctionalRequirementPayload();
+        var target = string.IsNullOrWhiteSpace(p.TargetValue) ? "none stated" : p.TargetValue.Trim();
+        var targetStatus = string.IsNullOrWhiteSpace(p.TargetValue)
+            ? "no target value - test against the agreed target, to be confirmed"
+            : p.AssumptionStatus == "confirmed"
+                ? "confirmed by a person - use it as the pass criterion"
+                : "proposed assumption, not confirmed - do not test it as an agreed limit";
+        var evidence = p.EvidenceCheck is null
+            ? FunctionalRequirementContext.NotChecked
+            : p.EvidenceStatus?.Trim().ToLowerInvariant() switch
+            {
+                RequirementEvidence.Verified => "verified (its quotes were found in the cited text; this does not confirm the requirement itself)",
+                RequirementEvidence.Unverified => "unverified (at least one of its quotes was not found in the cited text)",
+                RequirementEvidence.None => FunctionalRequirementContext.NoQuotes,
+                null or "" => FunctionalRequirementContext.NotRecorded,
+                var other => other
+            };
+        var numbers = p.EvidenceCheck is null
+            ? FunctionalRequirementContext.NotChecked
+            : p.UnsupportedNumbers.Where(n => !string.IsNullOrWhiteSpace(n)).Select(n => n.Trim()).ToList() is { Count: > 0 } list
+                ? string.Join(", ", list)
+                : "none";
+        var origin = string.IsNullOrWhiteSpace(p.RequirementOrigin) ? FunctionalRequirementContext.NotRecorded : p.RequirementOrigin.Trim();
+
+        return
+            $"{nfr.Code}: {nfr.Title}\nCategory: {(string.IsNullOrWhiteSpace(p.Category) ? "not specified" : p.Category)}\n" +
+            $"Description: {(string.IsNullOrWhiteSpace(p.Description) ? "not specified" : p.Description)}\n" +
+            $"Target value: {target}\nTarget status: {targetStatus}\n" +
+            $"Requirement origin: {origin}\nEvidence status: {evidence}\nNumbers not found in verified quotes: {numbers}";
     }
 
     // The test cases of the response not already saved for the FR, added to the context with their
@@ -159,7 +243,8 @@ public class TestGenerationService : ITestGenerationService
         }
 
         GenerationSupport.AddExecutions(
-            _db, fr.ProjectId, "TestCaseGeneration", PromptTemplateVersion, _currentUser.UserId,
+            _db, fr.ProjectId, "TestCaseGeneration",
+            fr.ArtifactType == ArtifactType.NonFunctionalRequirement ? NfrPromptTemplateVersion : PromptTemplateVersion, _currentUser.UserId,
             _chatClient.ModelName, fr.Id.ToString(), rawResponse, now,
             testArtifacts.Select(a => a.Id).ToList());
 
@@ -170,6 +255,8 @@ public class TestGenerationService : ITestGenerationService
     {
         public List<TestCaseItem> TestCases { get; set; } = new();
 
+        protected virtual string[] Kinds => AiVocabulary.TestKinds;
+
         public void Validate(AiResponseValidator v) =>
             v.Items(TestCases, "testCases", (item, path) =>
             {
@@ -178,8 +265,13 @@ public class TestGenerationService : ITestGenerationService
                 v.Required(item.ExpectedResult, $"{path}.expectedResult");
                 if (item.Steps is null || item.Steps.Count == 0) v.Fail($"{path}.steps must contain at least one step.");
                 v.NoBlankEntries(item.Steps, $"{path}.steps");
-                v.OneOf(item.TestKind, $"{path}.testKind", AiVocabulary.TestKinds);
+                v.OneOf(item.TestKind, $"{path}.testKind", Kinds);
             }, minItems: 1);
+    }
+
+    private sealed class NfrTestCaseAiResponse : TestCaseAiResponse
+    {
+        protected override string[] Kinds { get; } = [.. AiVocabulary.NfrTestKinds, .. AiVocabulary.TestKinds];
     }
 
     private class TestCaseItem

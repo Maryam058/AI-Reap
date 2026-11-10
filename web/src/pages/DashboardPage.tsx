@@ -17,6 +17,12 @@ import { MetricGridSkeleton, PanelSkeleton } from '../components/ui/Skeletons';
 import { MetricCard } from '../components/ui/MetricCard';
 import { AreaChart, BarList, ColumnChart, DonutChart, RingGauge, StackedBars, type Slice } from '../components/ui/Charts';
 import { LifecycleDots, LifecycleStepper } from '../components/LifecycleStepper';
+import { ProjectCard } from '../components/ProjectCard';
+import { StageIcon } from '../components/stage/StageIcon';
+import { readLastProject } from '../context/ProjectContext';
+import { activeStagesLabel, currentStage, STAGE_COUNT, STAGES } from '../lib/stages';
+import { phasePath } from '../lib/workAreas';
+import { ProgressBar } from '../components/ui/ProgressBar';
 import {
   IconAlert,
   IconArrowRight,
@@ -35,6 +41,7 @@ import {
   IconRocket,
   IconShieldCheck,
   IconTrendUp,
+  IconX,
 } from '../components/icons';
 
 /** Per-project data used for the workspace-wide charts. Fields are null if that request failed. */
@@ -254,7 +261,7 @@ export function DashboardPage() {
           ? `${formatFullDate(new Date())} · Showing ${scopeProject.name}`
           : selected.length > 1
             ? `${formatFullDate(new Date())} · Showing ${selected.length} of ${projects?.length ?? 0} projects`
-            : `${formatFullDate(new Date())} · Project portfolio & lifecycle progress`
+            : `${formatFullDate(new Date())} · Here is where your projects stand`
       }
       actions={
         projects && projects.length > 0 ? (
@@ -328,58 +335,21 @@ export function DashboardPage() {
   const sl = single ? (scopedData?.[0]?.lifecycle ?? null) : null;
   const sRow = single ? (scopedData?.[0] ?? null) : null;
 
-  return (
-    <div className="dash">
-      {header}
+  // Projects needing attention, from the same display-only health the table uses (lib/projectHealth).
+  const attentionRows = list
+    .map((p) => ({ project: p, health: stats.health.get(p.id) }))
+    .filter((r) => r.health?.health === 'attention')
+    .sort((a, b) => +new Date(b.project.updatedAt) - +new Date(a.project.updatedAt));
+  const lastOpened = readLastProject();
+  // Boolean(), not a type guard: the report/portfolio switch must not narrow `single` inside either branch.
+  const isReport = Boolean(single);
+  const continueProject = !isReport ? (projects.find((p) => p.id === lastOpened?.id) ?? null) : null;
+  const onCardUpdated = (updated: Project) => setProjects((ps) => ps?.map((p) => (p.id === updated.id ? updated : p)) ?? null);
+  const onCardDeleted = (id: string) => setProjects((ps) => ps?.filter((p) => p.id !== id) ?? null);
 
-      {single && sp && sh ? (
-        <div className="metric-grid dash-kpis">
-          <MetricCard icon={<IconTrendUp />} tone="ai" value={`${sp.percent}%`} label="Lifecycle progress" hint={<Meter percent={sp.percent} done={sp.finished} />} />
-          <MetricCard
-            icon={<IconLayers />}
-            tone={sp.finished ? 'success' : 'primary'}
-            value={<span className="metric-value-text">{stageLabel(single.status)}</span>}
-            label={sp.finished ? 'Lifecycle completed' : 'Current stage'}
-            hint={sp.finished ? `All ${LIFECYCLE_STAGES.length} stages complete` : `Stage ${sp.stageNumber} of ${LIFECYCLE_STAGES.length}`}
-          />
-          <MetricCard
-            icon={sh.health === 'attention' ? <IconAlert /> : <IconCheckCircle />}
-            tone={sh.health === 'attention' ? 'warning' : sh.health === 'unknown' ? 'primary' : 'success'}
-            value={<span className="metric-value-text">{!dataReady && sh.health === 'unknown' ? '…' : HEALTH_LABEL[sh.health]}</span>}
-            label="Health"
-            hint={sh.reasons[0] ?? (sh.health === 'on-track' ? 'No open issues' : undefined)}
-          />
-          <MetricCard
-            icon={<IconDocument />}
-            tone="success"
-            value={dataReady ? `${stats.approvalRate}%` : '…'}
-            label="Requirements approved"
-            hint={dataReady ? `${stats.buckets.approved + stats.buckets.completed} of ${stats.requirements.length} requirements` : undefined}
-          />
-          <MetricCard
-            icon={<IconShieldCheck />}
-            tone="primary"
-            value={dataReady ? `${stats.testCoverage}%` : '…'}
-            label="Test coverage"
-            hint={dataReady ? `${stats.coveredFrs} of ${stats.totalFrs} functional requirements` : undefined}
-          />
-        </div>
-      ) : (
-        <div className="metric-grid dash-kpis">
-          <MetricCard icon={<IconFolder />} tone="primary" value={list.length} label="Total projects" hint={`Across ${stats.byStage.filter((b) => b.count > 0).length} of ${LIFECYCLE_STAGES.length} lifecycle stages`} />
-          <MetricCard icon={<IconRocket />} tone="primary" value={stats.active} label="Active projects" hint={`${stats.inTesting} in Testing`} />
-          <MetricCard icon={<IconCheckCircle />} tone="success" value={stats.completed} label="Completed" hint={`${stats.lifecycleCompletion}% of the portfolio`} />
-          <MetricCard
-            icon={<IconAlert />}
-            tone="warning"
-            value={loadingValue(attention)}
-            label="Need attention"
-            hint={!dataReady ? 'Checking projects…' : attention > 0 ? 'Reviews, evidence gaps, conflicts or changes' : 'No open issues'}
-          />
-          <MetricCard icon={<IconTrendUp />} tone="ai" value={`${stats.avg}%`} label="Average lifecycle progress" hint={<Meter percent={stats.avg} />} />
-        </div>
-      )}
-
+  // Blocks shown in both the single-project report and the portfolio view (in different places).
+  const signalsBlock = (
+    <>
       <section className="dash-signals" aria-label="Delivery signals">
         <Signal icon={<IconLock />} tone="warning" value={loadingValue(stats.pendingApprovals.length)} label="Awaiting stage approval" />
         <Signal
@@ -395,40 +365,10 @@ export function DashboardPage() {
         <Signal icon={<IconClock />} tone="warning" value={loadingValue(stats.impactNotices)} label="Changes awaiting impact review" />
       </section>
       {sampled && dataReady && <p className="footnote">Health, requirement, test and task figures cover your {SAMPLE_SIZE} most recently updated projects. Pick a project in the filter to see its full report.</p>}
-
-      {dataReady && stats.pendingApprovals.length > 0 && (
-        <section className="panel dash-callout" aria-labelledby="pending-title">
-          <header className="panel-head tight">
-            <span className="dash-callout-icon" aria-hidden="true">
-              <IconLock width={16} height={16} />
-            </span>
-            <div className="dash-callout-text">
-              <h2 id="pending-title" className="panel-title">
-                Stage transitions awaiting Reviewer approval
-              </h2>
-              <p className="panel-sub">These projects stay in their current stage until a Reviewer who did not submit the request approves it.</p>
-            </div>
-            <span className="status-pill tone-warning">{stats.pendingApprovals.length} pending</span>
-          </header>
-          <ul className="pending-list">
-            {stats.pendingApprovals.map(({ project, request }) => (
-              <li key={request.id}>
-                <Link to={`/projects/${project.id}#lifecycle`} className="pending-link">
-                  <span className="pending-name">{project.name}</span>
-                  <span className="pending-move">
-                    {stageLabel(request.fromStatus)} → {stageLabel(request.toStatus)}
-                  </span>
-                  <span className="muted">
-                    Submitted by {roleLabel(request.requestedByRole)} · {formatRelativeTime(request.requestedAt)}
-                  </span>
-                  <span className="status-pill tone-warning">Awaiting Reviewer</span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
+    </>
+  );
+  const mainBlock = (
+    <>
       {single && sp && sh ? (
         <div className="dash-main">
           <section className={`panel dash-project-report${sp.finished ? ' is-complete' : ''}`} aria-labelledby="report-title">
@@ -638,99 +578,10 @@ export function DashboardPage() {
           </div>
         </div>
       )}
-
-      {!single && (
-        <section className="panel" aria-labelledby="matrix-title">
-          <header className="panel-head">
-            <div>
-              <h2 id="matrix-title">Stage by project</h2>
-              <p>
-                Where every project is in its lifecycle · average <strong>{stats.avg}%</strong> · {stats.completed} of {list.length} completed
-                {dataReady && stats.evidenceGaps > 0 && ` · ${stats.evidenceGaps} with an evidence gap`}
-              </p>
-            </div>
-            <Link to="/projects" className="btn btn-ghost btn-sm">
-              All projects <IconArrowRight width={14} height={14} />
-            </Link>
-          </header>
-          <div className="table-scroll">
-            <table className="sdlc-matrix dash-matrix">
-              <thead>
-                <tr>
-                  <th scope="col">Project</th>
-                  {LIFECYCLE_STAGES.map((s) => (
-                    <th key={s.status} scope="col" title={s.description}>
-                      <span className="matrix-step">{s.status + 1}</span>
-                      <span className="matrix-stage">{s.label}</span>
-                    </th>
-                  ))}
-                  <th scope="col" className="num">
-                    Progress
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {ranked.map(({ project, progress }) => {
-                  const awaiting = !!stats.lifecycleById.get(project.id)?.pendingTransition;
-                  return (
-                    <tr key={project.id} className={progress.finished ? 'is-complete' : undefined}>
-                      <th scope="row">
-                        <Link to={`/projects/${project.id}`} title={project.name}>
-                          {project.name}
-                        </Link>
-                      </th>
-                      {LIFECYCLE_STAGES.map((s) => {
-                        // The final stage, once reached, is finished rather than current (as in LifecycleStepper).
-                        const reached = stageState(s.status, project.status);
-                        const state = reached === 'current' && s.status === LAST_STAGE ? 'completed' : reached;
-                        const text = state === 'current' && awaiting ? 'Awaiting review' : STAGE_STATE_LABEL[state];
-                        return (
-                          <td key={s.status}>
-                            <span className={`matrix-cell ${state}${state === 'current' && awaiting ? ' awaiting' : ''}`} role="img" aria-label={`${s.label}: ${text}`} title={`${s.label}: ${text}`}>
-                              {state === 'completed' ? <IconCheck width={12} height={12} strokeWidth={3} /> : state === 'current' ? <span className="dot" /> : null}
-                            </span>
-                          </td>
-                        );
-                      })}
-                      <td className="num">
-                        <span className="matrix-progress">
-                          <Meter percent={progress.percent} done={progress.finished} />
-                          <strong>{progress.percent}%</strong>
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <ul className="matrix-legend" aria-label="Legend">
-            <li>
-              <span className="matrix-cell completed">
-                <IconCheck width={12} height={12} strokeWidth={3} />
-              </span>
-              Completed
-            </li>
-            <li>
-              <span className="matrix-cell current">
-                <span className="dot" />
-              </span>
-              Current stage
-            </li>
-            <li>
-              <span className="matrix-cell current awaiting">
-                <span className="dot" />
-              </span>
-              Awaiting Reviewer approval
-            </li>
-            <li>
-              <span className="matrix-cell upcoming" />
-              Upcoming
-            </li>
-          </ul>
-        </section>
-      )}
-
+    </>
+  );
+  const insightsBlock = (
+    <>
       {dataReady && (
         <div className="insight-grid" aria-label="Analytics highlights">
           <div className="insight-card">
@@ -884,7 +735,10 @@ export function DashboardPage() {
           )}
         </section>
       )}
-
+    </>
+  );
+  const activityBlock = (
+    <>
       <section className="panel" aria-labelledby="activity-title">
         <header className="panel-head tight">
           <div>
@@ -920,6 +774,284 @@ export function DashboardPage() {
           </ul>
         )}
       </section>
+    </>
+  );
+
+  return (
+    <div className="dash">
+      {header}
+
+      {!single && <HowItWorks />}
+
+      {continueProject && <ContinueCard project={continueProject} />}
+
+      {single && sp && sh ? (
+        <div className="metric-grid dash-kpis">
+          <MetricCard icon={<IconTrendUp />} tone="ai" value={`${sp.percent}%`} label="Lifecycle progress" hint={<Meter percent={sp.percent} done={sp.finished} />} />
+          <MetricCard
+            icon={<IconLayers />}
+            tone={sp.finished ? 'success' : 'primary'}
+            value={<span className="metric-value-text">{stageLabel(single.status)}</span>}
+            label={sp.finished ? 'Lifecycle completed' : 'Current stage'}
+            hint={sp.finished ? `All ${LIFECYCLE_STAGES.length} stages complete` : `Stage ${sp.stageNumber} of ${LIFECYCLE_STAGES.length}`}
+          />
+          <MetricCard
+            icon={sh.health === 'attention' ? <IconAlert /> : <IconCheckCircle />}
+            tone={sh.health === 'attention' ? 'warning' : sh.health === 'unknown' ? 'primary' : 'success'}
+            value={<span className="metric-value-text">{!dataReady && sh.health === 'unknown' ? '…' : HEALTH_LABEL[sh.health]}</span>}
+            label="Health"
+            hint={sh.reasons[0] ?? (sh.health === 'on-track' ? 'No open issues' : undefined)}
+          />
+          <MetricCard
+            icon={<IconDocument />}
+            tone="success"
+            value={dataReady ? `${stats.approvalRate}%` : '…'}
+            label="Requirements approved"
+            hint={dataReady ? `${stats.buckets.approved + stats.buckets.completed} of ${stats.requirements.length} requirements` : undefined}
+          />
+          <MetricCard
+            icon={<IconShieldCheck />}
+            tone="primary"
+            value={dataReady ? `${stats.testCoverage}%` : '…'}
+            label="Test coverage"
+            hint={dataReady ? `${stats.coveredFrs} of ${stats.totalFrs} functional requirements` : undefined}
+          />
+        </div>
+      ) : (
+        <div className="metric-grid dash-kpis">
+          <MetricCard icon={<IconFolder />} tone="primary" value={list.length} label="Total projects" hint={`Across ${stats.byStage.filter((b) => b.count > 0).length} of ${LIFECYCLE_STAGES.length} lifecycle stages`} />
+          <MetricCard icon={<IconRocket />} tone="primary" value={stats.active} label="Active projects" hint={`${stats.inTesting} in Testing`} />
+          <MetricCard icon={<IconCheckCircle />} tone="success" value={stats.completed} label="Completed" hint={`${stats.lifecycleCompletion}% of the portfolio`} />
+          <MetricCard
+            icon={<IconAlert />}
+            tone="warning"
+            value={loadingValue(attention)}
+            label="Need attention"
+            hint={!dataReady ? 'Checking projects…' : attention > 0 ? 'Reviews, evidence gaps, conflicts or changes' : 'No open issues'}
+          />
+          <MetricCard icon={<IconTrendUp />} tone="ai" value={`${stats.avg}%`} label="Average lifecycle progress" hint={<Meter percent={stats.avg} />} />
+        </div>
+      )}
+
+      {isReport ? (
+        <>
+      {signalsBlock}
+      {dataReady && stats.pendingApprovals.length > 0 && (
+        <section className="panel dash-callout" aria-labelledby="pending-title">
+          <header className="panel-head tight">
+            <span className="dash-callout-icon" aria-hidden="true">
+              <IconLock width={16} height={16} />
+            </span>
+            <div className="dash-callout-text">
+              <h2 id="pending-title" className="panel-title">
+                Stage transitions awaiting Reviewer approval
+              </h2>
+              <p className="panel-sub">These projects stay in their current stage until a Reviewer who did not submit the request approves it.</p>
+            </div>
+            <span className="status-pill tone-warning">{stats.pendingApprovals.length} pending</span>
+          </header>
+          <ul className="pending-list">
+            {stats.pendingApprovals.map(({ project, request }) => (
+              <li key={request.id}>
+                <Link to={`/projects/${project.id}#lifecycle`} className="pending-link">
+                  <span className="pending-name">{project.name}</span>
+                  <span className="pending-move">
+                    {stageLabel(request.fromStatus)} → {stageLabel(request.toStatus)}
+                  </span>
+                  <span className="muted">
+                    Submitted by {roleLabel(request.requestedByRole)} · {formatRelativeTime(request.requestedAt)}
+                  </span>
+                  <span className="status-pill tone-warning">Awaiting Reviewer</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {mainBlock}
+        </>
+      ) : (
+        <>
+          <section className="panel dash-attention" aria-labelledby="attention-title">
+            <header className="panel-head tight">
+              <span className="dash-callout-icon" aria-hidden="true">
+                <IconAlert width={16} height={16} />
+              </span>
+              <div className="dash-callout-text">
+                <h2 id="attention-title" className="panel-title">
+                  Needs your attention
+                </h2>
+                <p className="panel-sub">Projects waiting for a Reviewer, with evidence gaps, conflicts or changes to review</p>
+              </div>
+              {dataReady && attentionRows.length > 0 && <span className="status-pill tone-warning">{attentionRows.length}</span>}
+            </header>
+            {!dataReady ? (
+              <>
+                <div className="skeleton skeleton-line" />
+                <div className="skeleton skeleton-line" />
+              </>
+            ) : attentionRows.length === 0 ? (
+              <p className="dash-all-clear">
+                <IconCheckCircle width={16} height={16} aria-hidden="true" /> All clear — no project needs attention right now.
+              </p>
+            ) : (
+              <ul className="pending-list">
+                {attentionRows.map(({ project, health }) => {
+                  const request = stats.lifecycleById.get(project.id)?.pendingTransition;
+                  return (
+                    <li key={project.id}>
+                      <Link to={`/projects/${project.id}${request ? '#lifecycle' : ''}`} className="pending-link">
+                        <span className="pending-name">{project.name}</span>
+                        <span className="pending-move">{request ? `${stageLabel(request.fromStatus)} → ${stageLabel(request.toStatus)}` : `Now: ${activeStagesLabel(project.status)}`}</span>
+                        <span className="muted">
+                          {health?.reasons.join(' · ')}
+                          {request && ` · submitted by ${roleLabel(request.requestedByRole)} ${formatRelativeTime(request.requestedAt)}`}
+                        </span>
+                        <span className={`status-pill ${request ? 'tone-warning' : 'tone-neutral'}`}>{request ? 'Awaiting Reviewer' : 'Open project'}</span>
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+
+          <section className="dash-recent" aria-labelledby="recent-title">
+            <header className="dash-section-head">
+              <div>
+                <h2 id="recent-title">Recent projects</h2>
+                <p>{recent.length < list.length ? `The ${Math.min(6, recent.length)} most recently updated of ${list.length}` : 'Sorted by most recent update'}</p>
+              </div>
+              <Link to="/projects" className="btn btn-ghost btn-sm">
+                All projects <IconArrowRight width={14} height={14} />
+              </Link>
+            </header>
+            <div className="project-grid">
+              {recent.slice(0, 6).map((p) => (
+                <ProjectCard key={p.id} project={p} lifecycle={stats.lifecycleById.get(p.id)} onUpdated={onCardUpdated} onDeleted={onCardDeleted} />
+              ))}
+            </div>
+          </section>
+
+      {activityBlock}
+
+          <details className="dash-analytics">
+            <summary>
+              <IconTrendUp width={16} height={16} aria-hidden="true" />
+              <span>
+                <strong>Portfolio analytics</strong>
+                <small>Delivery signals, project health, lifecycle distribution, requirement and test statistics</small>
+              </span>
+              <IconChevronDown width={16} height={16} className="dash-analytics-chevron" aria-hidden="true" />
+            </summary>
+            <div className="dash-analytics-body">
+      {signalsBlock}
+      {mainBlock}
+      {!single && (
+        <section className="panel" aria-labelledby="matrix-title">
+          <header className="panel-head">
+            <div>
+              <h2 id="matrix-title">Stage by project</h2>
+              <p>
+                Where every project is in its lifecycle · average <strong>{stats.avg}%</strong> · {stats.completed} of {list.length} completed
+                {dataReady && stats.evidenceGaps > 0 && ` · ${stats.evidenceGaps} with an evidence gap`}
+              </p>
+            </div>
+            <Link to="/projects" className="btn btn-ghost btn-sm">
+              All projects <IconArrowRight width={14} height={14} />
+            </Link>
+          </header>
+          <div className="table-scroll">
+            <table className="sdlc-matrix dash-matrix">
+              <thead>
+                <tr>
+                  <th scope="col">Project</th>
+                  {LIFECYCLE_STAGES.map((s) => (
+                    <th key={s.status} scope="col" title={s.description}>
+                      <span className="matrix-step">{s.status + 1}</span>
+                      <span className="matrix-stage">{s.label}</span>
+                    </th>
+                  ))}
+                  <th scope="col" className="num">
+                    Progress
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {ranked.map(({ project, progress }) => {
+                  const awaiting = !!stats.lifecycleById.get(project.id)?.pendingTransition;
+                  return (
+                    <tr key={project.id} className={progress.finished ? 'is-complete' : undefined}>
+                      <th scope="row">
+                        <Link to={`/projects/${project.id}`} title={project.name}>
+                          {project.name}
+                        </Link>
+                      </th>
+                      {LIFECYCLE_STAGES.map((s) => {
+                        // The final stage, once reached, is finished rather than current (as in LifecycleStepper).
+                        const reached = stageState(s.status, project.status);
+                        const state = reached === 'current' && s.status === LAST_STAGE ? 'completed' : reached;
+                        const text = state === 'current' && awaiting ? 'Awaiting review' : STAGE_STATE_LABEL[state];
+                        return (
+                          <td key={s.status}>
+                            <span className={`matrix-cell ${state}${state === 'current' && awaiting ? ' awaiting' : ''}`} role="img" aria-label={`${s.label}: ${text}`} title={`${s.label}: ${text}`}>
+                              {state === 'completed' ? <IconCheck width={12} height={12} strokeWidth={3} /> : state === 'current' ? <span className="dot" /> : null}
+                            </span>
+                          </td>
+                        );
+                      })}
+                      <td className="num">
+                        <span className="matrix-progress">
+                          <Meter percent={progress.percent} done={progress.finished} />
+                          <strong>{progress.percent}%</strong>
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <ul className="matrix-legend" aria-label="Legend">
+            <li>
+              <span className="matrix-cell completed">
+                <IconCheck width={12} height={12} strokeWidth={3} />
+              </span>
+              Completed
+            </li>
+            <li>
+              <span className="matrix-cell current">
+                <span className="dot" />
+              </span>
+              Current stage
+            </li>
+            <li>
+              <span className="matrix-cell current awaiting">
+                <span className="dot" />
+              </span>
+              Awaiting Reviewer approval
+            </li>
+            <li>
+              <span className="matrix-cell upcoming" />
+              Upcoming
+            </li>
+          </ul>
+        </section>
+      )}
+
+      {insightsBlock}
+            </div>
+          </details>
+        </>
+      )}
+
+      {isReport && (
+        <>
+      {insightsBlock}
+      {activityBlock}
+        </>
+      )}
     </div>
   );
 }
@@ -1065,5 +1197,85 @@ function ProjectFilter({ projects, selected, onChange }: { projects: Project[]; 
         </div>
       )}
     </div>
+  );
+}
+
+const INTRO_KEY = 'aireap.dash-intro-dismissed';
+
+/** A short, dismissible explanation of the nine stages for first-time users. */
+function HowItWorks() {
+  const [hidden, setHidden] = useState(() => {
+    try {
+      return localStorage.getItem(INTRO_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  if (hidden) return null;
+  const dismiss = () => {
+    setHidden(true);
+    try {
+      localStorage.setItem(INTRO_KEY, '1');
+    } catch {
+      // best effort
+    }
+  };
+  return (
+    <section className="panel how-it-works" aria-labelledby="how-title">
+      <header className="how-head">
+        <div>
+          <span className="eyebrow">How AI-REAP works</span>
+          <h2 id="how-title">Every project moves through {STAGE_COUNT} stages</h2>
+          <p>Start by uploading your requirements document. AI-REAP analyses it, helps you check it, and turns it into design, tasks and tests — you review and approve each step.</p>
+        </div>
+        <button type="button" className="icon-btn" onClick={dismiss} aria-label="Hide this introduction" title="Hide this introduction">
+          <IconX width={16} height={16} />
+        </button>
+      </header>
+      <ol className="how-steps">
+        {STAGES.map((st) => (
+          <li key={st.key} title={st.summary}>
+            <span className="how-icon" aria-hidden="true">
+              <StageIcon stage={st.key} width={16} height={16} />
+            </span>
+            <span className="how-text">
+              <strong>
+                {st.number}. {st.name}
+              </strong>
+              <small>{st.summary}</small>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+/** The project the user opened last, with a one-click way back into its current stage. */
+function ContinueCard({ project }: { project: Project }) {
+  const progress = lifecycleProgress(project.status);
+  const stage = currentStage(project.status);
+  return (
+    <section className="panel continue-card" aria-labelledby="continue-title">
+      <span className="continue-icon" aria-hidden="true">
+        <StageIcon stage={stage.key} width={20} height={20} />
+      </span>
+      <div className="continue-text">
+        <span className="eyebrow">Continue where you left off</span>
+        <h2 id="continue-title">{project.name}</h2>
+        <p>
+          Now in <strong>{activeStagesLabel(project.status)}</strong> · stage {stage.number} of {STAGE_COUNT} · {progress.percent}% overall
+        </p>
+        <ProgressBar percent={progress.percent} />
+      </div>
+      <div className="continue-actions">
+        <Link to={`/projects/${project.id}`} className="btn btn-secondary">
+          Project overview
+        </Link>
+        <Link to={phasePath(project.id, stage.segment)} className="btn btn-primary">
+          Continue: {stage.name} <IconArrowRight width={15} height={15} />
+        </Link>
+      </div>
+    </section>
   );
 }

@@ -42,14 +42,14 @@ export function DocumentsPanel({ projectId }: { projectId: string }) {
     <div className="card" id="project-documents">
       <h2>Project Documents</h2>
       <p className="hint">§26 — specs/notes fed into chunking + embeddings for the Copilot's semantic search below.</p>
-      <button type="button" disabled={busy === 'load'} onClick={load}>
+      <button type="button" className="btn btn-secondary" disabled={busy === 'load'} onClick={load}>
         {busy === 'load' ? 'Loading…' : documents ? 'Refresh' : 'Load documents'}
       </button>
 
       <div className="upload-row">
         <span className="hint">upload a .txt, .pdf, or .docx document:</span>
         <input type="file" accept=".txt,.pdf,.docx" onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)} />
-        <button type="button" disabled={!uploadFile || busy === 'upload'} onClick={onUpload}>
+        <button type="button" className="btn btn-primary" disabled={!uploadFile || busy === 'upload'} onClick={onUpload}>
           {busy === 'upload' ? 'Uploading…' : 'Upload'}
         </button>
       </div>

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AiReap.Application.Ai.Pipeline;
 using AiReap.Application.Artifacts;
 using AiReap.Application.Artifacts.Payloads;
 using AiReap.Application.Common;
@@ -121,6 +122,10 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
             .GroupBy(r => projectOf[r.SourceArtifactId])
             .ToDictionary(g => g.Key, g => g.ToList());
         var latestOutcome = LatestOutcomes(workRecords);
+        // An open question no one can see (no verified source evidence, ClarificationVisibility) is not
+        // one anyone can answer, so it does not block a stage. Only open questions need the check.
+        var shownOpenQuestions = (await ClarificationVisibility.ShownAsync(
+            _db, artifacts.Where(a => a.ArtifactType == ArtifactType.ClarificationQuestion && IsOpenQuestion(a)).ToList(), cancellationToken)).Keys.ToHashSet();
         var reviewedVersions = developerReviews.Select(r => (r.ArtifactId, r.VersionNumber!.Value)).ToHashSet();
 
         return projects.ToDictionary(
@@ -136,7 +141,8 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
                     .Count(m => memberRoles.TryGetValue(m.UserId, out var roles) && roles.Contains(Roles.BusinessAnalyst)),
                 openNotices.Where(n => n.ProjectId == p.Id).Select(n => n.AffectedArtifactId).ToHashSet(),
                 reviewedVersions,
-                latestOutcome),
+                latestOutcome,
+                shownOpenQuestions),
                 _currentUser.CanSee));
     }
 
@@ -165,7 +171,11 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
         int BusinessAnalystMembers,
         HashSet<Guid> OpenNoticeArtifactIds,
         HashSet<(Guid ArtifactId, int Version)> DeveloperReviewedVersions,
-        IReadOnlyDictionary<Guid, WorkOutcome> LatestOutcome);
+        IReadOnlyDictionary<Guid, WorkOutcome> LatestOutcome,
+        HashSet<Guid> ShownOpenQuestions);
+
+    private static bool IsOpenQuestion(Artifact question) =>
+        (JsonSerializer.Deserialize<ClarificationQuestionPayload>(question.DataJson, JsonOptions)?.ClarificationStatus ?? "Open") == "Open";
 
     // Pass/fail and counts are the same for every caller. Only the artifact codes quoted in a failing
     // check's detail follow ArtifactVisibility: an artifact the caller may not see (for a Developer,
@@ -209,8 +219,7 @@ public class LifecycleEvidenceService : ILifecycleEvidenceService
                 ? Result(key, new(label, false, $"The project has no {what} yet."), CheckBlocker.Of(BlockerReasons.Missing))
                 : Result(key, new(label, true, $"{char.ToUpperInvariant(what[0])}{what[1..]} recorded."));
 
-        var openQuestions = Of(ArtifactType.ClarificationQuestion).Where(q =>
-            (JsonSerializer.Deserialize<ClarificationQuestionPayload>(q.DataJson, JsonOptions)?.ClarificationStatus ?? "Open") == "Open").ToList();
+        var openQuestions = Of(ArtifactType.ClarificationQuestion).Where(q => e.ShownOpenQuestions.Contains(q.Id)).ToList();
 
         // §15 — conflicts are never deleted; a human resolves one by rejecting one side of the pair.
         var conflictPairs = e.Relationships.Where(r =>

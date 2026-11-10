@@ -237,6 +237,8 @@ public class TestHost : IAsyncDisposable
             b.UseSetting("Ai:Groq:ApiKey", "");
             b.UseSetting("GROQ_API_KEY", ""); // the machine-level key must not reach tests either
             b.UseSetting("Ai:Anthropic:ApiKey", "");
+            // No background read of every clarification question at start: tests read what they seed.
+            b.UseSetting("ClarificationVisibility:WarmOnStartup", "false");
             // Kept original uploads go to a throwaway directory of this test database, never the
             // developer's own store (docs/SOURCE_DOCUMENT_RETENTION.md). A test can still override it.
             b.UseSetting("OriginalDocuments:RootPath", Path.Combine(Path.GetTempPath(), "aireap-test-originals", DatabaseName));

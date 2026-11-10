@@ -7,9 +7,14 @@ import { useProjectInsights } from '../hooks/useProjectInsights';
 import { isGatedStage, lifecycleProgress, LIFECYCLE_STAGES, stageLabel } from '../lib/lifecycle';
 import { phasePath, workAreaForStage } from '../lib/workAreas';
 import { BUCKET_COLOR, BUCKET_LABEL, BUCKET_ORDER, countBuckets, isRequirement } from '../lib/requirements';
-import { formatFullDateTime, formatRelativeTime, statusLabel, statusVariant } from '../lib/format';
-import { PageHeader } from '../components/ui/PageHeader';
+import { formatFullDateTime, formatRelativeTime, initials, statusLabel, statusVariant } from '../lib/format';
+import { activeStagesLabel, completedWorkStages, currentStage, STAGE_COUNT } from '../lib/stages';
+import { useStageSignals } from '../context/StageSignalsContext';
+import { ProgressBar } from '../components/ui/ProgressBar';
+import { Term } from '../components/ui/Term';
+import { ProjectJourney } from '../components/stage/ProjectJourney';
 import { EmptyState } from '../components/ui/EmptyState';
+import { ExpandableText } from '../components/ui/ExpandableText';
 import { Avatar } from '../components/ui/Avatar';
 import { ProjectActionsMenu } from '../components/ProjectActionsMenu';
 import { LifecyclePanel } from '../components/LifecyclePanel';
@@ -25,6 +30,9 @@ export function ProjectOverviewPage() {
   const stageArea = workAreaForStage(project.status);
   const canEdit = hasRole('Administrator') || hasRole('BusinessAnalyst');
   const { hash } = useLocation();
+  const signals = useStageSignals();
+  const focus = currentStage(project.status);
+  const work = completedWorkStages(project.status);
 
   // A lifecycle change moves Project.status on the server; re-read the project so the whole shell follows.
   const refreshProject = useCallback(async () => {
@@ -79,27 +87,43 @@ export function ProjectOverviewPage() {
 
   return (
     <>
-      <PageHeader
-        title={project.name}
-        subtitle={project.description || 'No description yet.'}
-        badge={
-          <span className="overview-stage">
-            <span className="overview-stage-label">Current stage</span>{' '}
-            <span className={`status-pill tone-${statusVariant(project.status)}`}>{statusLabel(project.status)}</span>{' '}
-            <span className="overview-stage-meta">
-              Stage {progress.stageNumber} of {LIFECYCLE_STAGES.length}
-              {!progress.finished && (
-                <>
-                  {' '}
-                  · Next: {stageLabel(project.status + 1)}
-                  {isGatedStage(project.status) && ' (needs Reviewer approval)'}
-                </>
-              )}
-            </span>
+      <section className="project-hero" aria-labelledby="project-title">
+        <div className="project-hero-main">
+          <span className="project-hero-avatar" aria-hidden="true">
+            {initials(project.name)}
           </span>
-        }
-        actions={
-          <>
+          <div className="project-hero-text">
+            <span className="eyebrow">Project</span>
+            <h1 id="project-title">{project.name}</h1>
+            <div className="project-hero-desc">{project.description ? <ExpandableText lines={2}>{project.description}</ExpandableText> : <span className="muted">No description yet.</span>}</div>
+            {(project.domain || project.targetUsers || project.expectedTimeline) && (
+              <dl className="project-hero-facts">
+                {project.domain && (
+                  <div>
+                    <dt>Domain</dt>
+                    <dd>{project.domain}</dd>
+                  </div>
+                )}
+                {project.targetUsers && (
+                  <div>
+                    <dt>Target users</dt>
+                    <dd>{project.targetUsers}</dd>
+                  </div>
+                )}
+                {project.expectedTimeline && (
+                  <div>
+                    <dt>Timeline</dt>
+                    <dd>{project.expectedTimeline}</dd>
+                  </div>
+                )}
+                <div>
+                  <dt>Updated</dt>
+                  <dd title={formatFullDateTime(project.updatedAt)}>{formatRelativeTime(project.updatedAt)}</dd>
+                </div>
+              </dl>
+            )}
+          </div>
+          <div className="page-header-actions project-hero-actions">
             <Link to={phasePath(project.id, 'review')} className={`btn ${progress.finished ? 'btn-primary' : 'btn-secondary'}`}>
               <IconCheckCircle width={15} height={15} /> SDLC Review
             </Link>
@@ -109,9 +133,64 @@ export function ProjectOverviewPage() {
               </Link>
             )}
             <ProjectActionsMenu project={project} onUpdated={setProject} showOpen={false} label="More project actions" />
-          </>
-        }
-      />
+          </div>
+        </div>
+        <div className="project-hero-stats">
+          <div className="hero-stat hero-stat-progress">
+            <span className="hero-stat-label">Overall progress</span>
+            <strong className="hero-stat-value">{progress.percent}%</strong>
+            <ProgressBar percent={progress.percent} />
+            <small>Based on the approved lifecycle status</small>
+          </div>
+          <div className="hero-stat">
+            <span className="hero-stat-label">Current stage</span>
+            <strong className="hero-stat-value text">{activeStagesLabel(project.status)}</strong>
+            <small>
+              Stage {focus.number} of {STAGE_COUNT}
+            </small>
+          </div>
+          <div className="hero-stat">
+            <span className="hero-stat-label">
+              <Term id="lifecycleStatus" />
+            </span>
+            <span className={`status-pill tone-${statusVariant(project.status)}`}>{statusLabel(project.status)}</span>
+            <small>
+              {progress.finished ? (
+                'Lifecycle completed'
+              ) : (
+                <>
+                  Next: {stageLabel(project.status + 1)}
+                  {isGatedStage(project.status) && ' (needs Reviewer approval)'}
+                </>
+              )}
+            </small>
+          </div>
+          <div className="hero-stat">
+            <span className="hero-stat-label">Work stages completed</span>
+            <strong className="hero-stat-value">
+              {work.done}
+              <span className="hero-stat-of"> / {work.total}</span>
+            </strong>
+            <small>AI Copilot and Review are available anytime</small>
+          </div>
+        </div>
+      </section>
+
+      <div className="next-action next-action-hero">
+        <span className="next-action-icon">
+          <IconSparkles width={18} height={18} />
+        </span>
+        <div className="next-action-text">
+          <span className="eyebrow">Recommended next step</span>
+          <h3>{next.title}</h3>
+          <p>{next.text}</p>
+        </div>
+        <Link to={next.to} className="btn btn-primary">
+          {next.cta} <IconArrowRight width={15} height={15} />
+        </Link>
+      </div>
+
+      <ProjectJourney projectId={project.id} status={project.status} signals={signals} data={{ dashboard, artifacts, stakeholders, matrix }} />
 
       <LifecyclePanel project={project} version={contentVersion} onProjectChanged={refreshProject} />
 
@@ -119,20 +198,6 @@ export function ProjectOverviewPage() {
 
       <div className="overview-grid">
         <div className="overview-main">
-          <div className="next-action">
-            <span className="next-action-icon">
-              <IconSparkles width={18} height={18} />
-            </span>
-            <div className="next-action-text">
-              <span className="eyebrow">Recommended next step</span>
-              <h3>{next.title}</h3>
-              <p>{next.text}</p>
-            </div>
-            <Link to={next.to} className="btn btn-primary">
-              {next.cta} <IconArrowRight width={15} height={15} />
-            </Link>
-          </div>
-
           <section className="panel" aria-labelledby="req-title">
             <header className="panel-head">
               <div>
@@ -228,7 +293,7 @@ export function ProjectOverviewPage() {
               <div>
                 <dt>Lifecycle stage</dt>
                 <dd>
-                  {statusLabel(project.status)} ({progress.stageNumber} of 8)
+                  {statusLabel(project.status)} ({progress.stageNumber} of {LIFECYCLE_STAGES.length})
                 </dd>
               </div>
               <div>

@@ -27,11 +27,13 @@ public partial class AnthropicAiChatClient : IAiChatClient
 
     private readonly HttpClient _httpClient;
     private readonly AnthropicOptions _options;
+    private readonly IAiUsageMeter? _usage;
 
-    public AnthropicAiChatClient(HttpClient httpClient, IOptions<AnthropicOptions> options)
+    public AnthropicAiChatClient(HttpClient httpClient, IOptions<AnthropicOptions> options, IAiUsageMeter? usage = null)
     {
         _httpClient = httpClient;
         _options = options.Value;
+        _usage = usage;
 
         _httpClient.BaseAddress ??= new Uri(_options.BaseUrl);
         // Per-attempt timeouts are enforced by ResilientAiChatClient (Ai:Anthropic:TimeoutSeconds);
@@ -67,6 +69,13 @@ public partial class AnthropicAiChatClient : IAiChatClient
         {
             throw new AiOutputValidationException(
                 $"The Anthropic API returned a response envelope that was not valid JSON{RequestIdSuffix(requestId)}.");
+        }
+
+        // Counted before the response is judged: a truncated or refused response is billed too.
+        if (parsed?.Usage is { } usage)
+        {
+            _usage?.Record(ProviderName, parsed.Model ?? _options.Model, new AiUsage(
+                usage.InputTokens ?? 0, usage.OutputTokens ?? 0, usage.CacheCreationInputTokens ?? 0, usage.CacheReadInputTokens ?? 0));
         }
 
         return ExtractText(parsed, requestId);
@@ -306,7 +315,14 @@ public partial class AnthropicAiChatClient : IAiChatClient
         [property: JsonPropertyName("model")] string? Model,
         [property: JsonPropertyName("content")] List<ContentBlock>? Content,
         [property: JsonPropertyName("stop_reason")] string? StopReason,
-        [property: JsonPropertyName("stop_details")] StopDetails? StopDetails);
+        [property: JsonPropertyName("stop_details")] StopDetails? StopDetails,
+        [property: JsonPropertyName("usage")] Usage? Usage = null);
+
+    private record Usage(
+        [property: JsonPropertyName("input_tokens")] long? InputTokens,
+        [property: JsonPropertyName("output_tokens")] long? OutputTokens,
+        [property: JsonPropertyName("cache_creation_input_tokens")] long? CacheCreationInputTokens,
+        [property: JsonPropertyName("cache_read_input_tokens")] long? CacheReadInputTokens);
 
     private record ContentBlock(
         [property: JsonPropertyName("type")] string Type,

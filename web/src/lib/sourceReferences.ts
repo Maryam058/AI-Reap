@@ -1,15 +1,8 @@
 // Clarification questions' links into their requirement source (ClarificationQuestionCard,
-// SourceDocumentViewer). Pure, so the rules are testable: a link is drawn only from a reference the
-// server resolved (SourceReferenceIndex) whose label is still at its place in the reason, and the
-// viewer highlights it only where the source text it fetched still matches. Everything else - an
-// unresolved "Section 9.9", a page, any markup in the reason - stays plain text; segments are
-// strings rendered by React as text, never as HTML.
+// SourceDocumentViewer). Pure, so the rules are testable: a link is drawn only for a passage the server
+// verified and placed (ClarificationEvidenceLocator), and the viewer highlights it only where the source
+// text it fetched still matches. Everything is rendered by React as text, never as HTML.
 import type { SourceReference } from '../api/types';
-
-export interface ReasonSegment {
-  text: string;
-  reference?: SourceReference;
-}
 
 const isIndex = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0;
 
@@ -25,41 +18,6 @@ function isUsable(r: unknown): r is SourceReference {
     isIndex(ref.endLine) &&
     ref.endLine > ref.line
   );
-}
-
-// The reason split into plain text and links, in order. A reference whose label is no longer at its
-// stored start (an older record, an edited reason) takes the label's first free occurrence; one whose
-// label is not in the reason, or overlaps an earlier link, is dropped.
-export function reasonSegments(reason: string, references: readonly unknown[] | null | undefined): ReasonSegment[] {
-  const placed: { start: number; end: number; reference: SourceReference }[] = [];
-  const free = (start: number, end: number) => placed.every((p) => end <= p.start || p.end <= start);
-
-  for (const candidate of Array.isArray(references) ? references : []) {
-    if (!isUsable(candidate)) continue;
-    const { label } = candidate;
-    let start = isIndex(candidate.start) && reason.startsWith(label, candidate.start) ? candidate.start : -1;
-    if (start < 0 || !free(start, start + label.length)) {
-      start = -1;
-      for (let at = reason.indexOf(label); at >= 0; at = reason.indexOf(label, at + 1)) {
-        if (free(at, at + label.length)) {
-          start = at;
-          break;
-        }
-      }
-    }
-    if (start >= 0) placed.push({ start, end: start + label.length, reference: candidate });
-  }
-
-  placed.sort((a, b) => a.start - b.start);
-  const segments: ReasonSegment[] = [];
-  let at = 0;
-  for (const p of placed) {
-    if (p.start > at) segments.push({ text: reason.slice(at, p.start) });
-    segments.push({ text: reason.slice(p.start, p.end), reference: p.reference });
-    at = p.end;
-  }
-  if (at < reason.length || segments.length === 0) segments.push({ text: reason.slice(at) });
-  return segments;
 }
 
 // The source's lines exactly as the server splits them (SourceReferenceIndex.Lines).
@@ -190,23 +148,6 @@ export function sourceFormatNote(fileName: string | null | undefined): string {
 // Whether an evidence passage can be opened and highlighted: it was placed in the source by the server.
 export const isLocatedEvidence = (reference: unknown): reference is SourceReference => isUsable(reference);
 
-// How a question's evidence is introduced, by what the question is about - so a question about missing
-// information never reads as if the missing detail were quoted.
-export function evidenceHeading(kind: string | null | undefined, count: number): string {
-  switch (kind) {
-    case 'missing':
-      return 'Context in the source — the information asked for is not written there';
-    case 'ambiguous':
-      return count > 1 ? 'The ambiguous statements' : 'The ambiguous statement';
-    case 'contradiction':
-      return count > 1 ? 'The conflicting statements' : 'The conflicting statement';
-    case 'undefined-rule':
-      return 'Where the rule is referred to';
-    default:
-      return count > 1 ? 'The passages that raised this question' : 'The passage that raised this question';
-  }
-}
-
 // What the viewer calls the highlighted passage, by the same rule.
 export function evidencePurpose(kind: string | null | undefined): string {
   switch (kind) {
@@ -223,32 +164,25 @@ export function evidencePurpose(kind: string | null | undefined): string {
   }
 }
 
-// Why a recovered passage is linked, for a question saved before its evidence was kept.
-export function recoveryNote(recovery: SourceReference['recovery']): string | null {
-  switch (recovery) {
-    case 'generation-response':
-      return 'Linked from the passage the analysis quoted when it raised this question.';
-    case 'quoted-in-question':
-      return 'Linked from the words this question quotes.';
-    case 'requirement-id':
-      return 'Linked from the requirement this question names.';
-    default:
-      return null;
-  }
-}
-
-// Said when the quoted words are written in more than one place in the source: the server picks the
-// one in a section the question cites or nearest its other evidence, else the first - so the reader
-// is asked to check rather than told it is certain.
-export function occurrenceNote(reference: SourceReference): string | null {
-  const n = reference.occurrences;
-  return typeof n === 'number' && n > 1 ? `These words appear ${n} times in the source — check that the highlighted one is the place meant.` : null;
-}
-
 // The accessible name of a link: what it opens, not only its words.
 export function referenceAriaLabel(reference: SourceReference): string {
   const where = reference.heading ? `"${reference.heading}"` : `"${reference.label}"`;
   return `${reference.label}: open the requirement source at ${where}`;
+}
+
+// What a question's source link reads: the heading of the section its passage is in, as the source
+// writes it ("3.2 User Notifications"). A passage outside any recognised section has no heading, and
+// none is made up for it.
+export function sourceLinkLabel(reference: SourceReference): string {
+  const heading = reference.heading ? headingTitle(reference.heading).replace(/^#+\s*/, '') : '';
+  return heading || 'Source passage';
+}
+
+// The link's accessible name: where it goes and that the passage is highlighted there.
+export function sourceLinkAriaLabel(reference: SourceReference, statement?: string | null): string {
+  const label = sourceLinkLabel(reference);
+  const where = label === 'Source passage' ? 'the requirement source' : `“${label}” in the requirement source`;
+  return `${statement ? `${statement}: ` : ''}Open ${where} at the highlighted passage`;
 }
 
 // ---- the original document (SourceDocumentViewer: PdfOriginalView, DocxOriginalView) ----------------

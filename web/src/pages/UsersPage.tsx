@@ -5,6 +5,7 @@ import { ApiError } from '../api/client';
 import { usersApi } from '../api/users';
 import { ROLES, ROLE_LABELS, type UserAccount } from '../api/types';
 import { PageHeader } from '../components/ui/PageHeader';
+import { Dialog } from '../components/ui/Dialog';
 
 // Administrator-only. Hiding this page is a convenience; the API rejects non-administrators
 // on every /api/users call, so nothing here relies on the UI for security.
@@ -27,6 +28,8 @@ export function UsersPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // The user awaiting confirmation of deactivation; null when no confirmation is open.
+  const [confirmDeactivate, setConfirmDeactivate] = useState<UserAccount | null>(null);
 
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -143,7 +146,8 @@ export function UsersPage() {
         {!users ? (
           <p>Loading…</p>
         ) : (
-          <table className="users-table">
+          <div className="table-scroll">
+          <table className="data-table users-table">
             <thead>
               <tr>
                 <th>Name</th>
@@ -195,11 +199,11 @@ export function UsersPage() {
                           className="secondary"
                           disabled={busyId === u.id}
                           onClick={() =>
-                            change(
-                              u.id,
-                              () => usersApi.setActive(u.id, !u.isActive, token),
-                              `${u.isActive ? 'Deactivated' : 'Reactivated'} ${u.email}.`,
-                            )
+                            // Deactivating signs the person out and blocks their sign-in, so it is confirmed
+                            // first; reactivating is not destructive and stays one click.
+                            u.isActive
+                              ? setConfirmDeactivate(u)
+                              : change(u.id, () => usersApi.setActive(u.id, true, token), `Reactivated ${u.email}.`)
                           }
                         >
                           {u.isActive ? 'Deactivate' : 'Reactivate'}
@@ -211,8 +215,49 @@ export function UsersPage() {
               })}
             </tbody>
           </table>
+          </div>
         )}
       </div>
+      {confirmDeactivate && (
+        <Dialog
+          title={`Deactivate ${confirmDeactivate.displayName || confirmDeactivate.email}?`}
+          description="They are signed out straight away and cannot sign in again until an administrator reactivates the account. Their work and history are kept."
+          onClose={() => setConfirmDeactivate(null)}
+          footer={
+            <>
+              <button type="button" className="btn btn-secondary" onClick={() => setConfirmDeactivate(null)} data-autofocus>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={() => {
+                  const u = confirmDeactivate;
+                  setConfirmDeactivate(null);
+                  void change(u.id, () => usersApi.setActive(u.id, false, token), `Deactivated ${u.email}.`);
+                }}
+              >
+                Deactivate user
+              </button>
+            </>
+          }
+        >
+          <dl className="kv">
+            <div>
+              <dt>Name</dt>
+              <dd>{confirmDeactivate.displayName || '—'}</dd>
+            </div>
+            <div>
+              <dt>Email</dt>
+              <dd>{confirmDeactivate.email}</dd>
+            </div>
+            <div>
+              <dt>Role</dt>
+              <dd>{confirmDeactivate.role ? ROLE_LABELS[confirmDeactivate.role as keyof typeof ROLE_LABELS] ?? confirmDeactivate.role : 'No role'}</dd>
+            </div>
+          </dl>
+        </Dialog>
+      )}
     </>
   );
 }

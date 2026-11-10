@@ -124,6 +124,15 @@ public class ClaudeLargeSrsPipelineTests
         return (db, source);
     }
 
+    // A later stage builds on the source's FRs and is refused without one (release rule), so the
+    // later-stage tests seed one approved FR, as a real later stage would have.
+    private static void WithFunctionalRequirement(InMemoryAiReapDb db, RequirementSource source) => db.Artifacts.Add(new Artifact
+    {
+        Id = Guid.NewGuid(), ProjectId = source.ProjectId, RequirementSourceId = source.Id, ArtifactType = ArtifactType.FunctionalRequirement,
+        Code = "FR-001", Title = "Book a room", Status = ArtifactStatus.Approved, Origin = ArtifactOrigin.Ai, DataJson = "{}", CurrentVersion = 1,
+        CreatedByUserId = "phase0-offline-user", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
+    });
+
     private static RequirementAnalysisService Analysis(InMemoryAiReapDb db, IAiChatClient ai) =>
         new(ai, db, new OfflineCurrentUser(), new AllowAllProjectAccess(), new NoDocumentsRetriever(), new BatchModeOff(),
             NullLogger<RequirementAnalysisService>.Instance);
@@ -241,6 +250,7 @@ public class ClaudeLargeSrsPipelineTests
         }.ToJsonString();
         await using var claude = new ClaudeStack(Answering(_ => Ok(response)));
         var (db, source) = Seed(large);
+        WithFunctionalRequirement(db, source);
 
         await BusinessRules(db, claude.Client).GenerateAsync(source.Id);
 
@@ -255,6 +265,7 @@ public class ClaudeLargeSrsPipelineTests
         var settings = new Dictionary<string, string?> { ["Ai:Anthropic:MaxRequestTokens"] = "56000" };
         await using var claude = new ClaudeStack(Answering(_ => Ok("{\"businessRules\":[]}")), settings);
         var (db, source) = Seed(LargeSource);
+        WithFunctionalRequirement(db, source);
 
         var ex = await Assert.ThrowsAsync<AiStageOverBudgetException>(() => BusinessRules(db, claude.Client).GenerateAsync(source.Id));
 

@@ -8,7 +8,8 @@
 :root {
   color-scheme: light;
   font-family: 'Inter', 'Aptos', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --font-display: 'Inter', 'Aptos', 'Segoe UI', Roboto, sans-serif;
+  /* MMC uses Inter throughout (headings included) — no separate display face. */
+  --font-display: 'Inter', 'Aptos', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 
   --bg: #f5f9fc;
   --bg-gradient: linear-gradient(180deg, #f7fbfe 0%, #eef6fb 100%);
@@ -30,7 +31,20 @@
   --primary-light: #4c77dd;
   --primary-soft: #eef5ff;
   --primary-soft-border: #cdddf7;
-
+  /* Solid cobalt fill for primary buttons and the active nav item. MMC keeps #2452c7 in both
+     themes; --primary (text/links) lightens in dark mode for contrast, this does not. */
+  --primary-solid: #2452c7;
+  --primary-solid-hover: #173b98;
+  --nav-active-shadow: 0 8px 18px rgba(36, 82, 199, 0.18);
+  --nav-hover: #eef5ff;
+  --nav-group-label: #7d8da5;
+  --input-border-hover: #9fb0c8;
+  --tooltip-bg: #071b3a;
+  --page-header-bg: linear-gradient(105deg, #e8f6ff 0%, #eef9f6 58%, #dff6e8 100%);
+  --page-header-border: #dbeefa;
+  --page-header-shadow: 0 12px 26px rgba(36, 82, 199, 0.06);
+  --avatar-bg: #071b3a;
+  --auth-bg: linear-gradient(135deg, #f7fbfe 0%, #eef7fb 48%, #e9f7ef 100%);
   --secondary: #16bfa5;
   --secondary-hover: #0c8b7a;
   --secondary-soft: #e6f9f6;
@@ -60,22 +74,27 @@
   --table-row-hover: #f7fbff;
   --table-border: #edf3f8;
 
+  /* Radius scale (MMC): 7px controls, 8px cards/panels/dialogs, 12px only for rare large
+     surfaces, 16px for nav-item highlights (MUI borderRadius: 2 on an 8px shape). */
   --radius-sm: 7px;
-  --radius-md: 7px;
+  --radius-md: 8px;
   --radius-lg: 8px;
-  --radius-xl: 16px;
+  --radius-xl: 12px;
+  --radius-nav: 16px;
   --radius-full: 999px;
 
+  /* Elevation (MMC): near-invisible resting cards, popover lift for menus, deep for dialogs. */
   --shadow-xs: 0 1px 2px rgba(18, 38, 63, 0.04);
   --shadow-sm: 0 8px 22px rgba(18, 38, 63, 0.04);
-  --shadow-md: 0 12px 28px rgba(18, 38, 63, 0.09);
-  --shadow-lg: 0 20px 48px rgba(18, 38, 63, 0.16);
+  --shadow-md: 0 14px 32px rgba(18, 38, 63, 0.12);
+  --shadow-lg: 0 24px 56px rgba(18, 38, 63, 0.18);
+  --focus-ring: 0 0 0 3px rgba(36, 82, 199, 0.22);
 
   --brand-gradient: linear-gradient(135deg, #2452c7 0%, #16bfa5 100%);
   --brand-gradient-soft: linear-gradient(135deg, rgba(36, 82, 199, 0.1) 0%, rgba(22, 191, 165, 0.1) 100%);
 
-  --sidebar-width: 264px;
-  --sidebar-width-collapsed: 68px;
+  --sidebar-width: 248px;
+  --sidebar-width-collapsed: 60px;
   --header-height: 66px;
   --motion-fast: 150ms ease;
   --motion-base: 200ms ease;
@@ -91,7 +110,7 @@
   --surface-sunken: #0a1626;
   --input-surface: #0a1626;
   --border: #1f3148;
-  --border-strong: #2a4159;
+  --border-strong: #334966;
   --text: #e7eef8;
   --text-secondary: #9fb0c7;
   --muted: #9fb0c7;
@@ -102,9 +121,16 @@
   --primary-hover: #6c92e6;
   --primary-active: #2452c7;
   --primary-light: #6c92e6;
-  --primary-soft: #17294a;
+  --primary-soft: #102642;
   --primary-soft-border: #2a4470;
-
+  --nav-hover: #13243a;
+  --nav-group-label: #6d7f99;
+  --input-border-hover: #466384;
+  --page-header-bg: linear-gradient(105deg, #0d2338 0%, #0d2f33 58%, #102d28 100%);
+  --page-header-border: #1f4b5e;
+  --page-header-shadow: 0 16px 36px rgba(0, 0, 0, 0.28);
+  --avatar-bg: #2452c7;
+  --auth-bg: linear-gradient(135deg, #07111f 0%, #0b1b2f 48%, #0b2b2a 100%);
   --secondary: #16bfa5;
   --secondary-hover: #33d6bc;
   --secondary-soft: #0f2b28;
@@ -123,7 +149,7 @@
   --danger-strong: #ff8087;
   --info: #4fc3f2;
   --info-soft: #142a3a;
-  --violet-soft: #17294a;
+  --violet-soft: #102642;
 
   --neutral-soft: #142235;
   --neutral-strong: #9fb0c7;
@@ -138,6 +164,7 @@
   --shadow-sm: 0 8px 22px rgba(0, 0, 0, 0.28);
   --shadow-md: 0 12px 28px rgba(0, 0, 0, 0.36);
   --shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.5);
+  --focus-ring: 0 0 0 3px rgba(108, 146, 230, 0.35);
 
   --brand-gradient: linear-gradient(135deg, #4c77dd 0%, #16bfa5 100%);
 }
@@ -162,9 +189,34 @@ body {
   transition: background var(--motion-base), color var(--motion-base);
 }
 
+/* MMC scrollbars: slim, rounded, theme-aware. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #eef6fb;
+}
+::-webkit-scrollbar-thumb {
+  background: #9cb0c9;
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #738aa8;
+}
+:root[data-theme='dark'] ::-webkit-scrollbar-track {
+  background: #0b1626;
+}
+:root[data-theme='dark'] ::-webkit-scrollbar-thumb {
+  background: #334966;
+}
+:root[data-theme='dark'] ::-webkit-scrollbar-thumb:hover {
+  background: #466384;
+}
+
 h1, h2, h3, h4 {
   font-family: var(--font-display);
-  letter-spacing: normal;
+  letter-spacing: 0;
   color: var(--text);
 }
 
@@ -199,10 +251,10 @@ a {
   align-items: center;
   gap: 0.9rem;
   height: var(--header-height);
-  padding: 0 1.5rem;
+  padding: 0 1rem;
   background: rgba(255, 255, 255, 0.82);
-  backdrop-filter: saturate(180%) blur(12px);
-  -webkit-backdrop-filter: saturate(180%) blur(12px);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
@@ -211,7 +263,7 @@ a {
 }
 
 :root[data-theme='dark'] .topbar {
-  background: rgba(13, 26, 44, 0.78);
+  background: rgba(9, 21, 36, 0.9);
 }
 
 .topbar-spacer {
@@ -250,7 +302,7 @@ a {
 .icon-btn:focus-visible {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-soft);
+  box-shadow: var(--focus-ring);
 }
 
 .sidebar-open-btn {
@@ -333,7 +385,7 @@ main {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
   padding: 1.25rem;
-  margin: 1.25rem 0;
+  margin: 1rem 0;
   text-align: left;
 }
 
@@ -351,8 +403,9 @@ form select {
   display: block;
   width: 100%;
   margin-top: 0.35rem;
-  padding: 0.55rem 0.7rem;
-  border: 1.5px solid var(--border);
+  min-height: 36px;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--input-surface);
   color: var(--text);
@@ -364,7 +417,7 @@ form select {
 form input:hover,
 form textarea:hover,
 form select:hover {
-  border-color: var(--border-strong);
+  border-color: var(--input-border-hover);
 }
 
 form input:focus,
@@ -372,7 +425,7 @@ form textarea:focus,
 form select:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-soft);
+  box-shadow: var(--focus-ring);
 }
 
 button[type='submit'] {
@@ -380,19 +433,19 @@ button[type='submit'] {
   align-items: center;
   gap: 0.4rem;
   height: 36px;
-  background: var(--primary);
+  background: var(--primary-solid);
   color: #fff;
   border: none;
   border-radius: var(--radius-sm);
-  padding: 0 1rem;
+  padding: 0 0.875rem;
   font-size: 0.8125rem;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
   transition: background var(--motion-fast);
 }
 
 button[type='submit']:hover {
-  background: var(--primary-hover);
+  background: var(--primary-solid-hover);
 }
 
 button[type='submit']:disabled {
@@ -439,8 +492,8 @@ button[type='submit']:disabled {
   color: var(--primary);
   font-size: 0.6875rem;
   font-weight: 800;
-  letter-spacing: 0.02em;
-  padding: 0 0.55rem;
+  letter-spacing: 0;
+  padding: 0 0.5625rem;
   border-radius: var(--radius-full);
   white-space: nowrap;
 }
@@ -548,7 +601,7 @@ pre {
 .req-textarea:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 4px var(--primary-soft);
+  box-shadow: var(--focus-ring);
 }
 
 .req-intake-actions {
@@ -1164,27 +1217,6 @@ pre {
   color: var(--text);
 }
 
-.cq-reason {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.4rem;
-  margin: 0 0 0.75rem;
-  font-size: 0.82rem;
-  color: var(--muted);
-}
-
-.cq-reason svg {
-  flex-shrink: 0;
-  margin-top: 0.15rem;
-  color: var(--muted-subtle);
-}
-
-.cq-reason .detail-label {
-  font-size: 0.8rem;
-  letter-spacing: 0;
-  text-transform: none;
-}
-
 /* Kind chip and requirement references next to a clarification question's code. */
 .cq-kind {
   padding: 0.05rem 0.45rem;
@@ -1195,58 +1227,77 @@ pre {
   font-weight: 600;
 }
 
-.cq-refs {
-  font-size: 0.75rem;
+.cq-related {
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
   color: var(--muted);
   overflow-wrap: anywhere;
 }
 
-/* Server-verified quotes the question is grounded in. */
-.cq-evidence {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  margin: 0 0 0.75rem;
-  padding: 0;
-  list-style: none;
-  font-size: 0.8rem;
-}
-
-.cq-evidence blockquote {
-  margin: 0;
-  padding: 0.25rem 0.6rem;
-  border-left: 3px solid var(--border);
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-
-.cq-evidence-block > .detail-label {
-  display: block;
-  margin-bottom: 0.25rem;
+.cq-related .detail-label {
   font-size: 0.8rem;
   letter-spacing: 0;
   text-transform: none;
 }
 
-/* How a passage was linked (recovered, repeated wording, not located). */
-.cq-evidence-note {
-  margin: 0.15rem 0 0 0.6rem;
-  font-size: 0.75rem;
+/* The verified passage a question comes from: one chip per passage (both statements of a conflict),
+   named by its section heading, opening the source at that passage highlighted (SourceDocumentViewer). */
+.cq-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0 0 0.75rem;
+}
+
+.cq-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  min-height: 1.9rem;
+  padding: 0.2rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface, transparent);
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--primary);
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.cq-source svg {
+  flex-shrink: 0;
+}
+
+.cq-source:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.cq-source:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.cq-source-statement {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cq-source-statement::after {
+  content: '·';
+  margin-left: 0.35rem;
   color: var(--muted);
 }
 
-blockquote .cq-evidence-note {
-  margin: 0;
-}
-
-/* A question no passage of the source could be verified for: said, never highlighted. */
-.cq-source-unresolved {
-  margin: 0 0 0.75rem;
-  padding: 0.35rem 0.6rem;
-  border-radius: var(--radius-sm, 6px);
-  background: var(--warning-soft);
-  color: var(--warning-strong);
-  font-size: 0.8rem;
+.cq-source-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
 }
 
 .req-rejected-list {
@@ -1268,38 +1319,6 @@ blockquote .cq-evidence-note {
   display: block;
   color: var(--muted);
   overflow-wrap: anywhere;
-}
-
-/* A verified link from "Why it matters" into the requirement source (SourceDocumentViewer). */
-.source-link {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.2rem;
-  padding: 0 0.15rem;
-  border: 0;
-  border-radius: 4px;
-  background: none;
-  font: inherit;
-  color: var(--primary);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
-}
-
-.source-link:hover {
-  color: var(--primary-hover);
-  background: var(--primary-soft);
-}
-
-.source-link:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
-}
-
-.cq-reason .source-link svg {
-  align-self: center;
-  margin-top: 0;
-  color: currentColor;
 }
 
 .src-viewer {
@@ -2045,10 +2064,12 @@ blockquote .cq-evidence-note {
   gap: 0.4rem;
   font-family: inherit;
   font-size: 0.8125rem;
-  font-weight: 700;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-decoration: none;
   border-radius: var(--radius-sm);
   height: 36px;
-  padding: 0 1rem;
+  padding: 0 0.875rem;
   border: 1px solid transparent;
   cursor: pointer;
   transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast),
@@ -2057,12 +2078,13 @@ blockquote .cq-evidence-note {
 }
 
 .btn:active:not(:disabled) {
-  transform: translateY(1px);
+  filter: brightness(0.97);
 }
 
 .btn:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
 .btn:focus-visible {
@@ -2070,13 +2092,20 @@ blockquote .cq-evidence-note {
   box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--primary-light);
 }
 
+.btn svg {
+  flex-shrink: 0;
+}
+
+/* MMC buttons are flat (disableElevation): solid cobalt primary, outlined secondary. */
 .btn-primary {
-  background: var(--primary);
+  background: var(--primary-solid);
   color: #fff;
+  box-shadow: none;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: var(--primary-hover);
+  background: var(--primary-solid-hover);
+  box-shadow: none;
 }
 
 .btn-primary:active:not(:disabled) {
@@ -2086,12 +2115,14 @@ blockquote .cq-evidence-note {
 .btn-secondary {
   background: var(--input-surface);
   color: var(--text);
-  border-color: var(--primary-soft-border);
+  border-color: var(--border-strong);
+  box-shadow: none;
 }
 
 .btn-secondary:hover:not(:disabled) {
   background: var(--primary-soft);
-  border-color: var(--primary-light);
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 .btn-ghost {
@@ -2107,6 +2138,11 @@ blockquote .cq-evidence-note {
 .btn-danger {
   background: var(--danger);
   color: #fff;
+  box-shadow: none;
+}
+
+.btn-danger:focus-visible {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--danger);
 }
 
 .btn-danger:hover:not(:disabled) {
@@ -2116,13 +2152,13 @@ blockquote .cq-evidence-note {
 .btn-sm {
   height: 32px;
   padding: 0 0.75rem;
-  font-size: 0.78rem;
+  font-size: 0.8125rem;
 }
 
 .btn-lg {
   height: 40px;
-  padding: 0 1.25rem;
-  font-size: 0.85rem;
+  padding: 0 1.125rem;
+  font-size: 0.875rem;
 }
 
 .btn-block {
@@ -2352,6 +2388,14 @@ main [id] {
   flex-shrink: 0;
 }
 
+/* MMC header avatar: small solid navy disc (cobalt in dark mode). */
+.topbar-user .avatar {
+  width: 30px;
+  height: 30px;
+  background: var(--avatar-bg);
+  font-size: 0.7rem;
+}
+
 .avatar.avatar-lg {
   width: 46px;
   height: 46px;
@@ -2396,10 +2440,9 @@ main [id] {
 }
 
 /* ===========================================================================
-   Sign in / Sign up — light, mint/teal SaaS auth experience.
-   Left: light dotted canvas, gradient headline, feature list. Right: a
-   floating white card. Reuses --secondary (teal) and --primary (cobalt) —
-   no third color introduced.
+   Sign in / Sign up — MMC sign-in pattern.
+   Left: navy → cobalt → teal hero with white type over a faint grid.
+   Right: a white card on the MMC page wash, with a solid cobalt submit.
    ========================================================================= */
 
 .auth-screen {
@@ -2419,7 +2462,9 @@ main [id] {
   gap: 2.5rem;
   padding: 3rem 4rem;
   overflow: hidden;
-  background: linear-gradient(160deg, #f4fbf9 0%, #f7fbfe 55%, #eef7f4 100%);
+  isolation: isolate;
+  color: #fff;
+  background: linear-gradient(132deg, #071b3a 0%, #2452c7 54%, #13bfa6 100%);
 }
 
 .auth-hero-panel::before {
@@ -2427,9 +2472,10 @@ main [id] {
   position: absolute;
   inset: 0;
   z-index: -1;
-  background-image: radial-gradient(circle, rgba(22, 191, 165, 0.35) 1px, transparent 1px);
-  background-size: 22px 22px;
-  mask-image: radial-gradient(ellipse 85% 75% at 50% 40%, #000 45%, transparent 85%);
+  opacity: 0.16;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.24) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.24) 1px, transparent 1px);
+  background-size: 44px 44px;
 }
 
 .auth-brand {
@@ -2443,12 +2489,12 @@ main [id] {
 }
 
 .auth-brand-mark {
-  width: 40px;
-  height: 40px;
-  border-radius: 11px;
-  background: linear-gradient(150deg, var(--secondary) 0%, var(--secondary-hover) 100%);
-  box-shadow: 0 8px 18px -8px rgba(12, 139, 122, 0.55);
-  color: #fff;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.2);
+  color: #0b6fd3;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2463,16 +2509,16 @@ main [id] {
 .auth-brand-name {
   display: block;
   font-family: var(--font-display);
-  font-weight: 700;
-  font-size: 1.02rem;
-  color: var(--text);
-  line-height: 1.25;
+  font-weight: 800;
+  font-size: 1rem;
+  color: #fff;
+  line-height: 1.2;
 }
 
 .auth-brand-tag {
   display: block;
-  font-size: 0.72rem;
-  color: var(--muted-subtle);
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.72);
 }
 
 .auth-hero-copy {
@@ -2483,21 +2529,18 @@ main [id] {
   font-size: 2.25rem;
   line-height: 1.25;
   font-weight: 800;
-  color: var(--text);
+  color: #fff;
   margin: 0 0 1rem;
 }
 
 .auth-hero-accent {
-  background: linear-gradient(100deg, var(--secondary) 0%, var(--primary) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: #8ff0df;
 }
 
 .auth-hero-sub {
   font-size: 1rem;
   line-height: 1.65;
-  color: var(--muted);
+  color: rgba(255, 255, 255, 0.78);
   margin: 0;
 }
 
@@ -2532,32 +2575,26 @@ main [id] {
   height: 18px;
 }
 
-.auth-feature-icon.tone-mint {
-  background: var(--success-soft);
-  color: var(--success-strong);
-}
-
-.auth-feature-icon.tone-blue {
-  background: var(--primary-soft);
-  color: var(--primary);
-}
-
+/* On the coloured hero every feature icon uses the same translucent white tile. */
+.auth-feature-icon.tone-mint,
+.auth-feature-icon.tone-blue,
 .auth-feature-icon.tone-teal {
-  background: var(--ai-soft);
-  color: var(--secondary-hover);
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #fff;
 }
 
 .auth-feature-title {
   display: block;
   font-size: 0.92rem;
   font-weight: 700;
-  color: var(--text);
+  color: #fff;
 }
 
 .auth-feature-desc {
   display: block;
   font-size: 0.83rem;
-  color: var(--muted);
+  color: rgba(255, 255, 255, 0.72);
   line-height: 1.5;
   margin-top: 0.15rem;
 }
@@ -2570,7 +2607,7 @@ main [id] {
   align-items: center;
   justify-content: center;
   padding: 2.5rem 1.75rem;
-  background: var(--bg);
+  background: var(--auth-bg);
   min-height: 100vh;
 }
 
@@ -2579,14 +2616,14 @@ main [id] {
   max-width: 440px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 20px;
+  border-radius: 14px;
   box-shadow: 0 24px 48px -18px rgba(18, 38, 63, 0.14);
   padding: 2.75rem;
 }
 
 .auth-card h2 {
   margin: 0 0 0.4rem;
-  font-size: 1.6rem;
+  font-size: 1.75rem;
   font-weight: 800;
   color: var(--text);
 }
@@ -2608,20 +2645,15 @@ main [id] {
 
 .auth-card .field-input-wrap input,
 .auth-card .select-input {
-  height: 50px;
+  height: 48px;
+  border-radius: 10px;
 }
 
 .auth-card .btn.btn-block {
-  height: 50px;
-  font-size: 0.95rem;
-}
-
-.auth-card .btn.btn-primary {
-  background: linear-gradient(100deg, var(--secondary) 0%, var(--primary) 100%);
-}
-
-.auth-card .btn.btn-primary:hover:not(:disabled) {
-  background: linear-gradient(100deg, var(--secondary-hover) 0%, var(--primary-hover) 100%);
+  height: 48px;
+  border-radius: 10px;
+  font-size: 0.9375rem;
+  font-weight: 800;
 }
 
 .auth-form-row {
@@ -2696,7 +2728,7 @@ main [id] {
     display: none;
   }
   .auth-main {
-    background: var(--bg);
+    background: var(--auth-bg);
   }
 }
 
@@ -2706,7 +2738,7 @@ main [id] {
   }
   .auth-card {
     padding: 1.75rem;
-    border-radius: 16px;
+    border-radius: 14px;
   }
   .auth-card h2 {
     font-size: 1.4rem;
@@ -2727,6 +2759,11 @@ main [id] {
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.field-required {
+  color: var(--danger);
+  font-weight: 700;
 }
 
 .field-input-wrap {
@@ -2767,7 +2804,7 @@ main [id] {
 .field-input-wrap input:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 4px var(--primary-soft);
+  box-shadow: var(--focus-ring);
 }
 
 .field-input-wrap:focus-within .field-icon {
@@ -2838,7 +2875,7 @@ main [id] {
 .select-input:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 4px var(--primary-soft);
+  box-shadow: var(--focus-ring);
 }
 
 .alert {
@@ -2885,7 +2922,8 @@ main [id] {
 .dialog-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(7, 17, 31, 0.5);
+  background: rgba(7, 27, 58, 0.42);
+  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2909,18 +2947,18 @@ main [id] {
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1.25rem 1.5rem;
+  padding: 1.125rem 1.5rem;
   border-bottom: 1px solid var(--border);
 }
 
 .dialog-header h2 {
   margin: 0;
-  font-size: 1.15rem;
+  font-size: 1rem;
   font-weight: 700;
 }
 
 .dialog-body {
-  padding: 1.5rem;
+  padding: 1.25rem 1.5rem;
 }
 
 .dialog-footer {
@@ -2928,8 +2966,9 @@ main [id] {
   align-items: center;
   justify-content: flex-end;
   gap: 0.6rem;
-  padding: 1rem 1.5rem;
+  padding: 0.875rem 1.5rem;
   border-top: 1px solid var(--border);
+  background: var(--surface-sunken);
 }
 
 /* Dashboard */
@@ -3017,22 +3056,22 @@ main [id] {
 }
 
 .metric-icon.tone-primary {
-  background: linear-gradient(150deg, #eef0fe 0%, var(--primary-soft) 100%);
+  background: var(--primary-soft);
   color: var(--primary);
 }
 
 .metric-icon.tone-success {
-  background: linear-gradient(150deg, #edfbf1 0%, var(--success-soft) 100%);
+  background: var(--success-soft);
   color: var(--success);
 }
 
 .metric-icon.tone-warning {
-  background: linear-gradient(150deg, #fff6e9 0%, var(--warning-soft) 100%);
+  background: var(--warning-soft);
   color: var(--warning);
 }
 
 .metric-icon.tone-ai {
-  background: linear-gradient(150deg, #f8f4ff 0%, var(--ai-soft) 100%);
+  background: var(--ai-soft);
   color: var(--ai);
 }
 
@@ -3262,12 +3301,6 @@ main [id] {
   margin-top: 0.5rem;
 }
 
-.agent-stage-actions button.secondary {
-  background: none;
-  color: var(--danger);
-  border: 1px solid var(--border);
-}
-
 .agent-stage-actions input {
   flex: 1;
   min-width: 10rem;
@@ -3289,22 +3322,24 @@ main [id] {
   font-size: 0.85rem;
 }
 
-.users-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.users-table th,
-.users-table td {
-  text-align: left;
-  padding: 0.5rem 0.6rem;
-  border-top: 1px solid var(--border);
-}
-
+/* The users table takes its look from .data-table; only the row action is specific. */
 .users-table button.secondary {
-  background: none;
-  color: var(--danger);
-  border: 1px solid var(--border);
+  height: 30px;
+  padding: 0 0.7rem;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--danger-strong);
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast);
+}
+
+.users-table button.secondary:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
 }
 
 /* Side panels */

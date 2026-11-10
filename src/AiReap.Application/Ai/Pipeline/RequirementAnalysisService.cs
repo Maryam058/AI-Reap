@@ -198,7 +198,7 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
         // candidates that pass against what is saved now; the save re-validates them.
         var preview = ClarificationCandidateValidator.Validate(
             new ClarificationCandidateValidator.Context(source.Id, source.RawText,
-                (await ExistingQuestionsAsync(source.Id, cancellationToken)).Select(e => e.Existing)),
+                (await ExistingQuestionsAsync(source.Id, cancellationToken)).Where(e => e.Compared).Select(e => e.Existing)),
             candidates);
         var (related, retrieval) = await RetrieveRelatedAsync(source, preview.Where(v => v.Accepted).ToList(), cancellationToken);
 
@@ -211,7 +211,7 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
             questionArtifacts = [];
 
             var existing = await ExistingQuestionsAsync(source.Id, ct);
-            var context = new ClarificationCandidateValidator.Context(source.Id, source.RawText, existing.Select(e => e.Existing));
+            var context = new ClarificationCandidateValidator.Context(source.Id, source.RawText, existing.Where(e => e.Compared).Select(e => e.Existing));
             var verdicts = ClarificationCandidateValidator.Validate(context, candidates);
 
             // The exact fingerprint stays as the database-enforced guard (unique index) against a
@@ -334,7 +334,10 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
         return (record, questionArtifacts);
     }
 
-    private sealed record ExistingQuestion(Artifact Artifact, ExistingClarification Existing);
+    // Compared: whether new candidates are checked against it - every question someone answered, closed or
+    // rejected, and every open one that is shown. An open question that is never shown (no verified source
+    // evidence, ClarificationVisibility) is not, so a grounded question on the same point can replace it.
+    private sealed record ExistingQuestion(Artifact Artifact, ExistingClarification Existing, bool Compared);
 
     // Every question saved for the source - answered, resolved, not applicable or rejected included - so a
     // re-run neither repeats nor resurrects one.
@@ -346,6 +349,7 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
             .OrderBy(a => a.Code)
             .ToListAsync(cancellationToken);
 
+        var shown = await ClarificationVisibility.ShownAsync(_db, artifacts, cancellationToken);
         return artifacts.Select(a =>
         {
             ClarificationQuestionPayload payload;
@@ -366,7 +370,8 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
 
             var status = a.Status == ArtifactStatus.Rejected ? "Rejected" : payload.ClarificationStatus;
             return new ExistingQuestion(a, new ExistingClarification(
-                a.Code, payload.Question, a.Title, status, lines, payload.Kind, payload.Reason, payload.Answer, payload.SourceReferences));
+                a.Code, payload.Question, a.Title, status, lines, payload.Kind, payload.Reason, payload.Answer, payload.SourceReferences),
+                Compared: status != "Open" || shown.ContainsKey(a.Id));
         }).ToList();
     }
 
@@ -378,7 +383,7 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
             .Distinct(StringComparer.Ordinal)
             .ToList();
         var notRaisedAgain = existing
-            .Where(e => e.Existing.Status == "Open" && e.Artifact.Origin == ArtifactOrigin.Ai && !raisedAgain.Contains(e.Existing.Code))
+            .Where(e => e.Compared && e.Existing.Status == "Open" && e.Artifact.Origin == ArtifactOrigin.Ai && !raisedAgain.Contains(e.Existing.Code))
             .Select(e => e.Existing.Code)
             .ToList();
         return new AnalysisReconciliation(existing.Count, raisedAgain, notRaisedAgain);

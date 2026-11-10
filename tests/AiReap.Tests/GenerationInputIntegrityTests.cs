@@ -356,16 +356,20 @@ public class GenerationInputIntegrityTests
 
     [Theory]
     [MemberData(nameof(PromptStages))]
-    public async Task A_source_with_no_requirements_still_generates_from_its_raw_text_as_before(string stage)
+    // Release rule (reverses the earlier "generates from the raw text as before"): with no FR there is
+    // nothing anything built could trace to, so the stage is refused before any AI call.
+    public async Task A_source_with_no_requirements_is_refused_before_any_ai_call(string stage)
     {
         var w = new World();
         var ai = new ScriptedAi();
 
-        await Assert.ThrowsAsync<PromptCaptured>(() => Run(stage, w, ai));
+        var ex = await Assert.ThrowsAsync<ConflictException>(() => Run(stage, w, ai));
 
-        var prompt = Assert.Single(ai.UserPrompts);
-        Assert.StartsWith(w.Source.RawText, prompt);
-        Assert.DoesNotContain("Functional requirements derived so far", prompt);
+        Assert.Contains("no functional requirements yet", ex.Message);
+        Assert.Empty(ai.UserPrompts);
+        Assert.Equal(0, w.Db.SaveCount);
+        Assert.Empty(InMemoryAiReapDb.Rows(w.Db.ArtifactRelationships));
+        Assert.Empty(InMemoryAiReapDb.Rows(w.Db.AIExecutions));
     }
 
     [Theory]
@@ -385,17 +389,20 @@ public class GenerationInputIntegrityTests
     }
 
     [Fact]
-    public async Task Stories_for_a_source_with_no_requirements_are_still_saved_as_before()
+    public async Task Stories_for_a_source_with_no_requirements_are_refused_and_nothing_is_saved()
     {
         var w = new World();
         var ai = new ScriptedAi(
             """{"userStories":[{"title":"Request leave","persona":"Employee","valueStatement":"plan time off","priority":"High","relatedRequirementCodes":[]}]}""");
 
-        var stories = await w.Stories(ai).GenerateStoriesAsync(w.Source.Id);
+        var ex = await Assert.ThrowsAsync<ConflictException>(() => w.Stories(ai).GenerateStoriesAsync(w.Source.Id));
 
-        Assert.Single(stories);
-        Assert.Equal(1, w.Db.SaveCount);
-        Assert.Contains(InMemoryAiReapDb.Rows(w.Db.Artifacts), a => a.ArtifactType == ArtifactType.UserStory);
+        Assert.Contains("no functional requirements yet", ex.Message);
+        Assert.Empty(ai.UserPrompts);
+        Assert.Equal(0, w.Db.SaveCount);
+        Assert.Empty(InMemoryAiReapDb.Rows(w.Db.ArtifactRelationships));
+        Assert.Empty(InMemoryAiReapDb.Rows(w.Db.AIExecutions));
+        Assert.DoesNotContain(InMemoryAiReapDb.Rows(w.Db.Artifacts), a => a.ArtifactType == ArtifactType.UserStory);
     }
 
     [Fact]
@@ -507,16 +514,21 @@ public class GenerationInputIntegrityTests
 
     [Theory]
     [MemberData(nameof(LinkingStages))]
-    public async Task A_null_citation_list_is_saved_without_links_instead_of_failing(string stage, string template, RelationshipType type)
+    // Release rule: without FRs the stage is refused before the response is even asked for, so a null
+    // citation list can no longer be saved unlinked (with FRs, see the A4b phase 2 tests).
+    public async Task A_null_citation_list_without_requirements_is_never_reached_the_stage_is_refused(string stage, string template, RelationshipType type)
     {
         _ = type;
-        var w = new World(); // no FRs: citations are not required (with FRs, see the A4b phase 2 tests)
+        var w = new World();
         var ai = new ScriptedAi(template.Replace("CODES", "null"));
 
-        Assert.Single((await Run(stage, w, ai))!);
+        var ex = await Assert.ThrowsAsync<ConflictException>(() => Run(stage, w, ai));
 
+        Assert.Contains("no functional requirements yet", ex.Message);
+        Assert.Empty(ai.UserPrompts);
+        Assert.Equal(0, w.Db.SaveCount);
         Assert.Empty(InMemoryAiReapDb.Rows(w.Db.ArtifactRelationships));
-        Assert.Equal(1, w.Db.SaveCount);
+        Assert.Empty(InMemoryAiReapDb.Rows(w.Db.AIExecutions));
     }
 
     [Theory]
@@ -657,17 +669,19 @@ public class GenerationInputIntegrityTests
 
     [Theory]
     [MemberData(nameof(CitationRequiredStages))]
-    public async Task Without_any_requirements_an_empty_citation_list_is_still_saved_as_before(string stage, string template, string version)
+    public async Task Without_any_requirements_an_empty_citation_list_is_never_saved_the_stage_is_refused(string stage, string template, string version)
     {
         _ = version;
         var w = new World();
         var ai = new ScriptedAi(template.Replace("CODES", "[]"));
 
-        Assert.Single((await Run(stage, w, ai))!);
+        var ex = await Assert.ThrowsAsync<ConflictException>(() => Run(stage, w, ai));
 
-        Assert.Single(ai.UserPrompts);
+        Assert.Contains("no functional requirements yet", ex.Message);
+        Assert.Empty(ai.UserPrompts);
+        Assert.Equal(0, w.Db.SaveCount);
         Assert.Empty(InMemoryAiReapDb.Rows(w.Db.ArtifactRelationships));
-        Assert.Equal(1, w.Db.SaveCount);
+        Assert.Empty(InMemoryAiReapDb.Rows(w.Db.AIExecutions));
     }
 
     [Theory]
@@ -781,16 +795,18 @@ public class GenerationInputIntegrityTests
 
     [Theory]
     [MemberData(nameof(StubCitingStages))]
-    public async Task A_source_without_requirements_keeps_the_no_fr_behaviour_under_the_stub_despite_fr_ids_in_its_text(string stage)
+    // FR IDs written in the raw text are not functional requirements: the source is refused like any
+    // other source without stored FRs, under the stub as well.
+    public async Task A_source_without_requirements_is_refused_under_the_stub_despite_fr_ids_in_its_text(string stage)
     {
         var w = new World();
         w.Source.RawText = "FR-012 Employees submit leave requests. FR-013 Managers approve them.";
 
-        var created = await Run(stage, w, Stub());
+        var ex = await Assert.ThrowsAsync<ConflictException>(() => Run(stage, w, Stub()));
 
-        Assert.NotEmpty(created!);
+        Assert.Contains("no functional requirements yet", ex.Message);
+        Assert.Equal(0, w.Db.SaveCount);
         Assert.Empty(InMemoryAiReapDb.Rows(w.Db.ArtifactRelationships));
-        Assert.Equal(1, w.Db.SaveCount);
     }
 
     [Theory]

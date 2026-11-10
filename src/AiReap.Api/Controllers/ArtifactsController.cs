@@ -189,13 +189,13 @@ public class ArtifactsController : ControllerBase
         return created is null ? NotFound("Artifact not found or is not a UserStory.") : Ok(created);
     }
 
-    // §20 — only valid when id is a FunctionalRequirement artifact.
+    // §20 — only valid when id is a functional or non-functional requirement artifact.
     [HttpPost("api/artifacts/{id:guid}/generate-test-cases")]
     [Authorize(Roles = WriterOrQaRoles)]
     public async Task<ActionResult> GenerateTestCases(Guid id, CancellationToken cancellationToken)
     {
         var created = await _testGenerationService.GenerateAsync(id, cancellationToken);
         GenerationCountHeaders.Write(Response, created);
-        return created is null ? NotFound("Artifact not found or is not a FunctionalRequirement.") : Ok(created);
+        return created is null ? NotFound("Artifact not found or is not a functional or non-functional requirement.") : Ok(created);
     }
 }

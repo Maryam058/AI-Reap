@@ -327,7 +327,9 @@ export function ArtifactCard({
               Generate acceptance criteria
             </button>
           )}
-          {artifact.artifactType === ARTIFACT_TYPE_VALUES.FunctionalRequirement && onGenerateTestCases && canGenerateDownstream(artifact.status) && (
+          {(artifact.artifactType === ARTIFACT_TYPE_VALUES.FunctionalRequirement || artifact.artifactType === ARTIFACT_TYPE_VALUES.NonFunctionalRequirement) &&
+            onGenerateTestCases &&
+            canGenerateDownstream(artifact.status) && (
             <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act(onGenerateTestCases)}>
               <IconSparkles width={14} height={14} />
               Generate test cases

@@ -141,7 +141,8 @@ main {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  max-width: 260px;
+  max-width: 360px;
+  min-width: 7rem;
   height: 32px;
   padding: 0 0.7rem;
   border: 1px solid var(--primary-soft-border);
@@ -150,7 +151,15 @@ main {
   border-radius: var(--radius-full);
   text-decoration: none;
   font-size: 0.8rem;
+  flex-shrink: 1;
+}
+/* The open project's stage next to its name. */
+.topbar-project-stage {
   flex-shrink: 0;
+  padding-left: 0.45rem;
+  border-left: 1px solid var(--primary-soft-border);
+  font-weight: 700;
+  white-space: nowrap;
 }
 .topbar-project strong {
   color: var(--text);
@@ -162,6 +171,58 @@ main {
 .topbar-project-label {
   font-weight: 600;
   opacity: 0.85;
+}
+.topbar-project:hover {
+  border-color: var(--primary-light);
+}
+/* With the project chip present, the breadcrumb's non-link group label (SDLC, AI & Automation…) only
+   repeats the sidebar section; drop it so the clickable crumbs stay readable instead of shrinking to "P…". */
+.topbar-project ~ .topbar-spacer .breadcrumbs li:not(.current):not(.sep):not(:has(a)),
+.topbar-project ~ .topbar-spacer .breadcrumbs li:not(.current):not(.sep):not(:has(a)) + li.sep {
+  display: none;
+}
+/* The crumbs never run under the search box: their slot clips, and the padding/negative margin pair keeps
+   focus rings visible inside it. When space runs short the project-name crumb gives way first (it is also
+   on the chip), then the current page, which keeps at least a few characters. */
+.topbar-spacer {
+  overflow: hidden;
+  padding: 4px;
+  margin: -4px;
+}
+.topbar-spacer .breadcrumbs li:not(.current):not(.sep) {
+  min-width: 3.25rem;
+}
+.topbar-spacer .breadcrumbs li.sep + li:not(.current) {
+  min-width: 1.75rem;
+  flex-shrink: 4;
+}
+.topbar-spacer .breadcrumbs li.current {
+  flex-shrink: 1;
+  min-width: 3rem;
+}
+@media (max-width: 1500px) {
+  .topbar-project-label {
+    display: none;
+  }
+}
+/* Mid widths (the chip is hidden at 900px and below): the chip keeps the stage and drops the visible
+   project name, which the breadcrumb right beside it already shows. Screen readers still hear the name. */
+@media (max-width: 1280px) {
+  .topbar-project {
+    min-width: 0;
+  }
+  .topbar-project strong {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .topbar-project-stage {
+    padding-left: 0;
+    border-left: 0;
+  }
 }
 
 .topbar-search {
@@ -179,7 +240,7 @@ main {
 }
 .topbar-search:focus-within {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-soft);
+  box-shadow: var(--focus-ring);
   width: 290px;
 }
 .topbar-search input {
@@ -215,38 +276,43 @@ main {
    desktop collapsed state; on mobile the drawer always uses the full layout. */
 
 .sidebar {
-  padding-bottom: 0;
-  box-shadow: none;
+  padding: 0 0.5rem;
+  box-shadow: 4px 0 20px rgba(18, 38, 63, 0.03);
 }
 .sidebar.collapsed {
   padding-bottom: 0;
 }
 
+/* MMC brand area: 66px, hairline divider, round gradient mark, 14px name over an 10px tagline. */
 .sidebar-brand-row {
   gap: 0.5rem;
-  height: 64px;
+  height: var(--header-height);
+  border-bottom: 1px solid var(--border);
 }
 .sidebar-logo {
   width: 34px;
   height: 34px;
-  border-radius: 9px;
-  background: var(--primary);
-  font-size: 0.8rem;
-  font-weight: 700;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0b6fd3 0%, #10aeb8 100%);
+  font-size: 0.78rem;
+  font-weight: 800;
   letter-spacing: 0.02em;
   box-shadow: none;
 }
 .sidebar-brand {
   flex: 1;
+  padding-left: 0.25rem;
 }
 .sidebar-brand-name {
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   font-weight: 700;
-  letter-spacing: -0.005em;
+  letter-spacing: 0;
+  line-height: 1.2;
 }
 .sidebar-brand-tag {
-  font-size: 0.68rem;
-  color: var(--muted);
+  font-size: 0.625rem;
+  line-height: 1.2;
+  color: var(--text-secondary);
 }
 
 .sidebar-collapse-btn {
@@ -311,12 +377,12 @@ main {
   align-items: center;
   gap: 0.3rem;
   width: 100%;
-  padding: 0 0.5rem 0.4rem 0.65rem;
-  font-size: 0.66rem;
-  font-weight: 700;
-  letter-spacing: 0.09em;
+  padding: 0 0.5rem 0.4rem 0.75rem;
+  font-size: 0.625rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--muted-subtle);
+  color: var(--nav-group-label);
 }
 .nav-group-toggle {
   background: none;
@@ -404,19 +470,20 @@ main {
 
 /* -- Links -- */
 
+/* MMC nav item: 36px row, 12.5px semibold label, soft blue hover, solid cobalt when active. */
 .nav-link {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 0.7rem;
-  min-height: 38px;
-  padding: 0.45rem 0.65rem;
-  border-radius: 8px;
+  gap: 0.65rem;
+  min-height: 36px;
+  padding: 0.375rem 0.75rem;
+  border-radius: var(--radius-nav);
   color: var(--text);
   text-decoration: none;
-  font-size: 0.875rem;
-  font-weight: 500;
-  transition: background var(--motion-fast), color var(--motion-fast);
+  font-size: 0.78rem;
+  font-weight: 600;
+  transition: background var(--motion-fast), color var(--motion-fast), box-shadow var(--motion-fast);
 }
 .nav-link svg {
   flex-shrink: 0;
@@ -426,29 +493,36 @@ main {
   transition: color var(--motion-fast);
 }
 .nav-link:hover {
-  background: var(--neutral-soft);
+  background: var(--nav-hover);
   color: var(--text);
 }
 .nav-link:hover svg {
-  color: var(--text);
-}
-.nav-link.ai:hover svg {
-  color: var(--ai);
+  color: var(--primary);
 }
 .nav-link:focus-visible {
   outline: 2px solid var(--primary);
-  outline-offset: -2px;
+  outline-offset: 1px;
 }
-.nav-link.active {
-  background: var(--primary-soft);
-  color: var(--primary);
-  font-weight: 600;
+.nav-link.active,
+.nav-link.active:hover {
+  background: var(--primary-solid);
+  color: #fff;
+  font-weight: 700;
+  box-shadow: var(--nav-active-shadow);
 }
-.nav-link.active svg {
-  color: var(--primary);
+.nav-link.active:hover {
+  background: var(--primary-solid-hover);
 }
-.nav-link.ai.active svg {
-  color: var(--ai);
+.nav-link.active svg,
+.nav-link.active:hover svg {
+  color: #fff;
+}
+.nav-link.active .nav-step-tag,
+.nav-link.active .nav-soon {
+  color: #fff;
+}
+.nav-link.active .nav-soon {
+  background: rgba(255, 255, 255, 0.18);
 }
 .nav-link.disabled {
   opacity: 0.5;
@@ -461,11 +535,11 @@ main {
   color: var(--text-secondary);
 }
 .sidebar.rail .nav-link {
-  width: 40px;
-  min-height: 40px;
+  width: 44px;
+  min-height: 38px;
   padding: 0;
   justify-content: center;
-  border-radius: 10px;
+  border-radius: var(--radius-nav);
 }
 
 .nav-label {
@@ -577,7 +651,7 @@ main {
 .nav-group.pipeline .nav-item:not(:last-child)::after {
   content: '';
   position: absolute;
-  left: calc(0.65rem + 8px);
+  left: calc(0.75rem + 8px);
   top: calc(50% + 9px);
   height: calc(100% - 16px);
   width: 2px;
@@ -599,9 +673,9 @@ main {
   z-index: 80;
   transform: translateY(-50%);
   padding: 0.32rem 0.6rem;
-  border-radius: 6px;
-  background: var(--text);
-  color: var(--surface);
+  border-radius: 4px;
+  background: var(--tooltip-bg);
+  color: #fff;
   font-size: 0.75rem;
   font-weight: 600;
   white-space: nowrap;
@@ -622,7 +696,7 @@ main {
   margin: 0.25rem 0 0.35rem;
   padding: 0.75rem;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   background: var(--surface);
   box-shadow: var(--shadow-xs);
 }
@@ -843,14 +917,22 @@ main {
 
 /* ---- Page header -------------------------------------------------------- */
 
+/* MMC PageHeader: a soft contextual panel (blue → teal → green wash) holding the title, subtitle
+   and right-aligned actions. The reference's decorative leaf graphic is intentionally omitted. */
 .page-header {
-  margin-bottom: 1.25rem;
-  align-items: flex-end;
+  margin-bottom: 1rem;
+  align-items: center;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid var(--page-header-border);
+  border-radius: var(--radius-lg);
+  background: var(--page-header-bg);
+  box-shadow: var(--page-header-shadow);
 }
 .page-header-text h1 {
-  font-size: 1.6rem;
+  font-size: 1.5rem;
   font-weight: 800;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
+  line-height: 1.25;
 }
 .page-eyebrow {
   font-size: 0.72rem;
@@ -862,10 +944,35 @@ main {
 }
 .page-header-text p {
   max-width: 68ch;
-  font-size: 0.9rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
 }
 .page-header-badge {
   margin-top: 0.6rem;
+}
+
+/* ExpandableText: clamped prose with a Show more / Show less toggle. */
+.expandable-text-body {
+  display: block;
+}
+.expandable-text-body.clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.expandable-text-toggle {
+  margin-top: 0.3rem;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--primary);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.expandable-text-toggle:hover {
+  text-decoration: underline;
 }
 
 /* ---- Panels ------------------------------------------------------------- */
@@ -992,8 +1099,8 @@ main {
   margin-bottom: -1px;
   color: var(--muted);
   font: inherit;
-  font-size: 0.85rem;
-  font-weight: 600;
+  font-size: 0.875rem;
+  font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
   transition: color var(--motion-fast), border-color var(--motion-fast);
@@ -1003,6 +1110,7 @@ main {
 }
 .tab.active {
   color: var(--primary);
+  font-weight: 700;
   border-bottom-color: var(--primary);
 }
 .tab-count {
@@ -1163,10 +1271,11 @@ main {
 
 /* ---- Tables ------------------------------------------------------------- */
 
+/* MMC data grid: pale header band with 11px tracked caps, 12px × 16px cells, hairline rows. */
 .data-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.85rem;
+  font-size: 0.875rem;
 }
 .data-table th,
 .data-table td {
@@ -1176,13 +1285,51 @@ main {
   vertical-align: middle;
 }
 .data-table thead th {
+  padding-top: 0.625rem;
+  padding-bottom: 0.625rem;
   background: var(--table-header-bg);
   color: var(--table-header-text);
-  font-size: 0.7rem;
-  font-weight: 800;
-  letter-spacing: 0.05em;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   white-space: nowrap;
+  border-bottom-color: var(--border);
+}
+/* Group-label rows (e.g. the roles matrix) keep table-cell layout so their divider spans the row;
+   the generic .eyebrow utility would otherwise make the cell a block. */
+.data-table th.eyebrow {
+  display: table-cell;
+  padding-top: 1rem;
+  padding-bottom: 0.5rem;
+  background: var(--surface);
+}
+/* Inline controls in rows (e.g. role pickers) use the compact 32px control height. */
+.data-table td select {
+  height: 32px;
+  min-width: 10rem;
+  padding: 0 1.9rem 0 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background-color: var(--input-surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+.data-table td select:hover:not(:disabled) {
+  border-color: var(--input-border-hover);
+}
+.data-table td select:focus-visible {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: var(--focus-ring);
+}
+.data-table td select:disabled {
+  color: var(--muted-subtle);
+  background-color: var(--surface-sunken);
+  cursor: not-allowed;
 }
 .data-table tbody tr:hover {
   background: var(--table-row-hover);
@@ -1449,6 +1596,10 @@ a.sdlc-link:hover .sdlc-node {
 .phase-body .card {
   margin: 0;
 }
+/* `.phase-body .card` outranks the sibling spacing above; restore it for cards in the page flow. */
+.phase-body > * + .card {
+  margin-top: 1.25rem;
+}
 
 .phase-nav {
   display: flex;
@@ -1518,6 +1669,23 @@ a.sdlc-link:hover .sdlc-node {
 }
 .planned-card-head .nav-badge {
   margin-left: auto;
+}
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  height: 22px;
+  padding: 0 0.6rem;
+  border-radius: var(--radius-full);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.nav-badge-planned {
+  background: var(--neutral-soft);
+  color: var(--neutral-strong);
+  border: 1px solid var(--border);
 }
 .planned-icon {
   width: 34px;
@@ -1642,7 +1810,7 @@ a.sdlc-link:hover .sdlc-node {
 }
 .toolbar-search:focus-within {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-soft);
+  box-shadow: var(--focus-ring);
 }
 .toolbar-search input {
   flex: 1;
@@ -2654,7 +2822,7 @@ a.sdlc-link:hover .sdlc-node {
 .copilot-ask input:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-soft);
+  box-shadow: var(--focus-ring);
 }
 .copilot-ask .btn {
   height: 42px;
@@ -2677,6 +2845,120 @@ a.sdlc-link:hover .sdlc-node {
 }
 .copilot-suggestion:hover:not(:disabled) {
   background: var(--primary-soft);
+}
+
+/* Guidance shown before the first question (CopilotGuide). */
+.copilot-guide {
+  margin-top: 0.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+}
+.copilot-guide-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+.copilot-guide-head p {
+  margin: 0.3rem 0 0;
+  max-width: 75ch;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.copilot-guide-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.85rem;
+  margin-top: 1rem;
+}
+.copilot-guide-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0.95rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+}
+.copilot-guide-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+.copilot-guide-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  background: var(--ai-soft);
+  color: var(--ai);
+}
+.copilot-guide-card h4 {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+.copilot-guide-card > p {
+  margin: 0.5rem 0 0.65rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.copilot-guide-card ul {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.copilot-guide-prompt {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
+}
+.copilot-guide-prompt:hover:not(:disabled) {
+  border-color: var(--primary-light);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.copilot-guide-tips {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.5rem 1.25rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.copilot-guide-tips li {
+  position: relative;
+  padding-left: 0.95rem;
+}
+.copilot-guide-tips li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.55em;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ai);
+}
+.copilot-guide-tips strong {
+  color: var(--text);
+  font-weight: 600;
 }
 .copilot-answer {
   border: 1px solid var(--border);
@@ -2772,6 +3054,14 @@ a.sdlc-link:hover .sdlc-node {
   .topbar-search {
     display: none;
   }
+  /* Narrow top bar: every crumb may truncate inside its slot instead of running under the bell. */
+  .breadcrumbs li.current {
+    flex-shrink: 1;
+    min-width: 0;
+  }
+  .topbar-spacer .breadcrumbs li:not(.current):not(.sep) {
+    min-width: 0;
+  }
   .page-header {
     align-items: stretch;
   }
@@ -2825,6 +3115,10 @@ a.sdlc-link:hover .sdlc-node {
   }
   .copilot-ask {
     flex-direction: column;
+  }
+  /* In the column layout `flex: 1` (basis 0) would squash the field to a sliver; keep its 42px height. */
+  .copilot-ask input {
+    flex: 0 0 auto;
   }
   .toolbar-select span {
     display: none;
@@ -2886,6 +3180,63 @@ a.btn-ghost {
   font-size: 1rem;
   margin: 0 0 0.3rem;
 }
+.card > .hint + .btn {
+  margin-top: 0.35rem;
+}
+
+/* Controls sitting next to the shared buttons in the older panels (not inside a <form>, so the
+   form control styles don't reach them): same height, border, radius and focus ring as .btn rows. */
+.agent-start select,
+.agent-stage-actions input[type='text'] {
+  height: 36px;
+  padding: 0 0.7rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--input-surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+.agent-start select:hover,
+.agent-stage-actions input[type='text']:hover {
+  border-color: var(--primary-light);
+}
+.agent-start select:focus,
+.agent-stage-actions input[type='text']:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: var(--focus-ring);
+}
+.upload-row {
+  flex-wrap: wrap;
+  margin-top: 0.85rem;
+}
+.upload-row input[type='file'] {
+  flex: 0 1 auto;
+  min-width: 12rem;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.82rem;
+}
+.upload-row input[type='file']::file-selector-button {
+  height: 32px;
+  margin-right: 0.6rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast);
+}
+.upload-row input[type='file']::file-selector-button:hover {
+  background: var(--primary-soft);
+  border-color: var(--primary-light);
+}
 
 /* ---- Dashboard: portfolio metrics and activity ------------------------------ */
 
@@ -2938,10 +3289,11 @@ a.btn-ghost {
   height: 3px;
   background: var(--accent, var(--chart-1));
 }
-.metric-card.accent-primary { --accent: linear-gradient(90deg, var(--chart-c1), var(--chart-c5)); }
-.metric-card.accent-success { --accent: linear-gradient(90deg, var(--chart-c2), var(--chart-c8)); }
-.metric-card.accent-warning { --accent: linear-gradient(90deg, var(--chart-c3), var(--chart-c7)); }
-.metric-card.accent-ai { --accent: linear-gradient(90deg, var(--chart-c4), var(--chart-c6)); }
+/* Solid semantic accents (MMC uses no multi-hue gradients on cards). */
+.metric-card.accent-primary { --accent: var(--primary-solid); }
+.metric-card.accent-success { --accent: var(--success); }
+.metric-card.accent-warning { --accent: var(--warning); }
+.metric-card.accent-ai { --accent: var(--secondary); }
 
 .bar-list-fill {
   background: linear-gradient(90deg, color-mix(in srgb, var(--chart-1) 65%, transparent), var(--chart-1));
@@ -3025,7 +3377,7 @@ a.btn-ghost {
 .insight-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   padding: 1rem 1.1rem;
   display: flex;
   align-items: center;
@@ -4391,16 +4743,17 @@ a.btn-ghost {
 }
 
 .dash .page-header {
-  margin-bottom: 1.5rem;
+  margin-bottom: 1rem;
 }
+/* MMC dashboard greeting runs larger than a standard page title (1.75rem at desktop). */
 .dash .page-header-text h1 {
-  font-size: 1.65rem;
-  letter-spacing: -0.015em;
+  font-size: 1.75rem;
+  letter-spacing: 0;
 }
 .dash .panel,
 .dash .insight-card {
-  border-radius: 12px;
-  box-shadow: var(--shadow-xs);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
 }
 .dash .panel-head h2,
 .dash .panel-title {
@@ -4419,12 +4772,12 @@ a.btn-ghost {
 }
 .dash .skeleton-metric-card {
   height: 132px;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
 }
 .dash-kpis .metric-card {
   gap: 0.3rem;
   padding: 1rem 1.1rem;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
 }
 .dash-kpis .metric-card::before {
   display: none;
@@ -4483,14 +4836,14 @@ a.btn-ghost {
   margin-bottom: 1.25rem;
   background: var(--border);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-xs);
   overflow: hidden;
 }
 .dash-signals-skeleton {
   height: 64px;
   margin-bottom: 1.25rem;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
 }
 .dash-signal {
   display: flex;
@@ -4679,8 +5032,8 @@ a.btn-ghost {
 .dash-progress-cell {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  min-width: 150px;
+  gap: 0.5rem;
+  min-width: 120px;
 }
 .dash-progress-cell .sdlc-dots {
   flex: 1;
@@ -4951,8 +5304,21 @@ a.btn-ghost {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
-@media (max-width: 1080px) {
+/* Below wide desktop the six-column projects table needs the full width (otherwise Health, Updated
+   and the row action scroll out of sight); the side cards then sit side by side underneath. */
+@media (max-width: 1500px) {
   .dash-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .dash-side {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 1.25rem;
+    align-items: start;
+  }
+}
+@media (max-width: 760px) {
+  .dash-side {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -4967,9 +5333,10 @@ a.btn-ghost {
   }
 }
 @media (max-width: 480px) {
+  /* Two KPIs per row keeps the headline numbers on one screen instead of five full-width cards. */
   .metric-grid.dash-kpis,
   .dash .skeleton-metric-grid {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .dash-signal {
     padding: 0.7rem 0.75rem;
@@ -5347,18 +5714,6 @@ a.btn-ghost {
   gap: 0.35rem;
 }
 
-/* Top bar: the open project's stage next to its name. */
-.topbar-project {
-  max-width: 360px;
-}
-.topbar-project-stage {
-  flex-shrink: 0;
-  padding-left: 0.45rem;
-  border-left: 1px solid var(--primary-soft-border);
-  font-weight: 700;
-  white-space: nowrap;
-}
-
 /* Overview header: current stage, position and next stage in one line. */
 .overview-stage {
   display: inline-flex;
@@ -5474,4 +5829,49 @@ a.btn-ghost {
   .lifecycle-panel .lc-gate-text {
     display: block;
   }
+}
+
+/* Coverage gaps above the traceability matrix */
+.trace-gap-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 0.5rem;
+}
+.trace-gap-list li {
+  line-height: 1.5;
+}
+.trace-gap-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  vertical-align: middle;
+}
+.trace-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.trace-gap-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+.trace-link-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+.trace-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.trace-link-row .select-input {
+  max-width: min(28rem, 100%);
 }

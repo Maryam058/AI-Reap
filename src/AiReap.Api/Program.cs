@@ -93,6 +93,8 @@ builder.Services.AddScoped<IAgentOrchestrator, AgentOrchestrator>();
 
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 builder.Services.AddSingleton<JwtTokenService>();
+builder.Services.AddSingleton<LoginThrottle>();
+builder.Services.AddHostedService<ClarificationWarmup>();
 
 // Secrets are never committed: they come from `dotnet user-secrets` (Development) or environment
 // variables (ConnectionStrings__Default, Jwt__Key, Ai__Gemini__ApiKey). See README "Configuration".

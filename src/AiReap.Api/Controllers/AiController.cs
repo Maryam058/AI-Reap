@@ -20,4 +20,9 @@ public class AiController : ControllerBase
     {
         return Ok(await _healthCheck.CheckAsync(cancellationToken));
     }
+
+    // Token usage reported by the provider since this API instance started (in memory; see AiUsageMeter).
+    [HttpGet("api/ai/usage")]
+    [Authorize(Roles = AiReap.Domain.Common.Roles.Administrator)]
+    public ActionResult<AiUsageSnapshot> GetUsage([FromServices] IAiUsageMeter usage) => Ok(usage.Snapshot());
 }

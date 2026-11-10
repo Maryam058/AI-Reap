@@ -305,7 +305,7 @@ export interface SourceReference {
   // Evidence only: how many places in the source hold the quoted words (null: one).
   occurrences?: number | null;
   // Evidence only: how a question saved without verified evidence was linked to this passage when read.
-  recovery?: 'generation-response' | 'quoted-in-question' | 'requirement-id' | null;
+  recovery?: 'generation-response' | 'quoted-in-question' | null;
 }
 
 // How far a clarification question is linked to its source (ClarificationSourceReferences.WithSourceLinks).
@@ -454,8 +454,26 @@ export interface TestCaseData {
   preconditions?: string | null;
   steps: string[];
   expectedResult: string;
-  testKind: 'positive' | 'negative' | 'boundary' | 'permission' | 'validation';
+  testKind: FunctionalTestKind | NonFunctionalTestKind;
 }
+
+export const FUNCTIONAL_TEST_KINDS = ['positive', 'negative', 'boundary', 'permission', 'validation'] as const;
+/** Kinds a non-functional requirement's test cases may also have (AiVocabulary.NfrTestKinds). */
+export const NON_FUNCTIONAL_TEST_KINDS = [
+  'performance',
+  'load',
+  'security',
+  'availability',
+  'reliability',
+  'scalability',
+  'usability',
+  'accessibility',
+  'maintainability',
+  'compliance',
+  'observability',
+] as const;
+export type FunctionalTestKind = (typeof FUNCTIONAL_TEST_KINDS)[number];
+export type NonFunctionalTestKind = (typeof NON_FUNCTIONAL_TEST_KINDS)[number];
 
 export interface QualityFinding {
   artifactId: string;
@@ -493,6 +511,53 @@ export interface TraceabilityRow {
   dataEntities: TraceRef[];
   apiSpecifications: TraceRef[];
   implementationTasks: TraceRef[];
+  testCases: TraceRef[];
+}
+
+// GET /api/ai/usage (Administrator) - mirrors AiUsageSnapshot: token usage the provider reported since this
+// API instance started. In memory on the server, so it starts at zero after a restart.
+export interface AiUsageTokens {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+}
+
+export interface AiUsageTotals extends AiUsageTokens {
+  requests: number;
+}
+
+export interface AiUsageSnapshot {
+  since: string;
+  totals: AiUsageTotals;
+  byModel: { provider: string; model: string; totals: AiUsageTotals }[];
+  recent: { at: string; provider: string; model: string; usage: AiUsageTokens }[];
+}
+
+// GET /api/projects/{id}/traceability-gaps - mirrors TraceabilityGapsResponse. Orphans are downstream
+// artifacts linked to no requirement (or, for acceptance criteria, no story), so no matrix row shows them.
+export interface TraceabilityOrphan {
+  id: string;
+  code: string;
+  title: string;
+  artifactType: number;
+  status: number;
+  missingLink: string;
+}
+
+export interface TraceabilityGaps {
+  orphans: TraceabilityOrphan[];
+  untracedNonFunctionalRequirements: TraceRef[];
+  nonFunctionalRequirementCount: number;
+  /** Each NFR with the test cases that verify it; the matrix has rows for FRs only. Absent from older APIs. */
+  nonFunctionalTestCoverage?: NfrTestCoverage[];
+}
+
+export interface NfrTestCoverage {
+  id: string;
+  code: string;
+  title: string;
+  category: string | null;
   testCases: TraceRef[];
 }
 

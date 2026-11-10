@@ -29,6 +29,9 @@ public class StubAiChatClient : IAiChatClient
             _ when systemPrompt.Contains("dataEntities") => DataEntitiesResponse,
             _ when systemPrompt.Contains("apiSpecifications") => ApiSpecsResponse,
             _ when systemPrompt.Contains("taskType") => TasksResponse,
+            // A non-functional requirement's prompt (TestGenerationService.NfrPrompt) gets quality test
+            // cases, so the stub exercises the NFR test kinds rather than the FR ones.
+            _ when systemPrompt.Contains("testCases") && userPrompt.Contains("\nTarget status: ") => NfrTestCasesResponse,
             _ when systemPrompt.Contains("testCases") => TestCasesResponse,
             _ when systemPrompt.Contains("citedChunkRefs") => CopilotResponse,
             _ => "{}"
@@ -83,7 +86,7 @@ public class StubAiChatClient : IAiChatClient
 
     private const string ReviewResponse = """
         {
-          "readinessSummary": "Stub assessment - configure Ai:Gemini:ApiKey for a real model. See the deterministic findings for the actual gaps.",
+          "readinessSummary": "Stub assessment - configure Ai:Anthropic:ApiKey (Claude) for a real model. See the deterministic findings for the actual gaps.",
           "recommendation": "not_ready"
         }
         """;
@@ -138,7 +141,7 @@ public class StubAiChatClient : IAiChatClient
             ["actors"] = new System.Text.Json.Nodes.JsonArray("Employee", "Manager"),
             ["capabilities"] = new System.Text.Json.Nodes.JsonArray("Submit request", "Review request", "Approve or reject request"),
             ["dataElements"] = new System.Text.Json.Nodes.JsonArray("Request type", "Start date", "End date", "Status"),
-            ["notes"] = new System.Text.Json.Nodes.JsonArray("This is a stub response — configure Ai:Gemini:ApiKey for a real model."),
+            ["notes"] = new System.Text.Json.Nodes.JsonArray("This is a stub response — configure Ai:Anthropic:ApiKey (Claude) for a real model."),
             ["missingInformation"] = questions
         }.ToJsonString();
     }
@@ -200,7 +203,7 @@ public class StubAiChatClient : IAiChatClient
     private const string DesignResponse = """
         {
           "title": "Solution Design",
-          "architectureOverview": "Stub response — configure Ai:Gemini:ApiKey for a grounded design proposal.",
+          "architectureOverview": "Stub response — configure Ai:Anthropic:ApiKey (Claude) for a grounded design proposal.",
           "modules": ["RequestService"], "integrationPoints": null, "authentication": "JWT bearer",
           "backgroundProcessing": null, "caching": null, "logging": "Structured logging via the platform's standard middleware.",
           "deploymentConsiderations": null
@@ -248,9 +251,22 @@ public class StubAiChatClient : IAiChatClient
         }
         """;
 
+    // No number of its own: the pass criterion is "the agreed target", as the NFR prompt requires
+    // when a target is not confirmed.
+    private const string NfrTestCasesResponse = """
+        {
+          "testCases": [
+            {"title": "Response time under expected peak load", "preconditions": "Test environment loaded with production-like data", "steps": ["Generate the expected peak number of concurrent users", "Measure the response time of each request for the duration of the test"],
+             "expectedResult": "Response times meet the agreed target (to be confirmed if the target is still an assumption)", "testKind": "performance"},
+            {"title": "Access is refused without authentication", "preconditions": "No signed-in session", "steps": ["Request the protected page or API directly", "Repeat with an expired session"],
+             "expectedResult": "Access is refused and no requirement data is returned", "testKind": "security"}
+          ]
+        }
+        """;
+
     private const string CopilotResponse = """
         {
-          "answer": "Stub response — configure Ai:Gemini:ApiKey for a grounded answer. Check the structured facts above for the actual current counts.",
+          "answer": "Stub response — configure Ai:Anthropic:ApiKey (Claude) for a grounded answer. Check the structured facts above for the actual current counts.",
           "citedChunkRefs": [],
           "relatedArtifactCodes": []
         }

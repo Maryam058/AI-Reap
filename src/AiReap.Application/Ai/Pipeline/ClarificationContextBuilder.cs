@@ -40,10 +40,20 @@ public static class ClarificationContextBuilder
         var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
         var items = new List<string>(questions.Count);
 
+        // An open question no one can see (no verified source evidence, ClarificationVisibility) is left
+        // out, so no requirement is generated as assuming it; an answer someone gave is always kept.
+        ClarificationQuestionPayload PayloadOf(Domain.Entities.Artifact q) =>
+            JsonSerializer.Deserialize<ClarificationQuestionPayload>(q.DataJson, options) ?? new ClarificationQuestionPayload();
+        var open = questions.Where(q => PayloadOf(q).ClarificationStatus == "Open").ToList();
+        var shownOpen = await ClarificationVisibility.ShownAsync(db, open, cancellationToken);
+
         foreach (var question in questions)
         {
-            var payload = JsonSerializer.Deserialize<ClarificationQuestionPayload>(question.DataJson, options)
-                ?? new ClarificationQuestionPayload();
+            var payload = PayloadOf(question);
+            if (payload.ClarificationStatus == "Open" && !shownOpen.ContainsKey(question.Id))
+            {
+                continue;
+            }
 
             if (withCodes)
             {

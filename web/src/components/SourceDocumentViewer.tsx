@@ -3,7 +3,16 @@ import { ApiError } from '../api/client';
 import { requirementSourcesApi } from '../api/requirementSources';
 import type { RequirementSource, SourceReference } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
-import { headingTitle, locateReference, markExcerpt, originalKind, sourceFormatNote, sourceLines, type ReferenceLocation } from '../lib/sourceReferences';
+import {
+  headingTitle,
+  locateReference,
+  markExcerpt,
+  originalKind,
+  sourceFormatNote,
+  sourceLines,
+  sourceLinkLabel,
+  type ReferenceLocation,
+} from '../lib/sourceReferences';
 import { DocxOriginalView, PdfOriginalView, type NavigationResult } from './OriginalDocumentViews';
 import { Dialog } from './ui/Dialog';
 import { ErrorState } from './ui/ErrorState';
@@ -15,8 +24,6 @@ interface Props {
   passages?: SourceReference[];
   // What the highlighted quote is to the question ("Conflicting statement"); "Quoted evidence" if unset.
   purpose?: string;
-  // The whole source, with nothing highlighted: no passage of it could be verified for the question.
-  browse?: boolean;
   onClose: () => void;
 }
 
@@ -35,7 +42,7 @@ type OriginalState =
 // document is shown, at the cited page or paragraph with the heading or quote marked; otherwise - or if
 // it cannot be shown - the extracted text is, and the viewer says which it is showing and why. The page
 // underneath keeps its route and scroll position, and Dialog returns focus to the link that opened it.
-export function SourceDocumentViewer({ reference: opened, passages, purpose, browse = false, onClose }: Props) {
+export function SourceDocumentViewer({ reference: opened, passages, purpose, onClose }: Props) {
   const { token, hasRole } = useAuth();
   const [state, setState] = useState<ViewerState>({ status: 'loading' });
   const [original, setOriginal] = useState<OriginalState>({ status: 'none' });
@@ -90,7 +97,8 @@ export function SourceDocumentViewer({ reference: opened, passages, purpose, bro
   };
 
   const heading = reference.heading ? headingTitle(reference.heading) : null;
-  const where = browse ? 'the clarification question' : heading && heading !== reference.label ? `${reference.label} — ${heading}` : reference.label;
+  // A passage is named by its section; a section link by its own words (and heading, when they differ).
+  const where = reference.excerptIsQuote ? sourceLinkLabel(reference) : heading && heading !== reference.label ? `${reference.label} — ${heading}` : reference.label;
   const goTo = (n: number) => {
     setNavigation(null);
     setStep(n);
@@ -156,17 +164,13 @@ export function SourceDocumentViewer({ reference: opened, passages, purpose, bro
                   onClick={() => goTo(i)}
                 >
                   {`Passage ${i + 1} of ${steps.length}`}
-                  {p.sectionNumber ? ` (§${p.sectionNumber})` : ` (line ${p.line + 1})`}
+                  {p.heading ? ` (${sourceLinkLabel(p)})` : ''}
                 </button>
               ))}
             </div>
           )}
 
-          {browse ? (
-            <p className="src-viewer-warning" role="status">
-              No passage of this source is linked to the question, so nothing is highlighted. The whole source is shown.
-            </p>
-          ) : located ? (
+          {located ? (
             (located.excerpt ?? reference.excerpt) && (
               <blockquote className="src-viewer-evidence">
                 <span className="detail-label">{reference.excerptIsQuote ? (purpose ?? 'Quoted evidence') : 'Section text'}</span>
@@ -179,7 +183,7 @@ export function SourceDocumentViewer({ reference: opened, passages, purpose, bro
             </p>
           )}
 
-          {showingOriginal && located && !browse && <NavigationNote navigation={navigation} reference={reference} />}
+          {showingOriginal && located && <NavigationNote navigation={navigation} reference={reference} />}
 
           {showingOriginal && original.status === 'loading' && (
             <p className="src-viewer-status" role="status">

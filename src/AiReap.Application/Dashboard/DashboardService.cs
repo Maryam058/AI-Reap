@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AiReap.Application.Ai.Pipeline;
 using AiReap.Application.Artifacts.Payloads;
 using AiReap.Application.Common;
 using AiReap.Application.Persistence;
@@ -29,20 +30,20 @@ public class DashboardService : IDashboardService
 
         int CountOf(ArtifactType type) => artifacts.Count(a => a.ArtifactType == type);
 
+        // Only the open questions a person can see and answer are counted (ClarificationVisibility).
         var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-        var openClarifications = artifacts
-            .Where(a => a.ArtifactType == ArtifactType.ClarificationQuestion)
-            .Count(a =>
-            {
-                var payload = JsonSerializer.Deserialize<ClarificationQuestionPayload>(a.DataJson, options);
-                return payload?.ClarificationStatus == "Open";
-            });
+        var openQuestions = artifacts
+            .Where(a => a.ArtifactType == ArtifactType.ClarificationQuestion
+                        && JsonSerializer.Deserialize<ClarificationQuestionPayload>(a.DataJson, options)?.ClarificationStatus == "Open")
+            .ToList();
+        var openClarifications = (await ClarificationVisibility.ShownAsync(_db, openQuestions, cancellationToken)).Count;
 
         // Counts are project-wide aggregates; the list names individual artifacts (code, title), so it
         // follows ArtifactVisibility - a Developer never sees an unapproved requirement here.
-        var recentChanges = artifacts
-            .Where(_currentUser.CanSee)
-            .OrderByDescending(a => a.UpdatedAt)
+        // A clarification question without verified source evidence is never named (ClarificationVisibility).
+        var recent = artifacts.Where(_currentUser.CanSee).OrderByDescending(a => a.UpdatedAt).ToList();
+        var recentShown = await ClarificationVisibility.FilterAsync(_db, recent.Take(10 + recent.Take(50).Count(a => a.ArtifactType == ArtifactType.ClarificationQuestion)).ToList(), cancellationToken);
+        var recentChanges = recentShown
             .Take(10)
             .Select(a => new RecentChangeItem(a.Code, a.Title, a.ArtifactType.ToString(), a.Status.ToString(), a.UpdatedAt))
             .ToList();

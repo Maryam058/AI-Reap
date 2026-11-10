@@ -34,7 +34,7 @@ import {
 } from '../lib/lifecycleReview';
 import { phasePath } from '../lib/workAreas';
 import { apiErrorText } from '../lib/errors';
-import { PageHeader } from '../components/ui/PageHeader';
+import { StageHeader, StageNextStep } from '../components/stage/StageHeader';
 import { MetricCard } from '../components/ui/MetricCard';
 import { Tabs } from '../components/ui/Tabs';
 import { Dialog } from '../components/ui/Dialog';
@@ -148,10 +148,9 @@ export function LifecycleReviewPage() {
 
   return (
     <div className="sdlc-review">
-      <PageHeader
-        eyebrow="SDLC Review"
-        title={review.projectName}
-        subtitle="Stage by stage: what each lifecycle stage produced, who produced it, and how it was approved, implemented and verified. Read-only."
+      <StageHeader
+        stageKey="review"
+        project={project}
         badge={
           review.isCompleted ? (
             <span className="status-pill tone-success">
@@ -167,6 +166,9 @@ export function LifecycleReviewPage() {
           </Link>
         }
       />
+      <p className="rv-intro muted">
+        Stage by stage: what each lifecycle status produced, who produced it, and how it was approved, implemented and verified. This page is read-only.
+      </p>
 
       {!review.historyComplete && (
         <div className="alert alert-info" role="note">
@@ -186,7 +188,10 @@ export function LifecycleReviewPage() {
             </p>
           </div>
         </header>
-        <LifecycleStepper status={review.currentStatus} />
+        {/* Same scroll wrapper as the overview, so the 8-stage stepper never widens the page on small screens. */}
+        <div className="lc-stepper-wrap">
+          <LifecycleStepper status={review.currentStatus} />
+        </div>
         <div className="metric-grid rv-metrics">
           <MetricCard icon={<IconLayers width={18} height={18} />} tone="primary" value={t.totalArtifacts} label="Total artifacts" hint={`${t.aiGenerated} AI-generated · ${t.manual} manual`} />
           <MetricCard icon={<IconDocument width={18} height={18} />} tone="primary" value={countTypes(review, 0, 1)} label="Requirements" hint={`${countTypes(review, 0)} functional · ${countTypes(review, 1)} non-functional · ${countTypes(review, 2)} business rules`} />
@@ -272,6 +277,7 @@ export function LifecycleReviewPage() {
           onClose={() => setOpenArtifact(null)}
         />
       )}
+      <StageNextStep stageKey="review" project={project} />
     </div>
   );
 }

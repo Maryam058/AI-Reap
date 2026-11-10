@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { copilotApi } from '../api/copilot';
 import type { CopilotAnswer } from '../api/types';
 import { copilotContextNotice, DEFAULT_MAX_QUESTION_CHARS, effectiveMaxQuestionChars, questionLengthError } from '../lib/copilotContext';
 import { apiErrorText } from '../lib/errors';
-import { IconAlert, IconSparkles } from './icons';
+import { IconAlert, IconClock, IconDocument, IconSearch, IconShieldCheck, IconSparkles } from './icons';
 
 // Free-form questions the existing copilot endpoint already answers (gaps, coverage, recent changes).
 const SUGGESTIONS = [
@@ -14,6 +14,84 @@ const SUGGESTIONS = [
   'Which requirements are not yet approved?',
 ];
 
+// Guidance shown before the first question. Each area maps onto context the copilot is actually given
+// (open clarifications, incomplete and untested requirements, recent changes and change impacts,
+// topic-relevant requirement content and uploaded documents).
+const GUIDE: { title: string; icon: ReactNode; text: string; prompts: string[] }[] = [
+  {
+    title: 'Gaps & completeness',
+    icon: <IconSearch width={16} height={16} />,
+    text: 'Find requirements that are missing detail or still waiting on an answer.',
+    prompts: ['Which functional requirements are incomplete, and what is missing?', 'Which clarification questions are still open?'],
+  },
+  {
+    title: 'Test coverage',
+    icon: <IconShieldCheck width={16} height={16} />,
+    text: 'See which requirements are not yet covered by test cases.',
+    prompts: ['Which functional requirements have no test cases yet?', 'Summarise test coverage for this project.'],
+  },
+  {
+    title: 'Changes & impact',
+    icon: <IconClock width={16} height={16} />,
+    text: 'Catch up on recent edits and what they may affect downstream.',
+    prompts: ['Which artifacts changed most recently?', 'Are there change impacts that still need review?'],
+  },
+  {
+    title: 'Requirement content',
+    icon: <IconDocument width={16} height={16} />,
+    text: 'Ask about a feature, user role or rule in plain language.',
+    prompts: ['Summarise the requirements related to user login.', 'What do the uploaded documents say about data retention?'],
+  },
+];
+
+/** What the copilot can answer, with example prompts that fill the question box (they never send it). */
+function CopilotGuide({ onUse, disabled }: { onUse: (prompt: string) => void; disabled: boolean }) {
+  return (
+    <section className="copilot-guide" aria-labelledby="copilot-guide-title">
+      <div className="copilot-guide-head">
+        <h3 id="copilot-guide-title">What you can ask</h3>
+        <p>
+          Copilot answers from this project's requirements, clarification questions, test coverage, recent changes and uploaded documents. Pick an
+          example to put it in the question box, edit it if you like, then press Ask.
+        </p>
+      </div>
+      <div className="copilot-guide-grid">
+        {GUIDE.map((g) => (
+          <div key={g.title} className="copilot-guide-card">
+            <div className="copilot-guide-card-head">
+              <span className="copilot-guide-icon" aria-hidden="true">
+                {g.icon}
+              </span>
+              <h4>{g.title}</h4>
+            </div>
+            <p>{g.text}</p>
+            <ul>
+              {g.prompts.map((p) => (
+                <li key={p}>
+                  <button type="button" className="copilot-guide-prompt" disabled={disabled} onClick={() => onUse(p)} title="Use this question">
+                    {p}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+      <ul className="copilot-guide-tips">
+        <li>
+          <strong>Be specific.</strong> Naming a feature, user role or topic gives more focused answers.
+        </li>
+        <li>
+          <strong>Check the sources.</strong> Answers list related artifacts and cite document passages — verify them before acting.
+        </li>
+        <li>
+          <strong>Read-only.</strong> Copilot never edits requirements or moves the lifecycle; each question is recorded in the AI audit trail.
+        </li>
+      </ul>
+    </section>
+  );
+}
+
 export function CopilotPanel({ projectId, contextLabel }: { projectId: string; contextLabel?: string }) {
   const { token } = useAuth();
   const [question, setQuestion] = useState('');
@@ -21,6 +99,7 @@ export function CopilotPanel({ projectId, contextLabel }: { projectId: string; c
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [maxChars, setMaxChars] = useState(DEFAULT_MAX_QUESTION_CHARS);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   // The server's configured limit; the default stands if it cannot be read (the server enforces it anyway).
   useEffect(() => {
@@ -72,6 +151,7 @@ export function CopilotPanel({ projectId, contextLabel }: { projectId: string; c
           Ask the project copilot
         </label>
         <input
+          ref={inputRef}
           id="copilot-q"
           type="text"
           placeholder="Ask about gaps, coverage or recent changes…"
@@ -115,6 +195,16 @@ export function CopilotPanel({ projectId, contextLabel }: { projectId: string; c
           <IconAlert width={16} height={16} />
           <span>{error}</span>
         </div>
+      )}
+
+      {!answer && !busy && (
+        <CopilotGuide
+          disabled={busy}
+          onUse={(p) => {
+            setQuestion(p);
+            inputRef.current?.focus();
+          }}
+        />
       )}
 
       {busy && <div className="skeleton skeleton-panel" aria-label="Waiting for an answer" />}

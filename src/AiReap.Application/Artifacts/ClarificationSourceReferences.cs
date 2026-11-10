@@ -15,18 +15,22 @@ namespace AiReap.Application.Artifacts;
 // is saved - the question, its answer, status and review are never changed, so a read is idempotent:
 //   - stored links and evidence are kept where they still hold in the source (SourceReferenceIndex.Holds);
 //     evidence that does not is placed again from its own quoted words, and a reason link that does not
-//     is dropped and the reason resolved again. Evidence that cannot be placed stays, marked Line -1;
+//     is dropped and the reason resolved again. Evidence that cannot be placed stays, marked Line -1.
+//     Evidence whose words are written in several places is kept only where the question's links and
+//     other evidence still single that occurrence out (ClarificationEvidenceLocator) - a question saved
+//     when the first occurrence was taken by default is not linked to a guess;
 //   - a question without located evidence (saved before RequirementAnalysis-v3, or whose evidence was
 //     never placed) gets it recovered, in this order, each step only from what the source verifies:
 //       1. RecoveryGeneration: the quotes the model gave for it in the analysis response that raised it
 //          (its AIExecution audit row), matched to the question by its saved or first wording;
 //       2. RecoveryQuoted: words the question or its reason quote ("the term 'promptly'") - four words or
 //          more as evidence, a shorter term only where the source writes it once (or once inside the
-//          sections the reason cites), as the sentence holding it;
-//       3. RecoveryRequirementId: a requirement ID the question or reason names (FR-012), as the passage
-//          that defines it, when the source defines it once.
-//     Topic words alone are never matched: a question none of these place is "unresolved", and says so.
-//   - SourceLinkStatus says which case the question is in (see ClarificationQuestionPayload).
+//          sections the reason cites), as the sentence holding it.
+//     A requirement ID, section number or topic word the question merely names is never evidence: a
+//     question none of these place is "unresolved".
+//   - SourceLinkStatus says which case the question is in (see ClarificationQuestionPayload), and
+//     IsGrounded whether it may be shown at all (ClarificationVisibility): only a question with verified
+//     evidence it is about - both statements, for a contradiction - is ever shown.
 // Restricted callers (S2) never get any of this - RequirementEvidenceFields.RedactForRestrictedCaller
 // removes it with the other source quotes.
 // Edits: server-owned - whatever the client sends, the previous version's links are kept.
@@ -43,9 +47,6 @@ public static partial class ClarificationSourceReferences
 
     public const string RecoveryGeneration = "generation-response";
     public const string RecoveryQuoted = "quoted-in-question";
-    public const string RecoveryRequirementId = "requirement-id";
-
-    private const int MaxRecoveredIds = 3;
 
     private static readonly JsonSerializerOptions ReadOptions = new() { PropertyNameCaseInsensitive = true };
 
@@ -69,6 +70,26 @@ public static partial class ClarificationSourceReferences
     // (and the generation trace is worth loading).
     public static bool NeedsEvidence(string dataJson) =>
         Read(dataJson) is not { } data || !(data.SourceEvidence ?? []).Any(e => e.Line >= 0);
+
+    // Whether a question linked by WithSourceLinks has the evidence a shown question needs: a verified
+    // passage the question is about (ClarificationCandidateValidator.Relevant), and for a contradiction
+    // both statements at different places. A question without it is never shown (ClarificationVisibility).
+    public static bool IsGrounded(string linkedJson)
+    {
+        if (Read(linkedJson) is not { } data || data.SourceLinkStatus != StatusPassage)
+        {
+            return false;
+        }
+
+        var located = (data.SourceEvidence ?? []).Where(e => e.Line >= 0).ToList();
+        if (located.Count == 0 || !ClarificationCandidateValidator.Relevant(data.Question, located))
+        {
+            return false;
+        }
+
+        return ClarificationCandidateValidator.NormalizeKind(data.Kind) != "contradiction"
+            || located.Select(e => (e.Line, e.EndLine)).Where((p, i) => !located.Take(i).Any(o => p.Line < o.EndLine && o.Line < p.EndLine)).Count() >= 2;
+    }
 
     // The question's data linked to its source as far as the source verifies (see the class comment).
     public static string WithSourceLinks(string dataJson, Guid sourceId, ClarificationEvidenceLocator locator, GenerationTrace? trace = null)
@@ -125,6 +146,18 @@ public static partial class ClarificationSourceReferences
             evidence.Add(stored);
         }
 
+        // Wording written in several places stays linked only where the question still singles it out.
+        var single = evidence.Where(e => e.Line >= 0 && e.Occurrences is null or <= 1).ToList();
+        foreach (var repeated in evidence.Where(e => e.Line >= 0 && e.Occurrences > 1))
+        {
+            var confirmed = locator.LocateAll([repeated.Excerpt], links, single).Places;
+            if (!confirmed.Any(c => c.Line == repeated.Line && c.EndLine == repeated.EndLine))
+            {
+                repeated.Line = -1;
+                repeated.EndLine = -1;
+            }
+        }
+
         if (!evidence.Any(e => e.Line >= 0) && Recover(data, links, locator, trace) is { Count: > 0 } recovered)
         {
             evidence = recovered.Concat(evidence).ToList();
@@ -171,8 +204,7 @@ public static partial class ClarificationSourceReferences
             return Mark(fromGeneration, RecoveryGeneration);
         }
 
-        var quoted = FromQuotedWords(data, links, locator);
-        return quoted.Count > 0 ? Mark(quoted, RecoveryQuoted) : Mark(FromRequirementIds(data, locator), RecoveryRequirementId);
+        return Mark(FromQuotedWords(data, links, locator), RecoveryQuoted);
     }
 
     private static List<SourceReferencePayload> Mark(List<SourceReferencePayload> evidence, string recovery)
@@ -263,21 +295,6 @@ public static partial class ClarificationSourceReferences
 
     private static bool IsHeadingLine(SourceReferenceIndex index, int line) =>
         index.Sections.Any(s => s.Line == line);
-
-    // The passage defining each requirement ID the question or reason names, when it is defined once.
-    private static List<SourceReferencePayload> FromRequirementIds(ClarificationQuestionPayload data, ClarificationEvidenceLocator locator)
-    {
-        var found = new List<SourceReferencePayload>();
-        foreach (var id in SrsIdExtractor.Extract($"{data.Question}\n{data.Reason}").Take(MaxRecoveredIds))
-        {
-            if (locator.Evidence.DefinitionsOf(id) is [var only] && locator.References.LocateRange(only.Start, only.End) is { } place)
-            {
-                found.Add(place);
-            }
-        }
-
-        return found;
-    }
 
     // ---- JSON ----------------------------------------------------------------------------------
 

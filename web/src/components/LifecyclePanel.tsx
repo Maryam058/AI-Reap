@@ -139,9 +139,9 @@ export function LifecyclePanel({ project, version, onProjectChanged }: { project
     <section className="panel lifecycle-panel" id="lifecycle" aria-labelledby="lifecycle-title">
       <header className="panel-head">
         <div>
-          <span className="eyebrow">Project lifecycle</span>
+          <span className="eyebrow">Lifecycle status &amp; approvals</span>
           <h2 id="lifecycle-title">
-            Stage {progress.stageNumber} of {LIFECYCLE_STAGES.length}: {state.stageLabel}
+            Status {progress.stageNumber} of {LIFECYCLE_STAGES.length}: {state.stageLabel}
           </h2>
           <p>
             {progress.finished ? (
@@ -165,6 +165,10 @@ export function LifecyclePanel({ project, version, onProjectChanged }: { project
           <span>%</span>
         </div>
       </header>
+      <p className="lc-explain">
+        The lifecycle status is the project’s formal, approved position, from Draft to Completed. It moves forward here, only when the exit checks pass; leaving Design and
+        Testing also needs a Reviewer’s approval. The work itself happens in the stages above.
+      </p>
 
       {state.evidenceGaps.length > 0 && (
         <div className="alert alert-warning" role="status">

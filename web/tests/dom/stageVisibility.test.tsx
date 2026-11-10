@@ -212,12 +212,36 @@ describe('project team card', () => {
 });
 
 describe('sidebar', () => {
-  test('Projects stays reachable when the Project section is folded away', () => {
-    localStorage.setItem('aireap.nav-sections-closed', JSON.stringify({ project: true, sdlc: true }));
+  test('Projects stays reachable when the project sections are folded away', () => {
+    localStorage.setItem('aireap.nav-sections-closed', JSON.stringify({ lifecycle: true, tools: true }));
     inRouter(<Sidebar />);
     expect(screen.getByRole('link', { name: 'Projects' }).getAttribute('href')).toBe('/projects');
-    // The folded Project section still folds (its toggle reports closed).
-    expect(screen.getByRole('button', { name: /^Project/ }).getAttribute('aria-expanded')).toBe('false');
+    // The folded sections still fold (their toggles report closed).
+    expect(screen.getByRole('button', { name: /^Project tools/ }).getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByRole('button', { name: /^Lifecycle stages/ }).getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('lists the nine stages in order and marks the stage the work is in', () => {
+    ctx.project = project(2);
+    inRouter(<Sidebar />);
+    const stages = within(screen.getByRole('region', { name: 'Lifecycle stages' }));
+    const links = stages.getAllByRole('link');
+    expect(links.map((a) => a.querySelector('.nav-label')?.textContent)).toEqual([
+      'Gathering',
+      'Analysis',
+      'Validation',
+      'Design',
+      'Development',
+      'Testing',
+      'Traceability',
+      'AI Copilot',
+      'Review',
+    ]);
+    expect(links[0].textContent).toContain('Completed');
+    expect(links[1].textContent).toContain('Now');
+    expect(links[2].textContent).toContain('Now');
+    expect(links[3].textContent).toContain('Not started');
+    expect(links[1].getAttribute('href')).toBe('/projects/p1/analysis');
   });
 
   test('outside a project, says which project the work-area links open', () => {

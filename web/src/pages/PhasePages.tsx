@@ -1,18 +1,19 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useProject } from '../context/ProjectContext';
 import { useProjectInsights } from '../hooks/useProjectInsights';
 import { ARTIFACT_TYPE_VALUES } from '../api/types';
+import { requirementSourcesApi } from '../api/requirementSources';
 import { phasePath, WORK_AREAS } from '../lib/workAreas';
 import { readsRawSources } from '../lib/access';
-import { PageHeader } from '../components/ui/PageHeader';
 import { Tabs } from '../components/ui/Tabs';
 import { PhasePage, PlannedCard } from '../components/PhasePage';
 import { RequirementWorkspace, type WorkspaceView } from '../components/RequirementWorkspace';
 import { StakeholdersPanel } from '../components/StakeholdersPanel';
 import { MembersPanel } from '../components/MembersPanel';
-import { ProjectEditor, ProjectSummary } from '../components/ProjectForm';
+import { overallCompletion, ProjectEditor, ProjectSummary } from '../components/ProjectForm';
+import { StageHeader, StageNextStep } from '../components/stage/StageHeader';
 import { ConflictsPanel } from '../components/ConflictsPanel';
 import { TraceabilityMatrix } from '../components/TraceabilityMatrix';
 import { TestQaSummary } from '../components/TestQaSummary';
@@ -21,9 +22,7 @@ import { AgentPipelinePanel } from '../components/AgentPipelinePanel';
 import { DocumentsPanel } from '../components/DocumentsPanel';
 import { AuditTrailPanel } from '../components/AuditTrailPanel';
 import { useProjectEditing } from './ProjectFormPages';
-import { IconBarChart, IconCheckCircle, IconLayers, IconLink, IconShieldCheck, IconSparkles } from '../components/icons';
-
-const phase = (key: string) => WORK_AREAS.find((p) => p.key === key)!;
+import { IconArrowLeft, IconBarChart, IconCheck, IconCheckCircle, IconDocument, IconLayers, IconLink, IconShieldCheck, IconSparkles, IconTarget, IconUpload, IconUsers } from '../components/icons';
 
 function Stat({ label, value, hint }: { label: string; value: number | string; hint?: string }) {
   return (
@@ -51,20 +50,22 @@ export function GatheringPage() {
   const requested = params.get('tab');
   const tab: GatheringTab =
     requested === 'stakeholders' || requested === 'members' || requested === 'sources' ? requested : 'context';
-  const { project, bumpContent } = useProject();
+  const { project, bumpContent, contentVersion } = useProject();
   const editing = useProjectEditing();
+  const select = (k: GatheringTab) => setParams(k === 'context' ? {} : { tab: k }, { replace: true });
 
   return (
-    <PhasePage phaseKey="gathering" title={phase('gathering').navLabel} description="Capture the business context, stakeholders, goals and raw requirement input that every later phase builds on.">
+    <PhasePage phaseKey="gathering">
+      <GatheringSteps active={tab} onSelect={select} contextDone={overallCompletion(editing.saved)} version={contentVersion} />
       <Tabs
         label="Requirements gathering sections"
         active={tab}
-        onChange={(k) => setParams(k === 'context' ? {} : { tab: k }, { replace: true })}
+        onChange={(k) => select(k as GatheringTab)}
         items={[
-          { key: 'context', label: 'Project context' },
-          { key: 'stakeholders', label: 'Stakeholders' },
-          { key: 'members', label: 'Members' },
-          { key: 'sources', label: 'Requirement sources' },
+          { key: 'context', label: 'Project context', icon: <IconTarget width={15} height={15} /> },
+          { key: 'stakeholders', label: 'Stakeholders', icon: <IconUsers width={15} height={15} /> },
+          { key: 'members', label: 'Members', icon: <IconUsers width={15} height={15} /> },
+          { key: 'sources', label: 'Requirement sources (SRS)', icon: <IconUpload width={15} height={15} /> },
         ]}
       />
       <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`} className="tab-panel">
@@ -99,13 +100,102 @@ export function GatheringPage() {
   );
 }
 
+
+/**
+ * The order of work in Gathering, as numbered steps that open the matching tab. Each step shows
+ * only real figures: filled project details, recorded stakeholders, and requirement sources added.
+ */
+function GatheringSteps({
+  active,
+  onSelect,
+  contextDone,
+  version,
+}: {
+  active: GatheringTab;
+  onSelect: (tab: GatheringTab) => void;
+  contextDone: { done: number; total: number };
+  version: number;
+}) {
+  const { token } = useAuth();
+  const { project } = useProject();
+  const { stakeholders } = useProjectInsights(project.id, version);
+  const [sources, setSources] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    requirementSourcesApi
+      .listForProject(project.id, token)
+      .then((list) => !cancelled && setSources(list.length))
+      .catch(() => !cancelled && setSources(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id, token, version]);
+
+  const steps: { key: GatheringTab; title: string; text: string; meta: string | null; done: boolean; icon: ReactNode }[] = [
+    {
+      key: 'context',
+      title: 'Describe the project',
+      text: 'Problem, goals, scope and users.',
+      meta: `${contextDone.done} of ${contextDone.total} details filled`,
+      done: contextDone.done === contextDone.total,
+      icon: <IconTarget width={15} height={15} />,
+    },
+    {
+      key: 'stakeholders',
+      title: 'Record stakeholders',
+      text: 'Who is affected and who decides.',
+      meta: stakeholders ? (stakeholders.length === 0 ? 'None recorded yet' : `${stakeholders.length} recorded`) : null,
+      done: !!stakeholders && stakeholders.length > 0,
+      icon: <IconUsers width={15} height={15} />,
+    },
+    {
+      key: 'members',
+      title: 'Add team members',
+      text: 'Give colleagues access with a role.',
+      meta: 'Members can sign in and work here',
+      done: false,
+      icon: <IconUsers width={15} height={15} />,
+    },
+    {
+      key: 'sources',
+      title: 'Upload your SRS',
+      text: 'Upload a document or paste notes.',
+      meta: sources === null ? null : sources === 0 ? 'Nothing added yet' : `${sources} ${sources === 1 ? 'source' : 'sources'} added`,
+      done: (sources ?? 0) > 0,
+      icon: <IconDocument width={15} height={15} />,
+    },
+  ];
+
+  return (
+    <ol className="stage-steps" aria-label="Steps in this stage">
+      {steps.map((st, i) => (
+        <li key={st.key} className={`${st.key === active ? 'active' : ''}${st.done ? ' done' : ''}`}>
+          <button type="button" onClick={() => onSelect(st.key)} aria-pressed={st.key === active}>
+            <span className="stage-steps-num" aria-hidden="true">
+              {st.done ? <IconCheck width={13} height={13} strokeWidth={3} /> : i + 1}
+            </span>
+            <span className="stage-steps-text">
+              <strong>
+                {st.icon} {st.title}
+              </strong>
+              <span>{st.text}</span>
+              {st.meta && <small>{st.meta}</small>}
+            </span>
+          </button>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 /* ------------------------------------------------------------------ 2. Analysis */
 
 export function AnalysisPage() {
   const { project, contentVersion } = useProject();
   const { dashboard } = useProjectInsights(project.id, contentVersion);
   return (
-    <PhasePage phaseKey="analysis" title={phase('analysis').navLabel} description="Analyze raw input into structured functional and non-functional requirements, user stories and business rules.">
+    <PhasePage phaseKey="analysis">
       {dashboard && (
         <div className="stat-grid phase-stats">
           <Stat label="Functional requirements" value={dashboard.functionalRequirementCount} />
@@ -138,7 +228,7 @@ export function ValidationPage() {
   })();
 
   return (
-    <PhasePage phaseKey="validation" title={phase('validation').navLabel} description="Validate requirements for ambiguity, conflicts and completeness before design begins.">
+    <PhasePage phaseKey="validation">
       {dashboard && requirements && readiness && (
         <section className="panel readiness">
           <div className="readiness-head">
@@ -175,7 +265,7 @@ export function ValidationPage() {
 
 export function DesignPage() {
   return (
-    <PhasePage phaseKey="design" title={phase('design').navLabel} description="Derive the architecture, data model and interfaces from validated requirements.">
+    <PhasePage phaseKey="design">
       <Workspace view="design" />
       <PlannedCard
         icon={<IconLayers width={18} height={18} />}
@@ -189,7 +279,7 @@ export function DesignPage() {
 
 export function DevelopmentPage() {
   return (
-    <PhasePage phaseKey="development" title={phase('development').navLabel} description="Break the design into implementation tasks and keep them linked to requirements.">
+    <PhasePage phaseKey="development">
       <Workspace view="development" />
     </PhasePage>
   );
@@ -202,7 +292,7 @@ export function TestingPage() {
   const testCount = testCases ? testCases.length : null;
   const covered = matrix && matrix.length > 0 ? matrix.filter((r) => r.testCases.length > 0).length : null;
   return (
-    <PhasePage phaseKey="testing" title={phase('testing').navLabel} description="Derive test cases from functional requirements and see how much of the specification they cover.">
+    <PhasePage phaseKey="testing">
       {testCases && <TestQaSummary projectId={project.id} testCases={testCases} />}
       {(testCount !== null || covered !== null) && (
         <div className="stat-grid phase-stats">
@@ -220,7 +310,7 @@ export function TestingPage() {
 export function TraceabilityPage() {
   const { project } = useProject();
   return (
-    <PhasePage phaseKey="traceability" title={phase('traceability').navLabel} description="Follow every requirement through design, development and testing to prove nothing is missed.">
+    <PhasePage phaseKey="traceability">
       <TraceabilityMatrix projectId={project.id} />
     </PhasePage>
   );
@@ -243,14 +333,14 @@ export function CopilotPage() {
 
   return (
     <>
-      <PageHeader
-        title="AI Copilot"
-        subtitle="Ask about gaps, coverage and recent changes — answers are grounded in this project's requirements and uploaded documents."
-        badge={<span className="copilot-chip">Project: {project.name}</span>}
+      <StageHeader
+        stageKey="copilot"
+        project={project}
+        badge={<span className="copilot-chip">Answers are grounded in this project's requirements and documents</span>}
         actions={
           fromPhase && (
             <Link to={phasePath(project.id, fromPhase.segment)} className="btn btn-secondary">
-              Back to {fromPhase.label}
+              <IconArrowLeft width={15} height={15} /> Back to {fromPhase.label}
             </Link>
           )
         }
@@ -276,6 +366,7 @@ export function CopilotPage() {
         {tab === 'documents' && <DocumentsPanel projectId={project.id} />}
         {tab === 'audit' && <AuditTrailPanel projectId={project.id} />}
       </div>
+      <StageNextStep stageKey="copilot" project={project} />
     </>
   );
 }

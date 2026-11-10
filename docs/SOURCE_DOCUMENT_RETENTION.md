@@ -1,8 +1,8 @@
 # Original source documents: retention, storage and viewing
 
 AI-REAP keeps the **original PDF or DOCX** of each uploaded requirement source. When a reviewer clicks a
-section reference in a clarification question's "Why it matters", the in-app viewer can then show the
-document itself, open at the cited place. This page covers what is kept, where it is kept, who can read
+clarification question's source link, the in-app viewer can then show the document itself, open at the
+passage that raised the question, highlighted. This page covers what is kept, where it is kept, who can read
 it, and when it is deleted.
 
 ## What is kept

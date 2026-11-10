@@ -1,4 +1,4 @@
-// Covers the "Why it matters" source links (ClarificationQuestionCard) and how SourceDocumentViewer
+// Covers a clarification question's source link (ClarificationQuestionCard) and how SourceDocumentViewer
 // finds and highlights the cited place. Which references exist is decided by the server
 // (SourceReferenceIndex, tested in AiReap.Tests SourceReferenceTests).
 import assert from 'node:assert/strict';
@@ -7,7 +7,6 @@ import type { SourceReference } from '../src/api/types.ts';
 import {
   alignParagraphs,
   docxLineKeys,
-  evidenceHeading,
   evidencePurpose,
   findMatches,
   headingTitle,
@@ -15,15 +14,14 @@ import {
   locateReference,
   markExcerpt,
   matchesBefore,
-  occurrenceNote,
   occurrenceOf,
   originalKind,
   pageForLine,
-  reasonSegments,
-  recoveryNote,
   referenceAriaLabel,
   sourceFormatNote,
   sourceLines,
+  sourceLinkAriaLabel,
+  sourceLinkLabel,
 } from '../src/lib/sourceReferences.ts';
 
 const SOURCE_ID = '6a1b5f0e-6a77-4c1f-9b55-0d7c7e3b2a11';
@@ -52,70 +50,6 @@ const ref = (over: Partial<SourceReference>): SourceReference => ({
   excerpt: 'Nurses and doctors use the module.',
   excerptIsQuote: false,
   ...over,
-});
-
-const links = (segments: ReturnType<typeof reasonSegments>) => segments.filter((s) => s.reference).map((s) => s.text);
-const joined = (segments: ReturnType<typeof reasonSegments>) => segments.map((s) => s.text).join('');
-
-test('a verified reference becomes a link and the surrounding text and punctuation are kept', () => {
-  const reason = 'The SRS describes access permissions in Section 3.2 — User Roles. Without it, roles may be incomplete.';
-  const label = 'Section 3.2 — User Roles';
-  const segments = reasonSegments(reason, [ref({ label, start: reason.indexOf(label) })]);
-  assert.deepEqual(links(segments), [label]);
-  assert.equal(joined(segments), reason);
-  assert.equal(segments[0].text, 'The SRS describes access permissions in ');
-  assert.equal(segments[2].text, '. Without it, roles may be incomplete.');
-});
-
-test('several references in one reason are separate links, each opening its own place', () => {
-  const reason = 'Sections 3.2 and 12.7 disagree; §4 is silent.';
-  const segments = reasonSegments(reason, [
-    ref({ label: '§4', start: reason.indexOf('§4'), sectionNumber: '4', heading: '4. Security', line: 5, endLine: 7 }),
-    ref({ label: 'Sections 3.2', start: 0 }),
-    ref({ label: '12.7', start: reason.indexOf('12.7'), sectionNumber: '12.7', heading: '12.7 Decline Categories', line: 8, endLine: 10 }),
-  ]);
-  assert.deepEqual(links(segments), ['Sections 3.2', '12.7', '§4']);
-  assert.deepEqual(
-    segments.filter((s) => s.reference).map((s) => s.reference!.line),
-    [2, 8, 5],
-  );
-  assert.equal(joined(segments), reason);
-});
-
-test('without verified references a reason is plain text - including old questions and unresolved sections', () => {
-  const reason = 'Section 9.9 is cited, see page 4.';
-  for (const references of [undefined, null, [], 'nonsense' as unknown as unknown[]]) {
-    const segments = reasonSegments(reason, references);
-    assert.deepEqual(segments, [{ text: reason }]);
-  }
-  // A malformed or out-of-place reference is dropped, never linked somewhere else.
-  const malformed = [
-    { label: '', start: 0, sourceId: SOURCE_ID, line: 0, endLine: 1 },
-    { label: 'Section 9.9', start: 0, sourceId: '', line: 0, endLine: 1 },
-    { label: 'Section 9.9', start: 0, sourceId: SOURCE_ID, line: -1, endLine: 1 },
-    { label: 'Section 9.9', start: 0, sourceId: SOURCE_ID, line: 3, endLine: 3 },
-    ref({ label: 'Section 3.2', start: 0 }), // not in this reason
-    null,
-  ];
-  assert.deepEqual(links(reasonSegments(reason, malformed)), []);
-});
-
-test('a label that moved takes its first free occurrence, and overlapping links are not drawn', () => {
-  const reason = 'See Section 3.2 and again Section 3.2.';
-  const segments = reasonSegments(reason, [ref({ start: 99 }), ref({ start: 4 }), ref({ label: 'Section 3.2 and', start: 4 })]);
-  assert.deepEqual(links(segments), ['Section 3.2', 'Section 3.2']);
-  assert.equal(joined(segments), reason);
-});
-
-test('markup in a reason stays text: segments are strings, and markup is never part of a link', () => {
-  const reason = '<img src=x onerror=alert(1)><script>alert(2)</script> Section 3.2 is unclear.';
-  const segments = reasonSegments(reason, [ref({ start: reason.indexOf('Section 3.2') })]);
-  assert.deepEqual(links(segments), ['Section 3.2']);
-  assert.equal(segments[0].text, '<img src=x onerror=alert(1)><script>alert(2)</script> ');
-  assert.ok(segments.every((s) => typeof s.text === 'string'));
-  // A label carrying markup is still only text for React to render.
-  const hostile = '<b onclick=alert(1)>Section 3.2</b>';
-  assert.deepEqual(links(reasonSegments(hostile, [ref({ label: hostile, start: 0 })])), [hostile]);
 });
 
 test('the viewer goes to the cited section by its heading, and finds it if the line moved', () => {
@@ -289,22 +223,29 @@ test('only evidence the server placed in the source can be opened', () => {
   assert.equal(isLocatedEvidence(null), false);
 });
 
-test('evidence is introduced by what the question is about, and missing information is never presented as quoted', () => {
-  assert.match(evidenceHeading('missing', 1), /not written there/);
-  assert.equal(evidenceHeading('ambiguous', 1), 'The ambiguous statement');
-  assert.equal(evidenceHeading('contradiction', 2), 'The conflicting statements');
-  assert.equal(evidenceHeading(null, 1), 'The passage that raised this question'); // an older question
+test('the viewer names the highlighted passage by what the question is about, and missing information is never presented as quoted', () => {
   assert.equal(evidencePurpose('missing'), 'Context for the missing information');
   assert.equal(evidencePurpose('contradiction'), 'Conflicting statement');
   assert.equal(evidencePurpose(undefined), 'Quoted evidence');
 });
 
-test('a recovered passage says how it was linked, and repeated wording asks the reader to check', () => {
-  assert.match(recoveryNote('generation-response')!, /analysis quoted/);
-  assert.match(recoveryNote('quoted-in-question')!, /words this question quotes/);
-  assert.match(recoveryNote('requirement-id')!, /requirement this question names/);
-  assert.equal(recoveryNote(null), null);
-  assert.match(occurrenceNote(evidence({ occurrences: 3 }))!, /appear 3 times/);
-  assert.equal(occurrenceNote(evidence({ occurrences: 1 })), null);
-  assert.equal(occurrenceNote(evidence()), null);
+test('a source link is named by the verified section heading, never by offsets, and none is invented', () => {
+  assert.equal(sourceLinkLabel(evidence({ heading: '3.2 User Notifications' })), '3.2 User Notifications');
+  // A contents entry's page number and a Markdown heading marker are not part of the name.
+  assert.equal(sourceLinkLabel(evidence({ heading: '4.2 Actors and Roles ........ 9' })), '4.2 Actors and Roles');
+  assert.equal(sourceLinkLabel(evidence({ heading: '## Booking' })), 'Booking');
+  // No heading: a neutral label - no section number, line or offset is made up.
+  for (const heading of [null, undefined, '']) {
+    const label = sourceLinkLabel(evidence({ heading, sectionNumber: null }));
+    assert.equal(label, 'Source passage');
+    assert.doesNotMatch(label, /line|§|\d/);
+  }
+  assert.equal(
+    sourceLinkAriaLabel(evidence({ heading: '3.2 User Notifications' })),
+    'Open “3.2 User Notifications” in the requirement source at the highlighted passage',
+  );
+  assert.equal(
+    sourceLinkAriaLabel(evidence({ heading: null }), 'Statement 2'),
+    'Statement 2: Open the requirement source at the highlighted passage',
+  );
 });

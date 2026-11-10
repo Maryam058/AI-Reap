@@ -89,7 +89,9 @@ public partial class CopilotService : ICopilotService
             ?? throw new KeyNotFoundException($"Project {projectId} not found.");
 
         // Every prompt block below is built from this list, so the assistant only answers from artifacts the caller may see.
-        var artifacts = await _db.Artifacts.VisibleTo(_currentUser).Where(a => a.ProjectId == projectId).ToListAsync(cancellationToken);
+        // A clarification question without verified source evidence is never shown, so never quoted (ClarificationVisibility).
+        var artifacts = await ClarificationVisibility.FilterAsync(
+            _db, await _db.Artifacts.VisibleTo(_currentUser).Where(a => a.ProjectId == projectId).ToListAsync(cancellationToken), cancellationToken);
 
         var factsBlock = await BuildStructuredFactsAsync(artifacts, cancellationToken);
         var impact = await BuildImpactGroupsAsync(artifacts, question, cancellationToken);

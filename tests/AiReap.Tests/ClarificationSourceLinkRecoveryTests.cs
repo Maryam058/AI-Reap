@@ -12,10 +12,11 @@ using Xunit;
 
 namespace AiReap.Tests;
 
-// Every clarification question is linked to the passage of its SRS that raised it - when it is made
-// (ClarificationCandidateValidator via RequirementAnalysisService) and when it is read
+// Every clarification question that is shown is linked to the passage of its SRS that raised it - when it
+// is made (ClarificationCandidateValidator via RequirementAnalysisService) and when it is read
 // (ClarificationService -> ClarificationSourceReferences.WithSourceLinks), including questions saved
-// before evidence was kept. Offline: InMemoryAiReapDb, scripted AI responses, no SQL Server, no provider.
+// before evidence was kept; one whose passage cannot be verified is not shown at all
+// (ClarificationVisibility). Offline: InMemoryAiReapDb, scripted AI responses, no SQL Server, no provider.
 public class ClarificationSourceLinkRecoveryTests
 {
     // Headings, numbered requirements, wording repeated in two sections ("are stored in the appointment
@@ -227,18 +228,19 @@ public class ClarificationSourceLinkRecoveryTests
     }
 
     [Fact]
-    public async Task A_requirement_id_the_question_names_is_linked_to_the_passage_defining_it()
+    public async Task A_requirement_id_the_question_merely_names_is_not_evidence_so_the_question_is_not_shown()
     {
+        // FR-030 is defined once in the source, but naming it does not show which passage raised the question.
         var (db, source) = Seed();
-        SaveQuestion(db, source, "CQ-004",
+        var artifact = SaveQuestion(db, source, "CQ-004",
             new { Question = "Which format must the FR-030 report use?", Reason = "No format is given.", ClarificationStatus = "Open" });
 
-        var data = (await ReadAsync(db, source))["CQ-004"];
+        Assert.False((await ReadAsync(db, source)).ContainsKey("CQ-004"));
 
-        var evidence = Assert.Single(Evidence(data));
-        Assert.Equal(LineOf("FR-030"), evidence.Line);
-        Assert.Equal("FR-030 Reception staff shall export a daily report of appointments.", evidence.Excerpt);
-        Assert.Equal(ClarificationSourceReferences.RecoveryRequirementId, evidence.Recovery);
+        var linked = ClarificationSourceReferences.WithSourceLinks(artifact.DataJson, source.Id, Locator(source.Id));
+        Assert.Equal("unresolved", JsonSerializer.Deserialize<ClarificationQuestionPayload>(linked, Lenient)!.SourceLinkStatus);
+        Assert.False(ClarificationSourceReferences.IsGrounded(linked));
+        Assert.Single(InMemoryAiReapDb.Rows(db.Artifacts)); // hidden, never deleted
     }
 
     // ---- 3. stale or invalid references --------------------------------------------------------
@@ -286,11 +288,14 @@ public class ClarificationSourceLinkRecoveryTests
             SourceEvidence = new[] { new SourceReferencePayload { Label = "q", SourceId = source.Id, Line = 3, EndLine = 4, Excerpt = "Refunds are approved by the practice manager.", ExcerptIsQuote = true } }
         });
 
-        var data = (await ReadAsync(db, source))["CQ-006"];
+        Assert.False((await ReadAsync(db, source)).ContainsKey("CQ-006")); // nothing verified: not shown
 
-        var evidence = Assert.Single(Evidence(data));
+        var artifact = Assert.Single(InMemoryAiReapDb.Rows(db.Artifacts));
+        var linked = JsonSerializer.Deserialize<ClarificationQuestionPayload>(
+            ClarificationSourceReferences.WithSourceLinks(artifact.DataJson, source.Id, Locator(source.Id)), Lenient)!;
+        var evidence = Assert.Single(linked.SourceEvidence!);
         Assert.Equal(-1, evidence.Line); // kept as given, marked as not located - never moved to similar words
-        Assert.Equal("unresolved", Status(data));
+        Assert.Equal("unresolved", linked.SourceLinkStatus);
     }
 
     // ---- 4-6. evidence made at generation time ---------------------------------------------------
@@ -396,33 +401,35 @@ public class ClarificationSourceLinkRecoveryTests
     }
 
     [Fact]
-    public void Repeated_wording_with_nothing_to_tell_the_places_apart_says_how_many_there_are()
+    public void Repeated_wording_with_nothing_to_tell_the_places_apart_is_never_placed_at_a_guess()
     {
         var locator = Locator(Guid.NewGuid());
 
-        var evidence = Assert.Single(locator.Locate(["stored in the appointment register for seven years"]));
+        var located = locator.LocateAll(["stored in the appointment register for seven years"]);
 
-        Assert.Equal(LineOf("Bookings are stored"), evidence.Line);
-        Assert.Equal(2, evidence.Occurrences); // the viewer says the wording appears twice
+        Assert.Empty(located.Places); // not the first occurrence by default
+        Assert.Equal(1, located.Ambiguous);
     }
 
     // ---- 9. unverifiable ------------------------------------------------------------------------
 
     [Fact]
-    public async Task A_question_nothing_verifies_is_reported_unresolved_and_topic_words_are_never_matched()
+    public async Task A_question_nothing_verifies_is_not_shown_and_topic_words_are_never_matched()
     {
         var (db, source) = Seed();
         // "reminder" and "appointment" are all over the source, but nothing the question cites is.
-        SaveQuestion(db, source, "CQ-008",
-            new { Question = "How are reminders for an appointment personalised?", Reason = "Personalisation is not described.", ClarificationStatus = "Open" },
-            V2Response("How are reminders for an appointment personalised?", "Personalisation is not described.",
-                ("Section 9", "9", "Reminders are personalised with the patient's name.")));
+        const string response = "How are reminders for an appointment personalised?";
+        var raw = V2Response(response, "Personalisation is not described.", ("Section 9", "9", "Reminders are personalised with the patient's name."));
+        var artifact = SaveQuestion(db, source, "CQ-008",
+            new { Question = response, Reason = "Personalisation is not described.", ClarificationStatus = "Open" }, raw);
 
-        var data = (await ReadAsync(db, source))["CQ-008"];
+        Assert.Empty(await ReadAsync(db, source));
 
-        Assert.Empty(Evidence(data));
-        Assert.Empty(Links(data));
-        Assert.Equal("unresolved", Status(data));
+        var linked = JsonSerializer.Deserialize<ClarificationQuestionPayload>(ClarificationSourceReferences.WithSourceLinks(
+            artifact.DataJson, source.Id, Locator(source.Id), new ClarificationSourceReferences.GenerationTrace(AnalysisResponseItems.Parse(raw), null)), Lenient)!;
+        Assert.Empty(linked.SourceEvidence ?? []);
+        Assert.Empty(linked.SourceReferences!);
+        Assert.Equal("unresolved", linked.SourceLinkStatus);
     }
 
     // ---- 10-11. repair is idempotent and never touches the question's own fields -------------------

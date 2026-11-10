@@ -43,7 +43,9 @@ public class RequirementsAgent : IAgent
             findings.Add($"Incomplete analysis - not sent to the AI: {string.Join("; ", coverage.MissingSections)}.");
         }
 
-        var existing = await AgentSupport.LoadAsync(_db, context.RequirementSourceId, ArtifactType.ClarificationQuestion, cancellationToken);
+        // Only questions with verified source evidence are reported (ClarificationVisibility).
+        var existing = await ClarificationVisibility.FilterAsync(
+            _db, await AgentSupport.LoadAsync(_db, context.RequirementSourceId, ArtifactType.ClarificationQuestion, cancellationToken), cancellationToken);
         var summary = result.Reused
             ? $"Reused the stored analysis of this source ({existing.Count} clarification question(s)); the AI was not called again."
             : $"Analysed the requirement and raised {existing.Count} clarification question(s)" +

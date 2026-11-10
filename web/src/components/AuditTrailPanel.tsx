@@ -27,7 +27,7 @@ export function AuditTrailPanel({ projectId }: { projectId: string }) {
     <div className="card" id="ai-audit-trail">
       <h2>AI Audit Trail</h2>
       <p className="hint">§27 — every AI call this project has made. No hidden provider reasoning is ever stored — only structured input/output.</p>
-      <button type="button" disabled={busy} onClick={load}>
+      <button type="button" className="btn btn-secondary" disabled={busy} onClick={load}>
         {busy ? 'Loading…' : executions ? 'Refresh' : 'Load audit trail'}
       </button>
 

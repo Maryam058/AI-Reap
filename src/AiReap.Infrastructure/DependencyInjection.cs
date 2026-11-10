@@ -47,6 +47,7 @@ public static class DependencyInjection
         // never fails to start whatever the configuration); which one IAiChatClient resolves to is
         // decided per request scope in ResolveAiChatClient. No Gemini or Groq chat client is
         // registered, so nothing can resolve one.
+        services.AddSingleton<IAiUsageMeter, AiUsageMeter>();
         services.AddHttpClient<AnthropicAiChatClient>();
         services.AddSingleton<StubAiChatClient>();
         services.AddSingleton<AiProviderCooldown>();

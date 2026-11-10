@@ -103,6 +103,29 @@ public class OriginalDocumentStorageTests : IDisposable
         Assert.DoesNotContain("secret", ex.Message);
     }
 
+    // A small upload whose ZIP expands past the limit is refused from its declared sizes, before any part
+    // is inflated. The knowledge-document upload goes through this same check (DocumentsController).
+    [Fact]
+    public async Task A_word_package_that_expands_past_the_limit_is_refused_before_it_is_read()
+    {
+        using var buffer = new MemoryStream();
+        using (var zip = new ZipArchive(buffer, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            using (var types = new StreamWriter(zip.CreateEntry("[Content_Types].xml").Open()))
+            {
+                types.Write("<Types/>");
+            }
+
+            using var big = zip.CreateEntry("word/document.xml", CompressionLevel.SmallestSize).Open();
+            var zeros = new byte[1024 * 1024];
+            for (var i = 0; i < 201; i++) big.Write(zeros);
+        }
+
+        Assert.True(buffer.Length < 5 * 1024 * 1024); // within the upload limit
+        var ex = await Assert.ThrowsAsync<InvalidDocumentException>(() => Extractor.ExtractDocumentAsync(buffer.ToArray(), "srs.docx"));
+        Assert.Contains("expands to more", ex.Message);
+    }
+
     [Fact]
     public async Task A_zip_that_is_not_a_word_package_is_refused()
     {

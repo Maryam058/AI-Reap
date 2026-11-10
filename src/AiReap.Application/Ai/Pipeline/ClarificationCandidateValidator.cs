@@ -43,10 +43,16 @@ public sealed record CandidateVerdict(
 //   generic              a best-practice / open-ended prompt ("any other requirements?") rather than an
 //                        evidenced uncertainty in this source;
 //   no-evidence          no evidence quote was found verbatim in the source (SourceEvidenceIndex). A quote
-//                        of the whole source counts, so a one-line source can still be questioned;
+//                        of the whole source counts, so a one-line source can still be questioned. Only
+//                        a question whose triggering passage is verified is ever shown: a question about
+//                        missing detail must quote the requirement that lacks it;
+//   ambiguous-location   every verified quote is written in several places and neither the sections the
+//                        question cites nor its other evidence tell which one raised it
+//                        (ClarificationEvidenceLocator) - no occurrence is guessed;
 //   contradiction-needs-both-statements  a contradiction needs two verified quotes at different places;
 //   unrelated            the question shares no content term with its own evidence or the headings of
-//                        the sections that evidence sits in;
+//                        the sections that evidence sits in. Requirement IDs and numbers do not count: a
+//                        shared "FR-012" or "3.2" does not show the question is about the passage;
 //   answered-in-source   another passage of the source answers the question. A passage is a sentence,
 //                        or a table row read with its column headers ("Approver: Line manager"). It
 //                        answers when it (not the evidence itself, nor a restatement of it, nor a heading
@@ -226,8 +232,13 @@ public static partial class ClarificationCandidateValidator
             rejections.Add(new("generic", "A generic or open-ended question, not an evidenced uncertainty in this source."));
         }
 
-        var evidence = LocateEvidence(context, candidate);
-        if (evidence.Count == 0)
+        var (evidence, ambiguous) = LocateEvidence(context, candidate);
+        if (evidence.Count == 0 && ambiguous > 0)
+        {
+            rejections.Add(new("ambiguous-location",
+                "The evidence is written in several places in the source and nothing in the question tells which one raised it."));
+        }
+        else if (evidence.Count == 0)
         {
             rejections.Add(new("no-evidence", candidate.EvidenceQuotes.Count == 0
                 ? "No evidence quote from the source was given."
@@ -281,10 +292,13 @@ public static partial class ClarificationCandidateValidator
 
     // The quotes verified in the source, each at its place (ClarificationEvidenceLocator); a quote written
     // in several places is placed by the sections the reason and the model's claims cite.
-    private static List<SourceReferencePayload> LocateEvidence(Context context, ClarificationCandidate candidate) =>
-        context.Locator.Locate(
+    private static (List<SourceReferencePayload> Evidence, int Ambiguous) LocateEvidence(Context context, ClarificationCandidate candidate)
+    {
+        var located = context.Locator.LocateAll(
             candidate.EvidenceQuotes.Take(MaxEvidenceQuotes),
             context.References.Resolve(candidate.Reason, candidate.SourceRefs));
+        return (located.Places, located.Ambiguous);
+    }
 
     private static int DistinctPlaces(IReadOnlyList<SourceReferencePayload> evidence)
     {
@@ -338,9 +352,14 @@ public static partial class ClarificationCandidateValidator
         return refs;
     }
 
+    // Requirement IDs, section numbers and other numbers are left out of both sides.
+    public static bool Relevant(string? question, IReadOnlyList<SourceReferencePayload> evidence) =>
+        Relevant(Terms(question), evidence);
+
     private static bool Relevant(HashSet<string> questionTerms, IReadOnlyList<SourceReferencePayload> evidence)
     {
-        if (questionTerms.Count == 0)
+        var words = questionTerms.Where(t => !t.Any(char.IsDigit)).ToHashSet(StringComparer.Ordinal);
+        if (words.Count == 0)
         {
             return false;
         }
@@ -349,10 +368,10 @@ public static partial class ClarificationCandidateValidator
         foreach (var e in evidence)
         {
             context.UnionWith(Terms(e.Excerpt));
-            context.UnionWith(Terms(e.Heading));
+            context.UnionWith(Terms(e.Heading?.TrimStart('#', ' ')));
         }
 
-        return questionTerms.Overlaps(context);
+        return words.Overlaps(context);
     }
 
     // ---- answered elsewhere ----------------------------------------------------------------------
