@@ -12,29 +12,31 @@
   --st-text: var(--text-secondary);
 }
 .st-in-progress {
-  --st: var(--primary);
-  --st-soft: var(--primary-soft);
-  --st-text: var(--primary);
+  --st: var(--progress);
+  --st-soft: var(--progress-soft);
+  --st-text: var(--progress-strong);
 }
 .st-awaiting {
   --st: var(--warning);
   --st-soft: var(--warning-soft);
   --st-text: var(--warning-strong);
 }
+/* Needs attention (evidence gaps / blocked) — clay, distinct from the amber "awaiting approval". */
 .st-attention {
-  --st: var(--warning);
-  --st-soft: var(--warning-soft);
-  --st-text: var(--warning-strong);
+  --st: var(--blocked);
+  --st-soft: var(--blocked-soft);
+  --st-text: var(--blocked-strong);
 }
 .st-completed {
   --st: var(--success);
   --st-soft: var(--success-soft);
   --st-text: var(--success-strong);
 }
+/* Tools (AI Copilot, Review) are always open — a quiet slate tone so they never read as Completed. */
 .st-available {
-  --st: var(--secondary);
-  --st-soft: var(--secondary-soft);
-  --st-text: var(--secondary-hover);
+  --st: var(--info);
+  --st-soft: var(--info-soft);
+  --st-text: var(--info);
 }
 .st-ready {
   --st: var(--success);
@@ -1294,14 +1296,32 @@
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 }
+/* Narrow screens: compact rows (icon beside text) so the nine steps stay scannable
+   without pushing the user's projects a full screen down. */
 @media (max-width: 760px) {
   .how-steps {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.4rem;
+  }
+  .how-steps li {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 0.55rem;
+    padding: 0.5rem 0.6rem;
+  }
+  .how-icon {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
   }
 }
-@media (max-width: 420px) {
+@media (max-width: 480px) {
   .how-steps {
     grid-template-columns: 1fr;
+    gap: 0.3rem;
+  }
+  .how-steps li {
+    padding: 0.45rem 0.55rem;
   }
 }
 
@@ -1590,4 +1610,174 @@
 .rv-intro {
   margin: -0.5rem 0 1rem;
   font-size: 0.86rem;
+}
+
+/* ---- Stage gap panel (components/stage/StageGapsPanel) ------------------------------------- */
+.stage-gaps {
+  margin-bottom: 1.25rem;
+  border-left: 3px solid var(--success);
+}
+.stage-gaps.has-attention {
+  border-left-color: var(--blocked);
+}
+.stage-gaps-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+}
+.stage-gaps-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0 0.25rem;
+  font-size: 1.05rem;
+}
+.stage-gaps.has-attention .stage-gaps-head h2 {
+  color: var(--blocked-strong);
+}
+.stage-gaps-head p {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 0.88rem;
+}
+.stage-gaps-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+.stage-gaps-count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: var(--warning-soft);
+  color: var(--warning-strong);
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+.stage-gaps-count small {
+  font-weight: 500;
+  font-size: 0.75rem;
+}
+.stage-gaps-count.warn {
+  background: var(--blocked-soft);
+  color: var(--blocked-strong);
+}
+.stage-gaps-group + .stage-gaps-group {
+  margin-top: 1rem;
+}
+.stage-gaps-group h3,
+.stage-gaps-resolved h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.stage-gaps-resolved {
+  margin-top: 1rem;
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--radius-md);
+  background: var(--success-soft);
+}
+.stage-gaps-resolved h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--success-strong);
+}
+.stage-gaps-resolved ul {
+  margin: 0;
+  padding-left: 1.2rem;
+  font-size: 0.86rem;
+}
+.stage-gaps-resolved li {
+  text-decoration: line-through;
+  text-decoration-color: var(--success);
+}
+.stage-gaps-success,
+.stage-gaps-next {
+  margin: 0.9rem 0 0;
+}
+.stage-gaps-next {
+  font-size: 0.88rem;
+}
+.stage-gaps-next a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-weight: 600;
+}
+.stage-gaps-note {
+  margin: 0 0 1rem;
+  font-size: 0.88rem;
+}
+.stage-gaps-loading {
+  height: 3rem;
+  margin-bottom: 1.25rem;
+}
+.stage-gaps-error {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1.25rem;
+}
+
+/* Gap counters on the navigator, journey and sidebar. */
+.stage-nav-badge-num {
+  font-size: 0.6rem;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+}
+.stage-nav-badge.warn:has(.stage-nav-badge-num) {
+  background: var(--blocked);
+  min-width: 14px;
+  width: auto;
+  padding: 0 3px;
+}
+.journey-figure.warn {
+  color: var(--blocked-strong);
+  font-weight: 600;
+}
+.nav-gap-count {
+  margin-left: auto;
+  min-width: 1.15rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: var(--blocked-soft);
+  color: var(--blocked-strong);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.15rem;
+  text-align: center;
+}
+.nav-project-attention {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--blocked-strong);
+  font-weight: 600;
+}
+
+/* Approved progress shown with outstanding work beside it (lib/stages outstandingWorkNote). */
+.progress-outstanding {
+  color: var(--blocked-strong);
+  font-weight: 600;
+}
+.nav-group-meta.warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  color: var(--blocked-strong);
+}
+
+/* Sidebar project card: keep the lifecycle-status pill whole beside "Approved progress". */
+.nav-project-meta .status-pill {
+  flex-shrink: 0;
+  overflow: visible;
 }

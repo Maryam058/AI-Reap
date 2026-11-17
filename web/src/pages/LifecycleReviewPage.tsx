@@ -336,7 +336,7 @@ function TransitionRow({ t, who }: { t: StageTransition; who: Who }) {
       <div className="rv-decision-head">
         <strong>{title}</strong>
         {t.kind !== 0 && (
-          <span className={`status-pill tone-${t.state === TRANSITION_STATE.Completed ? 'success' : t.state === TRANSITION_STATE.Rejected ? 'danger' : 'neutral'}`}>
+          <span className={`status-pill tone-${t.state === TRANSITION_STATE.Completed ? 'success' : t.state === TRANSITION_STATE.Rejected ? 'danger' : t.state === TRANSITION_STATE.Pending ? 'warning' : 'neutral'}`}>
             {t.kind === 2 ? 'Rollback' : gated || t.state !== TRANSITION_STATE.Completed ? TRANSITION_STATE_LABEL[t.state] : 'Advanced'}
           </span>
         )}

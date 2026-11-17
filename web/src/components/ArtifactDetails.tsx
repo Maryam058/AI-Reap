@@ -238,7 +238,7 @@ export function ArtifactDetails({ artifactId, artifactType, projectId, openImpac
                     <span className="code">v{v.versionNumber}</span>
                     <span className={`origin-pill origin-${v.origin === 0 ? 'ai' : 'human'}`}>{v.origin === 0 ? 'AI' : 'Human'}</span>
                     {v.status != null && (
-                      <span className={`status-pill tone-${v.status === ARTIFACT_STATUS.Approved ? 'success' : 'neutral'}`}>
+                      <span className={`status-pill tone-${v.status === ARTIFACT_STATUS.Approved ? 'approved' : 'neutral'}`}>
                         {ARTIFACT_STATUS_LABELS[v.status]}
                       </span>
                     )}
@@ -292,7 +292,7 @@ export function ArtifactDetails({ artifactId, artifactType, projectId, openImpac
               <ul className="version-list">
                 {reviews.map((r) => (
                   <li key={r.id}>
-                    <span className={`status-pill tone-${r.decision === 0 ? 'success' : r.decision === 1 ? 'danger' : 'neutral'}`}>
+                    <span className={`status-pill tone-${r.decision === 0 ? 'approved' : r.decision === 1 ? 'danger' : 'neutral'}`}>
                       {r.decision === 0 ? 'Approved' : r.decision === 1 ? 'Rejected' : 'Comment'}
                     </span>
                     {r.versionNumber != null && <span className="code"> v{r.versionNumber}</span>}

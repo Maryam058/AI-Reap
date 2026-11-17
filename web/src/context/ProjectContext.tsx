@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { apiClient, ApiError } from '../api/client';
-import type { Project } from '../api/types';
+import { lifecycleApi } from '../api/lifecycle';
+import type { Project, ProjectLifecycleState } from '../api/types';
 
 const LAST_PROJECT_KEY = 'aireap.last-project';
 
@@ -25,6 +26,15 @@ interface ProjectContextValue {
   /** Bumped whenever project content (requirements, artifacts) changes, so panels can refresh. */
   contentVersion: number;
   bumpContent: () => void;
+  /**
+   * The open project's lifecycle state (exit checks, evidence gaps, pending request), loaded once
+   * here for every consumer - stage navigator, sidebar, stage headers, gap panels and the lifecycle
+   * panel - so they always agree. Re-read whenever the project or its content changes, so a
+   * resolved gap disappears everywhere at once. Null until loaded.
+   */
+  lifecycle: ProjectLifecycleState | null;
+  lifecycleFailed: boolean;
+  reloadLifecycle: () => void;
 }
 
 const ProjectContext = createContext<ProjectContextValue | undefined>(undefined);
@@ -75,6 +85,34 @@ export function ProjectProvider({ projectId, children }: { projectId: string | n
   const reload = useCallback(() => setAttempt((a) => a + 1), []);
   const bumpContent = useCallback(() => setContentVersion((v) => v + 1), []);
 
+  // One lifecycle fetch for the open project. Keyed on the project's status/updatedAt (a stage move,
+  // a context edit) and on contentVersion (an artifact approved, generated, edited, a result recorded).
+  const [lifecycle, setLifecycle] = useState<ProjectLifecycleState | null>(null);
+  const [lifecycleFailed, setLifecycleFailed] = useState(false);
+  const [lifecycleAttempt, setLifecycleAttempt] = useState(0);
+  const loadedId = project && project.id === projectId ? project.id : null;
+  const lifecycleKey = project && loadedId ? `${project.status}|${project.updatedAt}` : '';
+  useEffect(() => {
+    if (!loadedId) {
+      setLifecycle(null);
+      return;
+    }
+    let cancelled = false;
+    lifecycleApi
+      .get(loadedId, token)
+      .then((s) => {
+        if (cancelled) return;
+        setLifecycle(s);
+        setLifecycleFailed(false);
+      })
+      .catch(() => !cancelled && setLifecycleFailed(true));
+    return () => {
+      cancelled = true;
+    };
+  }, [loadedId, lifecycleKey, contentVersion, lifecycleAttempt, token]);
+  const reloadLifecycle = useCallback(() => setLifecycleAttempt((a) => a + 1), []);
+  const lifecycleForProject = lifecycle && lifecycle.projectId === loadedId ? lifecycle : null;
+
   const value = useMemo<ProjectContextValue>(
     () => ({
       projectId,
@@ -86,11 +124,19 @@ export function ProjectProvider({ projectId, children }: { projectId: string | n
       setProject,
       contentVersion,
       bumpContent,
+      lifecycle: lifecycleForProject,
+      lifecycleFailed,
+      reloadLifecycle,
     }),
-    [projectId, project, loading, error, reload, contentVersion, bumpContent],
+    [projectId, project, loading, error, reload, contentVersion, bumpContent, lifecycleForProject, lifecycleFailed, reloadLifecycle],
   );
 
   return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>;
+}
+
+/** The project context when inside a ProjectProvider, otherwise undefined (never throws). */
+export function useOptionalProjectContext(): ProjectContextValue | undefined {
+  return useContext(ProjectContext);
 }
 
 export function useProjectContext(): ProjectContextValue {

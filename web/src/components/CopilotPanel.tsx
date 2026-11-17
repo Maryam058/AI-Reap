@@ -92,9 +92,18 @@ function CopilotGuide({ onUse, disabled }: { onUse: (prompt: string) => void; di
   );
 }
 
-export function CopilotPanel({ projectId, contextLabel }: { projectId: string; contextLabel?: string }) {
+export function CopilotPanel({
+  projectId,
+  contextLabel,
+  initialQuestion,
+}: {
+  projectId: string;
+  contextLabel?: string;
+  /** Prefills the question box (e.g. from a stage's open gaps). Never sent until the user asks. */
+  initialQuestion?: string;
+}) {
   const { token } = useAuth();
-  const [question, setQuestion] = useState('');
+  const [question, setQuestion] = useState(initialQuestion ?? '');
   const [answer, setAnswer] = useState<{ q: string; a: CopilotAnswer } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

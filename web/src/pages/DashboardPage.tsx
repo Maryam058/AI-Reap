@@ -20,7 +20,7 @@ import { LifecycleDots, LifecycleStepper } from '../components/LifecycleStepper'
 import { ProjectCard } from '../components/ProjectCard';
 import { StageIcon } from '../components/stage/StageIcon';
 import { readLastProject } from '../context/ProjectContext';
-import { activeStagesLabel, currentStage, STAGE_COUNT, STAGES } from '../lib/stages';
+import { activeStagesLabel, currentStage, outstandingWorkNote, STAGE_COUNT, STAGES } from '../lib/stages';
 import { phasePath } from '../lib/workAreas';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import {
@@ -401,6 +401,7 @@ export function DashboardPage() {
               {sp.finished ? (
                 <>
                   <IconCheck width={13} height={13} strokeWidth={3} aria-hidden="true" /> Lifecycle completed: all {LIFECYCLE_STAGES.length} stages approved.
+                  {outstandingWorkNote(single.status, sl) && <strong className="text-warning"> Since then, {outstandingWorkNote(single.status, sl)!.toLowerCase()}.</strong>}
                 </>
               ) : sl?.pendingTransition ? (
                 <>
@@ -506,7 +507,10 @@ export function DashboardPage() {
                             <LifecycleDots status={p.status} pending={!!stats.lifecycleById.get(p.id)?.pendingTransition} />
                             <span className="dash-pct">{progress.percent}%</span>
                           </div>
-                          <span className="dash-cell-sub">{progress.finished ? `All ${LIFECYCLE_STAGES.length} stages complete` : `Stage ${progress.stageNumber} of ${LIFECYCLE_STAGES.length}`}</span>
+                          <span className="dash-cell-sub">
+                            {progress.finished ? `All ${LIFECYCLE_STAGES.length} stages approved` : `Stage ${progress.stageNumber} of ${LIFECYCLE_STAGES.length}`}
+                            {outstandingWorkNote(p.status, stats.lifecycleById.get(p.id)) && <span className="text-warning"> · {outstandingWorkNote(p.status, stats.lifecycleById.get(p.id))}</span>}
+                          </span>
                         </td>
                         <td>
                           <HealthBadge health={h.health} reasons={h.reasons} loading={!dataReady} />
@@ -1264,7 +1268,7 @@ function ContinueCard({ project }: { project: Project }) {
         <span className="eyebrow">Continue where you left off</span>
         <h2 id="continue-title">{project.name}</h2>
         <p>
-          Now in <strong>{activeStagesLabel(project.status)}</strong> · stage {stage.number} of {STAGE_COUNT} · {progress.percent}% overall
+          Now in <strong>{activeStagesLabel(project.status)}</strong> · stage {stage.number} of {STAGE_COUNT} · {progress.percent}% approved
         </p>
         <ProgressBar percent={progress.percent} />
       </div>

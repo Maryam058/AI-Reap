@@ -12,12 +12,16 @@ vi.mock('../../src/auth/AuthContext', () => ({
   useAuth: () => ({ token: 'test-token', userId: auth.userId, roles: auth.roles, hasRole: (r: string) => auth.roles.includes(r) }),
 }));
 
-const ctx = vi.hoisted(() => ({ project: null as Project | null, last: null as { id: string; name: string } | null }));
-vi.mock('../../src/context/ProjectContext', () => ({
-  useProject: () => ({ project: ctx.project }),
-  useProjectContext: () => ({ projectId: ctx.project?.id ?? null, project: ctx.project }),
-  readLastProject: () => ctx.last,
+const ctx = vi.hoisted(() => ({
+  project: null as Project | null,
+  last: null as { id: string; name: string } | null,
+  lifecycle: null as unknown,
+  reloadLifecycle: () => undefined,
 }));
+vi.mock('../../src/context/ProjectContext', () => {
+  const value = () => ({ projectId: ctx.project?.id ?? null, project: ctx.project, lifecycle: ctx.lifecycle, lifecycleFailed: false, reloadLifecycle: ctx.reloadLifecycle });
+  return { useProject: value, useProjectContext: value, useOptionalProjectContext: value, readLastProject: () => ctx.last };
+});
 vi.mock('../../src/context/SidebarContext', () => ({
   useSidebar: () => ({ collapsed: false, toggleCollapsed: () => undefined, mobileOpen: false, closeMobile: () => undefined }),
 }));
@@ -63,6 +67,9 @@ beforeEach(() => {
   auth.roles = [];
   ctx.project = null;
   ctx.last = null;
+  ctx.lifecycle = null;
+  ctx.reloadLifecycle = () => undefined;
+  api.getMembers.mockResolvedValue([]);
   window.matchMedia ??= ((query: string) => ({
     matches: false,
     media: query,
@@ -260,5 +267,129 @@ describe('sidebar', () => {
     auth.roles = ['Administrator'];
     inRouter(<Sidebar />);
     expect(screen.getByRole('link', { name: 'Users' })).toBeTruthy();
+  });
+});
+
+// ---- Stage gaps: a "Needs attention" stage lists what is missing, and how to fix it ---------------
+
+const guidance = (area: string, title: string) => ({
+  key: 'k-' + title,
+  kind: 'approval',
+  howTo: `How to fix ${title}.`,
+  dependsOn: [],
+  blockers: [
+    {
+      reason: 'NeedsApproval',
+      kind: 'approval',
+      title,
+      instruction: `Approve every ${title}.`,
+      fixRoles: ['Reviewer'],
+      callerCanFix: true,
+      assignees: [],
+      destination: { area, section: 'sec-api' },
+      items: [{ artifactId: 'a1', code: 'API-001', title: 'Orders API', artifactType: 7, status: 1 }],
+      totalCount: 1,
+      hiddenCount: 0,
+    },
+  ],
+});
+const lifecycleState = (status: number, over: Record<string, unknown> = {}) => ({
+  projectId: 'p1',
+  status,
+  stageLabel: 'Completed',
+  ownerRole: 'Reviewer',
+  nextIsGated: false,
+  requiresSignOff: false,
+  exitChecks: [],
+  readyToAdvance: false,
+  pendingTransition: null,
+  evidenceGaps: [],
+  actions: { canAdvance: false, canSubmitForApproval: false, canDecide: false, canWithdraw: false, canRollback: false, canOverride: false },
+  history: [],
+  ...over,
+});
+const designGap = () =>
+  lifecycleState(7, {
+    evidenceGaps: [
+      {
+        stage: 3,
+        label: 'Design',
+        ownerRole: 'Developer',
+        passed: false,
+        checks: [
+          { label: 'Solution design approved', passed: true, detail: 'All approved.' },
+          { label: 'API design approved', passed: false, detail: '1 API specification is not approved.', guidance: guidance('design', 'API specifications awaiting approval') },
+        ],
+      },
+    ],
+  });
+
+describe('stage gaps panel', () => {
+  test('a Needs attention stage names each gap, why, who and where to fix it', async () => {
+    ctx.project = project(7);
+    ctx.lifecycle = designGap();
+    inRouter(<PhasePage phaseKey="design"><p>content</p></PhasePage>);
+    const panel = screen.getByRole('region', { name: /Needs attention/ });
+    expect(within(panel).getByText('API design approved')).toBeTruthy();
+    expect(within(panel).getByText('1 API specification is not approved.')).toBeTruthy();
+    // Only the failing check is listed; a passing one is not shown as a gap.
+    expect(within(panel).queryByText('Solution design approved')).toBeNull();
+    // Guidance is open on the first gap: the blocking artifact and the place it is fixed.
+    expect(within(panel).getByRole('link', { name: /API-001/ }).getAttribute('href')).toBe('/projects/p1/design?focus=a1');
+    expect(within(panel).getByRole('link', { name: /Go to Design/ }).getAttribute('href')).toBe('/projects/p1/design?section=sec-api');
+    expect(within(panel).getByLabelText('1 outstanding')).toBeTruthy();
+    expect(within(panel).getByRole('link', { name: /Ask Copilot/ }).getAttribute('href')).toContain('/projects/p1/copilot?phase=design&q=');
+    // The header pill agrees.
+    expect(screen.getAllByText('Needs attention').length).toBeGreaterThan(0);
+  });
+
+  test('a gap that is fixed moves to Resolved, with a success message, and the stage is Completed again', async () => {
+    ctx.project = project(7);
+    ctx.lifecycle = designGap();
+    const view = inRouter(<PhasePage phaseKey="design"><p>content</p></PhasePage>);
+    // The shared lifecycle state is re-read after the approval: the gap is gone.
+    ctx.lifecycle = lifecycleState(7);
+    view.rerender(<MemoryRouter><PhasePage phaseKey="design"><p>content</p></PhasePage></MemoryRouter>);
+    const panel = screen.getByRole('region', { name: /Nothing outstanding/ });
+    expect(within(panel).getByText('Resolved during this visit')).toBeTruthy();
+    expect(within(panel).getByText('API design approved')).toBeTruthy();
+    expect(within(panel).getByText(/All gaps in Design are resolved/)).toBeTruthy();
+    expect(screen.queryByText('Needs attention')).toBeNull();
+    expect(screen.getAllByText('Completed').length).toBeGreaterThan(0);
+  });
+
+  test('Re-check asks for a fresh lifecycle state', () => {
+    const reload = vi.fn();
+    ctx.reloadLifecycle = reload;
+    ctx.project = project(7);
+    ctx.lifecycle = designGap();
+    inRouter(<PhasePage phaseKey="design"><p>content</p></PhasePage>);
+    screen.getByRole('button', { name: /Re-check/ }).click();
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  test('the current stage lists its exit checks as to-dos, met and not met, never as Needs attention', () => {
+    ctx.project = project(3);
+    ctx.lifecycle = lifecycleState(3, {
+      exitChecks: [
+        { label: 'Solution design approved', passed: true, detail: 'All approved.' },
+        { label: 'API design approved', passed: false, detail: '1 API specification is not approved.', guidance: guidance('design', 'API specifications awaiting approval') },
+      ],
+    });
+    inRouter(<PhasePage phaseKey="design"><p>content</p></PhasePage>);
+    const panel = screen.getByRole('region', { name: /What this stage still needs/ });
+    expect(within(panel).getByText(/To finish this stage · 1 of 2 met/)).toBeTruthy();
+    expect(within(panel).getByText('Solution design approved')).toBeTruthy();
+    expect(screen.queryByText('Needs attention')).toBeNull();
+  });
+
+  test('the sidebar shows the same status and a gap counter', () => {
+    ctx.project = project(7);
+    ctx.lifecycle = designGap();
+    inRouter(<Sidebar />);
+    const design = screen.getByRole('link', { name: /Design/ });
+    expect(design.textContent).toContain('1');
+    expect(design.textContent).toContain('gap to resolve');
+    expect(screen.getByText(/1 stage needs attention/)).toBeTruthy();
   });
 });

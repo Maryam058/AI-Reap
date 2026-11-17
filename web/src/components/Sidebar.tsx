@@ -6,8 +6,7 @@ import { readLastProject, useProjectContext } from '../context/ProjectContext';
 import { ALL_MODULES, NAV_GROUPS, SEGMENT_DEFAULT_TAB, type NavGroup, type NavModule } from '../navigation/navConfig';
 import { phasePath } from '../lib/workAreas';
 import { lifecycleProgress, stageLabel } from '../lib/lifecycle';
-import { activeStages, activeStagesLabel, STAGE_COUNT, STAGE_STATUS_LABEL, stageByKey, STAGES, stageStatus, type StageStatus } from '../lib/stages';
-import { useProjectLifecycle } from '../hooks/useLifecycle';
+import { activeStages, activeStagesLabel, APPROVED_PROGRESS_LABEL, completedWorkStages, outstandingWorkNote, STAGE_COUNT, STAGE_STATUS_LABEL, stageByKey, STAGES, stageGaps, stageStatus, type StageStatus } from '../lib/stages';
 import { initials, statusLabel, statusVariant } from '../lib/format';
 import { IconAlert, IconCheck, IconChevronDown, IconFolder, IconPanelLeft, IconSelector, IconX } from './icons';
 
@@ -43,7 +42,7 @@ export function Sidebar() {
   const { pathname, search } = useLocation();
   const { collapsed, toggleCollapsed, mobileOpen, closeMobile } = useSidebar();
   const { hasRole } = useAuth();
-  const { projectId, project } = useProjectContext();
+  const { projectId, project, lifecycle } = useProjectContext();
   const isMobile = useIsMobile();
   const rail = collapsed && !isMobile;
   const [closed, setClosed] = useState<Record<string, boolean>>(loadClosed);
@@ -84,7 +83,8 @@ export function Sidebar() {
   };
 
   /** The derived status of a stage entry; only once a project is open. */
-  const moduleStatus = (mod: NavModule): StageStatus | undefined => (project && mod.stageKey ? stageStatus(stageByKey(mod.stageKey)!, project.status) : undefined);
+  const moduleStatus = (mod: NavModule): StageStatus | undefined => (project && mod.stageKey ? stageStatus(stageByKey(mod.stageKey)!, project.status, lifecycle) : undefined);
+  const moduleGaps = (mod: NavModule): number => (project && mod.stageKey ? stageGaps(stageByKey(mod.stageKey)!, project.status, lifecycle).length : 0);
   const nowKeys = new Set(project ? activeStages(project.status).map((s) => s.key) : []);
 
   const showTip = (label: string) => (e: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
@@ -100,6 +100,7 @@ export function Sidebar() {
     const suffix = mod.tab && mod.tab !== SEGMENT_DEFAULT_TAB[mod.segment ?? ''] ? `?tab=${mod.tab}` : '';
     const to = mod.to ?? (mod.status !== 'planned' && targetProjectId && mod.segment ? `${phasePath(targetProjectId, mod.segment)}${suffix}` : null);
     const status = moduleStatus(mod);
+    const gaps = moduleGaps(mod);
     const stage = mod.stageKey ? stageByKey(mod.stageKey) : undefined;
     const isNow = !!mod.stageKey && nowKeys.has(mod.stageKey);
     const planned = mod.status === 'planned';
@@ -119,6 +120,12 @@ export function Sidebar() {
           <>
             <span className="nav-label">{mod.label}</span>
             {status && <span className="sr-only">, {STAGE_STATUS_LABEL[status]}</span>}
+            {gaps > 0 && (
+              <span className="nav-gap-count" title={`${gaps} ${gaps === 1 ? 'gap' : 'gaps'} to resolve`}>
+                {gaps}
+                <span className="sr-only"> {gaps === 1 ? 'gap' : 'gaps'} to resolve</span>
+              </span>
+            )}
             {planned && <span className="nav-soon">Soon</span>}
             {isNow && status !== 'ready' && <span className="nav-step-tag">Now</span>}
           </>
@@ -148,6 +155,7 @@ export function Sidebar() {
     if (modules.length === 0) return null;
     const open = rail || !group.collapsible || !closed[group.key];
     const meta = group.key === 'lifecycle' && progress ? `${progress.percent}%` : null;
+    const metaNote = group.key === 'lifecycle' && project ? outstandingWorkNote(project.status, lifecycle) : null;
     return (
       <section className={`nav-group nav-group-${group.key}`} key={group.key} aria-label={group.label}>
         {rail ? (
@@ -157,8 +165,9 @@ export function Sidebar() {
             <span className="nav-group-text">{group.label}</span>
             <IconChevronDown className={`nav-group-chevron${open ? '' : ' closed'}`} width={12} height={12} />
             {meta && (
-              <span className="nav-group-meta" title="Overall lifecycle progress">
+              <span className={`nav-group-meta${metaNote ? ' warn' : ''}`} title={metaNote ? `${APPROVED_PROGRESS_LABEL} ${meta} — ${metaNote}` : `${APPROVED_PROGRESS_LABEL} ${meta}`}>
                 {meta}
+                {metaNote && <IconAlert width={10} height={10} strokeWidth={3} aria-label={metaNote} />}
               </span>
             )}
           </button>
@@ -211,7 +220,7 @@ export function Sidebar() {
             <IconSelector width={15} height={15} />
           </Link>
         </div>
-        {project && progress && <SidebarLifecycle projectId={project.id} status={project.status} stamp={project.updatedAt} />}
+        {project && progress && <SidebarLifecycle status={project.status} />}
       </div>
     ));
 
@@ -281,14 +290,17 @@ export function Sidebar() {
 }
 
 /** The open project's position: overall progress, the nine stages as a track, and any pending Reviewer request. */
-function SidebarLifecycle({ projectId, status, stamp }: { projectId: string; status: number; stamp: string }) {
-  const { state } = useProjectLifecycle(projectId, `${status}|${stamp}`);
+function SidebarLifecycle({ status }: { status: number }) {
+  const { lifecycle: state } = useProjectContext();
   const progress = lifecycleProgress(status);
   const pending = !!state?.pendingTransition;
+  const attention = completedWorkStages(status, state).attention;
   return (
     <>
       <div className="nav-project-meta">
-        <span title="Overall progress through the lifecycle">Overall progress {progress.percent}%</span>
+        <span title={`${APPROVED_PROGRESS_LABEL}: the formally approved lifecycle position${attention > 0 ? '. Open gaps are counted separately below.' : ''}`}>
+          Approved progress {progress.percent}%
+        </span>
         <span className={`status-pill tone-${statusVariant(status)}`} title="Lifecycle status">
           {statusLabel(status)}
         </span>
@@ -300,7 +312,12 @@ function SidebarLifecycle({ projectId, status, stamp }: { projectId: string; sta
         })}
       </ol>
       <div className="nav-project-phase">
-        {progress.finished ? (
+        {attention > 0 ? (
+          <span className="nav-project-attention">
+            <IconAlert width={12} height={12} strokeWidth={2.5} /> {progress.finished ? 'Approved, but ' : ''}
+            {attention} {attention === 1 ? 'stage needs' : 'stages need'} attention
+          </span>
+        ) : progress.finished ? (
           <span className="nav-project-done">
             <IconCheck width={12} height={12} strokeWidth={3} /> Lifecycle completed · 100%
           </span>

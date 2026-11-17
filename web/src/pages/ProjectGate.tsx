@@ -1,8 +1,6 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import type { Project } from '../api/types';
 import { useProjectContext } from '../context/ProjectContext';
-import { StageSignalsContext } from '../context/StageSignalsContext';
-import { useProjectLifecycle } from '../hooks/useLifecycle';
 import { StageNavigator } from '../components/stage/StageNavigator';
 import { ErrorState } from '../components/ui/ErrorState';
 import { PanelSkeleton } from '../components/ui/Skeletons';
@@ -40,19 +38,19 @@ export function ProjectGate() {
 }
 
 /**
- * The frame around every page of an open project: loads the lifecycle state once for the stage
- * statuses, and shows the nine-stage navigator above the stage pages. The overview has its own,
- * larger stage map, and the edit form is not a stage, so neither repeats the navigator.
+ * The frame around every page of an open project: shows the nine-stage navigator above the stage
+ * pages, with statuses from the lifecycle state ProjectProvider loads once for the whole shell. The
+ * overview has its own, larger stage map, and the edit form is not a stage, so neither repeats it.
  */
 function ProjectWorkspace({ project }: { project: Project }) {
   const { pathname } = useLocation();
-  const { state } = useProjectLifecycle(project.id, `${project.status}|${project.updatedAt}`);
+  const { lifecycle } = useProjectContext();
   const segment = pathname.split('/')[3] ?? '';
   const showNavigator = segment !== '' && segment !== 'edit';
   return (
-    <StageSignalsContext.Provider value={state}>
-      {showNavigator && <StageNavigator project={project} signals={state} />}
+    <>
+      {showNavigator && <StageNavigator project={project} signals={lifecycle} />}
       <Outlet />
-    </StageSignalsContext.Provider>
+    </>
   );
 }

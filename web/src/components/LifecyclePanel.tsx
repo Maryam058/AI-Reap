@@ -4,7 +4,9 @@ import { useAuth } from '../auth/AuthContext';
 import { lifecycleApi } from '../api/lifecycle';
 import { projectsApi } from '../api/projects';
 import { REVIEW_DECISION, TRANSITION_KIND, TRANSITION_STATE, type LifecycleCheck, type Project, type ProjectLifecycleState, type StageTransition } from '../api/types';
-import { useLifecyclePolicy, useProjectLifecycle } from '../hooks/useLifecycle';
+import { useLifecyclePolicy } from '../hooks/useLifecycle';
+import { useProjectContext } from '../context/ProjectContext';
+import { CheckList } from './CheckList';
 import { personLabel, useMemberNames } from '../hooks/useMemberNames';
 import { LAST_STAGE, latestRejection, lifecycleProgress, LIFECYCLE_STAGES, roleLabel, stageLabel, submissionEvidenceNote } from '../lib/lifecycle';
 import { apiErrorText, failingChecksOf } from '../lib/errors';
@@ -12,14 +14,13 @@ import { formatRelativeTime } from '../lib/format';
 import { useToast } from '../context/ToastContext';
 import { Dialog } from './ui/Dialog';
 import { LifecycleLegend, LifecycleStepper } from './LifecycleStepper';
-import { CheckGuidance } from './CheckGuidance';
 import { RoleRequiredActions } from './RoleRequiredAlert';
 import { roleGuard } from '../lib/roleGuard';
 import { createHandoffTracker, createMembershipFollowUps, resolveHandoffPopup, stageHandoff, type HandoffPopup } from '../lib/stageHandoff';
 import { phasePath } from '../lib/workAreas';
 import { StageHandoffDialog } from './StageHandoffDialog';
 import { NextRoleMemberDialog } from './NextRoleMemberDialog';
-import { IconAlert, IconArrowRight, IconCheck, IconChevronDown, IconLock, IconRotateCcw, IconX } from './icons';
+import { IconAlert, IconArrowRight, IconCheck, IconLock, IconRotateCcw, IconX } from './icons';
 
 // Mirrors ProjectLifecyclePolicy.GateApproverRole.
 const ProjectGateApprover = 'Reviewer';
@@ -37,13 +38,15 @@ const memberFollowUps = createMembershipFollowUps();
  * Every rule - ownership, gates, evidence, separation of duties, override, rollback - is the
  * backend's; this panel shows the backend's answers and offers only the actions it allows.
  */
-export function LifecyclePanel({ project, version, onProjectChanged }: { project: Project; version?: unknown; onProjectChanged: () => Promise<void> | void }) {
+export function LifecyclePanel({ project, onProjectChanged }: { project: Project; onProjectChanged: () => Promise<void> | void }) {
   const { token, userId, roles, hasRole } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
   const policy = useLifecyclePolicy();
   const names = useMemberNames(project.id);
-  const { state, failed, reload } = useProjectLifecycle(project.id, `${version ?? ''}|${project.status}|${project.updatedAt}`);
+  // The shared lifecycle state (ProjectProvider): the same one the stage navigator, sidebar and
+  // stage gap panels read, so a move or a resolved check updates all of them together.
+  const { lifecycle: state, lifecycleFailed: failed, reloadLifecycle: reload } = useProjectContext();
   const [dialog, setDialog] = useState<DialogMode | null>(null);
   // The popup after a completed move, with the move itself so it can be re-judged later.
   const [handoff, setHandoff] = useState<{ popup: HandoffPopup; moved: StageTransition } | null>(null);
@@ -310,70 +313,6 @@ export function LifecyclePanel({ project, version, onProjectChanged }: { project
           />
         ))}
     </section>
-  );
-}
-
-function CheckList({
-  checks,
-  projectId,
-  canOverride = false,
-  expandFirst = true,
-}: {
-  checks: LifecycleCheck[];
-  projectId: string;
-  canOverride?: boolean;
-  /** Open the first failing check's guidance by default. */
-  expandFirst?: boolean;
-}) {
-  if (checks.length === 0) return <p className="muted">This stage has no exit checks.</p>;
-  // Failing checks first: they are what the owner has to act on.
-  const ordered = [...checks].sort((a, b) => Number(a.passed) - Number(b.passed));
-  const firstWithGuidance = expandFirst ? ordered.find((c) => !c.passed && c.guidance)?.label : undefined;
-  // A check this one follows from is named only while it is failing too (then it carries its key).
-  const labelFor = (key: string) => checks.find((c) => c.guidance?.key === key)?.label;
-  return (
-    <ul className="health-list lc-checks">
-      {ordered.map((c) => (
-        <CheckRow key={c.label} check={c} projectId={projectId} canOverride={canOverride} defaultOpen={c.label === firstWithGuidance} labelFor={labelFor} />
-      ))}
-    </ul>
-  );
-}
-
-// One check. A failing check with guidance expands into "how to meet this"; anything else - a
-// passed check, or a check the backend sends without guidance (e.g. a key this client does not
-// know) - shows its label and detail exactly as before.
-function CheckRow({
-  check,
-  projectId,
-  canOverride,
-  defaultOpen,
-  labelFor,
-}: {
-  check: LifecycleCheck;
-  projectId: string;
-  canOverride: boolean;
-  defaultOpen: boolean;
-  labelFor: (key: string) => string | undefined;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-  const guidance = !check.passed && check.guidance && Array.isArray(check.guidance.blockers) ? check.guidance : null;
-  return (
-    <li className={guidance ? 'lc-check has-guidance' : 'lc-check'}>
-      <span className={`health-dot ${check.passed ? 'good' : 'bad'}`} aria-hidden="true" />
-      <span className="health-label">
-        <strong>{check.label}</strong>
-        <small>{check.detail}</small>
-        {guidance && (
-          <button type="button" className="lc-howto-toggle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-            {open ? 'Hide how to meet this' : 'How to meet this'}
-            <IconChevronDown width={12} height={12} className={open ? 'is-open' : undefined} />
-          </button>
-        )}
-        {guidance && open && <CheckGuidance projectId={projectId} guidance={guidance} canOverride={canOverride} labelFor={labelFor} />}
-      </span>
-      <span className="sr-only">{check.passed ? 'Met' : 'Not met'}</span>
-    </li>
   );
 }
 

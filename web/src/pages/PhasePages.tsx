@@ -308,10 +308,10 @@ export function TestingPage() {
 /* ------------------------------------------------------------------ 7. Traceability */
 
 export function TraceabilityPage() {
-  const { project } = useProject();
+  const { project, bumpContent } = useProject();
   return (
     <PhasePage phaseKey="traceability">
-      <TraceabilityMatrix projectId={project.id} />
+      <TraceabilityMatrix projectId={project.id} onChange={bumpContent} />
     </PhasePage>
   );
 }
@@ -359,7 +359,7 @@ export function CopilotPage() {
       <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`} className="tab-panel">
         {tab === 'ask' && (
           <section className="panel">
-            <CopilotPanel projectId={project.id} contextLabel={fromPhase ? fromPhase.navLabel : undefined} />
+            <CopilotPanel projectId={project.id} contextLabel={fromPhase ? fromPhase.navLabel : undefined} initialQuestion={params.get('q') ?? undefined} />
           </section>
         )}
         {tab === 'pipeline' && <AgentPipelinePanel projectId={project.id} refreshKey={contentVersion} onChange={bumpContent} />}

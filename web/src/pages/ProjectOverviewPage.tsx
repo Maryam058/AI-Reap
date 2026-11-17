@@ -8,7 +8,7 @@ import { isGatedStage, lifecycleProgress, LIFECYCLE_STAGES, stageLabel } from '.
 import { phasePath, workAreaForStage } from '../lib/workAreas';
 import { BUCKET_COLOR, BUCKET_LABEL, BUCKET_ORDER, countBuckets, isRequirement } from '../lib/requirements';
 import { formatFullDateTime, formatRelativeTime, initials, statusLabel, statusVariant } from '../lib/format';
-import { activeStagesLabel, completedWorkStages, currentStage, STAGE_COUNT } from '../lib/stages';
+import { activeStagesLabel, APPROVED_PROGRESS_LABEL, completedWorkStages, currentStage, outstandingWorkNote, STAGE_COUNT, STAGES, stageGaps } from '../lib/stages';
 import { useStageSignals } from '../context/StageSignalsContext';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import { Term } from '../components/ui/Term';
@@ -32,7 +32,10 @@ export function ProjectOverviewPage() {
   const { hash } = useLocation();
   const signals = useStageSignals();
   const focus = currentStage(project.status);
-  const work = completedWorkStages(project.status);
+  const work = completedWorkStages(project.status, signals);
+  const outstanding = outstandingWorkNote(project.status, signals);
+  // The first stage whose already-passed exit checks no longer hold: fixing it comes before new work.
+  const attention = STAGES.map((s) => ({ stage: s, gaps: stageGaps(s, project.status, signals).length })).find((x) => x.gaps > 0) ?? null;
 
   // A lifecycle change moves Project.status on the server; re-read the project so the whole shell follows.
   const refreshProject = useCallback(async () => {
@@ -55,6 +58,15 @@ export function ProjectOverviewPage() {
   // The single most useful next step, chosen only from real counts.
   const next = (() => {
     const stageTarget = phasePath(project.id, stageArea.segment);
+    if (attention) {
+      const more = work.attention > 1 ? ` ${work.attention - 1} other ${work.attention - 1 === 1 ? 'stage needs' : 'stages need'} attention too.` : '';
+      return {
+        title: `Fix ${attention.gaps} ${attention.gaps === 1 ? 'gap' : 'gaps'} in ${attention.stage.name}`,
+        text: `${attention.stage.name} was passed, but ${attention.gaps === 1 ? 'one of its exit checks no longer holds' : 'some of its exit checks no longer hold'}. The stage page lists each gap and how to resolve it.${more}`,
+        to: phasePath(project.id, attention.stage.segment),
+        cta: `Resolve ${attention.stage.name} gaps`,
+      };
+    }
     // A Completed project has no lifecycle move left, so leftover review items (e.g. answered
     // clarification questions not yet resolved, draft objectives) are information, not a next step.
     if (progress.finished) {
@@ -137,10 +149,16 @@ export function ProjectOverviewPage() {
         </div>
         <div className="project-hero-stats">
           <div className="hero-stat hero-stat-progress">
-            <span className="hero-stat-label">Overall progress</span>
+            <span className="hero-stat-label">{APPROVED_PROGRESS_LABEL}</span>
             <strong className="hero-stat-value">{progress.percent}%</strong>
             <ProgressBar percent={progress.percent} />
-            <small>Based on the approved lifecycle status</small>
+            {outstanding ? (
+              <small className="progress-outstanding">
+                {progress.finished ? 'Approved by Reviewers, but' : 'Formally approved position;'} {outstanding.toLowerCase()} — see below
+              </small>
+            ) : (
+              <small>Based on the approved lifecycle status</small>
+            )}
           </div>
           <div className="hero-stat">
             <span className="hero-stat-label">Current stage</span>
@@ -156,7 +174,7 @@ export function ProjectOverviewPage() {
             <span className={`status-pill tone-${statusVariant(project.status)}`}>{statusLabel(project.status)}</span>
             <small>
               {progress.finished ? (
-                'Lifecycle completed'
+                outstanding ? 'Lifecycle approved · gaps reopened since' : 'Lifecycle completed'
               ) : (
                 <>
                   Next: {stageLabel(project.status + 1)}
@@ -171,7 +189,7 @@ export function ProjectOverviewPage() {
               {work.done}
               <span className="hero-stat-of"> / {work.total}</span>
             </strong>
-            <small>AI Copilot and Review are available anytime</small>
+            <small>{work.attention > 0 ? `${work.attention} ${work.attention === 1 ? 'stage needs' : 'stages need'} attention` : 'AI Copilot and Review are available anytime'}</small>
           </div>
         </div>
       </section>
@@ -192,7 +210,7 @@ export function ProjectOverviewPage() {
 
       <ProjectJourney projectId={project.id} status={project.status} signals={signals} data={{ dashboard, artifacts, stakeholders, matrix }} />
 
-      <LifecyclePanel project={project} version={contentVersion} onProjectChanged={refreshProject} />
+      <LifecyclePanel project={project} onProjectChanged={refreshProject} />
 
       <AgentActivitySummary projectId={project.id} version={`${contentVersion}|${project.status}`} />
 

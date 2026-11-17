@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import type { Project } from '../../api/types';
-import { activeStages, STAGE_COUNT, STAGE_STATUS_LABEL, STAGES, stageStatus, type StageSignals, type StageStatus } from '../../lib/stages';
+import { activeStages, STAGE_COUNT, STAGE_STATUS_LABEL, STAGES, stageGaps, stageStatus, type StageSignals, type StageStatus } from '../../lib/stages';
 import { phasePath } from '../../lib/workAreas';
 import { IconAlert, IconCheck, IconGrid } from '../icons';
 import { StageIcon } from './StageIcon';
@@ -46,6 +46,7 @@ export function StageNavigator({ project, signals }: { project: Project; signals
       <ol className="stage-nav-list" ref={list}>
         {STAGES.map((s) => {
           const status = stageStatus(s, project.status, signals);
+          const gaps = status === 'attention' ? stageGaps(s, project.status, signals).length : 0;
           const active = segment === s.segment;
           const isNow = now.has(s.key);
           return (
@@ -53,8 +54,8 @@ export function StageNavigator({ project, signals }: { project: Project; signals
               <Link
                 to={phasePath(project.id, s.segment)}
                 aria-current={active ? 'page' : undefined}
-                aria-label={`Stage ${s.number} of ${STAGE_COUNT}: ${s.name}, ${STAGE_STATUS_LABEL[status]}${isNow ? ', current work' : ''}`}
-                title={s.summary}
+                aria-label={`Stage ${s.number} of ${STAGE_COUNT}: ${s.name}, ${STAGE_STATUS_LABEL[status]}${gaps > 0 ? `, ${gaps} ${gaps === 1 ? 'gap' : 'gaps'} to resolve` : ''}${isNow ? ', current work' : ''}`}
+                title={gaps > 0 ? `${s.name}: ${gaps} ${gaps === 1 ? 'gap' : 'gaps'} to resolve — open to see and fix ${gaps === 1 ? 'it' : 'them'}` : s.summary}
               >
                 <span className="stage-nav-node" aria-hidden="true">
                   <StageIcon stage={s.key} width={15} height={15} />
@@ -64,9 +65,7 @@ export function StageNavigator({ project, signals }: { project: Project; signals
                     </span>
                   )}
                   {status === 'attention' && (
-                    <span className="stage-nav-badge warn">
-                      <IconAlert width={8} height={8} strokeWidth={3} />
-                    </span>
+                    <span className="stage-nav-badge warn">{gaps > 0 ? <span className="stage-nav-badge-num">{gaps}</span> : <IconAlert width={8} height={8} strokeWidth={3} />}</span>
                   )}
                 </span>
                 <span className="stage-nav-text" aria-hidden="true">

@@ -1,97 +1,123 @@
 /* ===========================================================================
-   Design tokens — MMC / OctansCare system.
-   Light values on :root; dark overrides under [data-theme="dark"].
-   Everything downstream consumes these variables, so this block is the
-   single source of truth for the whole app's visual language.
+   Design tokens — AI-REAP natural palette.
+   Warm-white surfaces, muted teal as the primary action colour, soft sage as the
+   secondary, slate blue as a quiet accent. Light values on :root; dark overrides
+   under [data-theme="dark"]. Everything downstream consumes these variables, so
+   this block is the single source of truth for the whole app's visual language.
+
+   Workflow states — one colour family each, always shown with a text label:
+     pending / not started  neutral stone      (--neutral-*)
+     in progress            muted teal         (--primary / --progress-*)
+     awaiting approval      honey amber        (--warning-*)
+     completed              sage green         (--success-*)
+     approved               slate blue         (--approved-*)
+     blocked / attention    burnt clay         (--blocked-*)
+     rejected / failed      brick red          (--danger-*)
    ========================================================================= */
 
 :root {
   color-scheme: light;
   font-family: 'Inter', 'Aptos', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  /* MMC uses Inter throughout (headings included) — no separate display face. */
   --font-display: 'Inter', 'Aptos', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 
-  --bg: #f5f9fc;
-  --bg-gradient: linear-gradient(180deg, #f7fbfe 0%, #eef6fb 100%);
+  --bg: #f6f5f1;
+  --bg-gradient: linear-gradient(180deg, #f9f8f5 0%, #f2f1ec 100%);
   --surface: #ffffff;
-  --surface-hover: #f7fbff;
-  --surface-sunken: #f7faff;
+  --surface-hover: #f7f7f3;
+  --surface-sunken: #f5f4ef;
   --input-surface: #ffffff;
-  --border: #dbe6f2;
-  --border-strong: #c3d6ea;
-  --text: #071b3a;
-  --text-secondary: #51657d;
-  --muted: #51657d;
-  --muted-subtle: #94a5b8;
-  --placeholder: #94a5b8;
+  --border: #e3e1d9;
+  --border-strong: #d1cec3;
+  --text: #1e2b28;
+  --text-secondary: #56635e;
+  --muted: #56635e;
+  --muted-subtle: #8b958f;
+  --placeholder: #98a19c;
 
-  --primary: #2452c7;
-  --primary-hover: #173b98;
-  --primary-active: #123078;
-  --primary-light: #4c77dd;
-  --primary-soft: #eef5ff;
-  --primary-soft-border: #cdddf7;
-  /* Solid cobalt fill for primary buttons and the active nav item. MMC keeps #2452c7 in both
-     themes; --primary (text/links) lightens in dark mode for contrast, this does not. */
-  --primary-solid: #2452c7;
-  --primary-solid-hover: #173b98;
-  --nav-active-shadow: 0 8px 18px rgba(36, 82, 199, 0.18);
-  --nav-hover: #eef5ff;
-  --nav-group-label: #7d8da5;
-  --input-border-hover: #9fb0c8;
-  --tooltip-bg: #071b3a;
-  --page-header-bg: linear-gradient(105deg, #e8f6ff 0%, #eef9f6 58%, #dff6e8 100%);
-  --page-header-border: #dbeefa;
-  --page-header-shadow: 0 12px 26px rgba(36, 82, 199, 0.06);
-  --avatar-bg: #071b3a;
-  --auth-bg: linear-gradient(135deg, #f7fbfe 0%, #eef7fb 48%, #e9f7ef 100%);
-  --secondary: #16bfa5;
-  --secondary-hover: #0c8b7a;
-  --secondary-soft: #e6f9f6;
+  --primary: #2e6b66;
+  --primary-hover: #245853;
+  --primary-active: #1c4744;
+  --primary-light: #4f8c85;
+  --primary-soft: #eaf2f0;
+  --primary-soft-border: #c9ddd8;
+  /* Solid teal fill for primary buttons and the active nav item. --primary (text/links)
+     lightens in dark mode for contrast; this stays deep enough for white text in both themes. */
+  --primary-solid: #2e6b66;
+  --primary-solid-hover: #245853;
+  --nav-active-shadow: 0 6px 16px rgba(46, 107, 102, 0.18);
+  --nav-hover: #eff3f1;
+  --nav-group-label: #87918b;
+  --input-border-hover: #b3bbb6;
+  --tooltip-bg: #1e2b28;
+  --page-header-bg: linear-gradient(105deg, #f1f6f3 0%, #f4f6f1 58%, #eef4ee 100%);
+  --page-header-border: #e0e7e1;
+  --page-header-shadow: 0 10px 24px rgba(40, 56, 50, 0.05);
+  --avatar-bg: #2f4b46;
+  --auth-bg: linear-gradient(135deg, #f9f8f5 0%, #f1f5f1 48%, #eaf2ee 100%);
+  --secondary: #6b8f72;
+  --secondary-hover: #52765a;
+  --secondary-soft: #eef3ec;
 
-  --ai: #16bfa5;
-  --ai-soft: #e6f9f6;
+  --ai: #4b8a7f;
+  --ai-soft: #eaf3f0;
 
-  --success: #18b987;
-  --success-soft: #e9f8f4;
-  --success-strong: #0e865f;
-  --warning: #f5a416;
-  --warning-soft: #fff7e8;
-  --warning-strong: #b87504;
-  --danger: #f2545b;
-  --danger-soft: #fff0f1;
-  --danger-strong: #bf3038;
-  --info: #25aee4;
-  --info-soft: #eef5ff;
-  --violet-soft: #eef5ff;
+  --progress: #2e6b66;
+  --progress-soft: #eaf2f0;
+  --progress-strong: #245853;
 
-  --neutral-soft: #f5f7fa;
-  --neutral-strong: #51657d;
+  --success: #5e8f63;
+  --success-soft: #edf4eb;
+  --success-strong: #3e6a44;
+  --approved: #4a6d96;
+  --approved-soft: #edf2f8;
+  --approved-strong: #35547a;
+  --warning: #c28b2c;
+  --warning-soft: #fbf4e3;
+  --warning-strong: #86600f;
+  --blocked: #b8693a;
+  --blocked-soft: #fbefe6;
+  --blocked-strong: #8c4820;
+  --danger: #b5514a;
+  --danger-soft: #f9ecea;
+  --danger-strong: #8f3730;
+  --info: #4f7896;
+  --info-soft: #edf3f7;
+  --violet-soft: #f0eff6;
 
-  --table-header-bg: #f7faff;
-  --table-header-text: #66758c;
+  --neutral-soft: #f1f0eb;
+  --neutral-strong: #56635e;
+
+  --table-header-bg: #f7f6f2;
+  --table-header-text: #67716c;
   --table-row-bg: #ffffff;
-  --table-row-hover: #f7fbff;
-  --table-border: #edf3f8;
+  --table-row-hover: #f8f8f4;
+  --table-border: #eceae3;
 
-  /* Radius scale (MMC): 7px controls, 8px cards/panels/dialogs, 12px only for rare large
-     surfaces, 16px for nav-item highlights (MUI borderRadius: 2 on an 8px shape). */
+  /* Radius scale: 7px controls, 8px cards/panels/dialogs, 12px for rare large surfaces,
+     16px for nav-item highlights. */
   --radius-sm: 7px;
   --radius-md: 8px;
-  --radius-lg: 8px;
+  --radius-lg: 10px;
   --radius-xl: 12px;
-  --radius-nav: 16px;
+  --radius-nav: 10px;
   --radius-full: 999px;
 
-  /* Elevation (MMC): near-invisible resting cards, popover lift for menus, deep for dialogs. */
-  --shadow-xs: 0 1px 2px rgba(18, 38, 63, 0.04);
-  --shadow-sm: 0 8px 22px rgba(18, 38, 63, 0.04);
-  --shadow-md: 0 14px 32px rgba(18, 38, 63, 0.12);
-  --shadow-lg: 0 24px 56px rgba(18, 38, 63, 0.18);
-  --focus-ring: 0 0 0 3px rgba(36, 82, 199, 0.22);
+  /* Elevation: near-invisible resting cards, popover lift for menus, deep for dialogs.
+     Shadows are tinted with the green-charcoal text colour rather than blue. */
+  --shadow-xs: 0 1px 2px rgba(34, 44, 40, 0.04);
+  --shadow-sm: 0 1px 2px rgba(34, 44, 40, 0.03), 0 6px 18px rgba(34, 44, 40, 0.04);
+  --shadow-md: 0 14px 32px rgba(34, 44, 40, 0.11);
+  --shadow-lg: 0 24px 56px rgba(34, 44, 40, 0.16);
+  --focus-ring: 0 0 0 3px rgba(46, 107, 102, 0.24);
+  --overlay: rgba(24, 32, 29, 0.42);
 
-  --brand-gradient: linear-gradient(135deg, #2452c7 0%, #16bfa5 100%);
-  --brand-gradient-soft: linear-gradient(135deg, rgba(36, 82, 199, 0.1) 0%, rgba(22, 191, 165, 0.1) 100%);
+  --brand-gradient: linear-gradient(135deg, #2e6b66 0%, #7d9f80 100%);
+  --brand-gradient-soft: linear-gradient(135deg, rgba(46, 107, 102, 0.08) 0%, rgba(125, 159, 128, 0.1) 100%);
+
+  --scrollbar-track: #f1f0eb;
+  --scrollbar-thumb: #c4c8c2;
+  --scrollbar-thumb-hover: #9ea69f;
+  --topbar-bg: rgba(250, 249, 246, 0.86);
 
   --sidebar-width: 248px;
   --sidebar-width-collapsed: 60px;
@@ -103,70 +129,91 @@
 :root[data-theme='dark'] {
   color-scheme: dark;
 
-  --bg: #07111f;
-  --bg-gradient: linear-gradient(180deg, #081525 0%, #07111f 100%);
-  --surface: #0d1a2c;
-  --surface-hover: #13243a;
-  --surface-sunken: #0a1626;
-  --input-surface: #0a1626;
-  --border: #1f3148;
-  --border-strong: #334966;
-  --text: #e7eef8;
-  --text-secondary: #9fb0c7;
-  --muted: #9fb0c7;
-  --muted-subtle: #6d7f99;
-  --placeholder: #7e90aa;
+  --bg: #121614;
+  --bg-gradient: linear-gradient(180deg, #141917 0%, #111412 100%);
+  --surface: #1a1f1d;
+  --surface-hover: #212826;
+  --surface-sunken: #161b19;
+  --input-surface: #161b19;
+  --border: #2b3330;
+  --border-strong: #3b4642;
+  --text: #e5ebe7;
+  --text-secondary: #a6b1ab;
+  --muted: #a6b1ab;
+  --muted-subtle: #75817b;
+  --placeholder: #7d8983;
 
-  --primary: #4c77dd;
-  --primary-hover: #6c92e6;
-  --primary-active: #2452c7;
-  --primary-light: #6c92e6;
-  --primary-soft: #102642;
-  --primary-soft-border: #2a4470;
-  --nav-hover: #13243a;
-  --nav-group-label: #6d7f99;
-  --input-border-hover: #466384;
-  --page-header-bg: linear-gradient(105deg, #0d2338 0%, #0d2f33 58%, #102d28 100%);
-  --page-header-border: #1f4b5e;
+  --primary: #74b6ac;
+  --primary-hover: #91c8bf;
+  --primary-active: #57998f;
+  --primary-light: #91c8bf;
+  --primary-soft: #1b2d2a;
+  --primary-soft-border: #2f4a45;
+  --primary-solid: #2f766f;
+  --primary-solid-hover: #3a8880;
+  --nav-active-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+  --nav-hover: #212826;
+  --nav-group-label: #75817b;
+  --input-border-hover: #4d5a55;
+  --tooltip-bg: #2a3330;
+  --page-header-bg: linear-gradient(105deg, #18211f 0%, #19221e 58%, #1b241d 100%);
+  --page-header-border: #2a3833;
   --page-header-shadow: 0 16px 36px rgba(0, 0, 0, 0.28);
-  --avatar-bg: #2452c7;
-  --auth-bg: linear-gradient(135deg, #07111f 0%, #0b1b2f 48%, #0b2b2a 100%);
-  --secondary: #16bfa5;
-  --secondary-hover: #33d6bc;
-  --secondary-soft: #0f2b28;
+  --avatar-bg: #2f766f;
+  --auth-bg: linear-gradient(135deg, #121614 0%, #151d1a 48%, #17221d 100%);
+  --secondary: #8fb595;
+  --secondary-hover: #a9c9ae;
+  --secondary-soft: #1e2a20;
 
-  --ai: #16bfa5;
-  --ai-soft: #0f2b28;
+  --ai: #7cbcaf;
+  --ai-soft: #1a2d29;
 
-  --success: #2fd6a3;
-  --success-soft: #0d2a22;
-  --success-strong: #6fe8c4;
-  --warning: #f7b73f;
-  --warning-soft: #2c220c;
-  --warning-strong: #ffcc66;
-  --danger: #f2545b;
-  --danger-soft: #2c1315;
-  --danger-strong: #ff8087;
-  --info: #4fc3f2;
-  --info-soft: #142a3a;
-  --violet-soft: #102642;
+  --progress: #74b6ac;
+  --progress-soft: #1b2d2a;
+  --progress-strong: #91c8bf;
 
-  --neutral-soft: #142235;
-  --neutral-strong: #9fb0c7;
+  --success: #88ba8c;
+  --success-soft: #1d2a1e;
+  --success-strong: #a9d2ac;
+  --approved: #8dafd6;
+  --approved-soft: #1b2431;
+  --approved-strong: #b1cae7;
+  --warning: #d9aa52;
+  --warning-soft: #2d2616;
+  --warning-strong: #ebc67e;
+  --blocked: #db8d5f;
+  --blocked-soft: #2f221a;
+  --blocked-strong: #efae87;
+  --danger: #e08078;
+  --danger-soft: #2f1c1a;
+  --danger-strong: #f0a49c;
+  --info: #84abc9;
+  --info-soft: #1b2630;
+  --violet-soft: #232331;
 
-  --table-header-bg: #0a1626;
-  --table-header-text: #9fb0c7;
-  --table-row-bg: #0d1a2c;
-  --table-row-hover: #13243a;
-  --table-border: #1f3148;
+  --neutral-soft: #202724;
+  --neutral-strong: #a6b1ab;
+
+  --table-header-bg: #161b19;
+  --table-header-text: #a6b1ab;
+  --table-row-bg: #1a1f1d;
+  --table-row-hover: #212826;
+  --table-border: #2b3330;
 
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-sm: 0 8px 22px rgba(0, 0, 0, 0.28);
+  --shadow-sm: 0 6px 18px rgba(0, 0, 0, 0.26);
   --shadow-md: 0 12px 28px rgba(0, 0, 0, 0.36);
   --shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.5);
-  --focus-ring: 0 0 0 3px rgba(108, 146, 230, 0.35);
+  --focus-ring: 0 0 0 3px rgba(116, 182, 172, 0.32);
+  --overlay: rgba(6, 9, 8, 0.6);
 
-  --brand-gradient: linear-gradient(135deg, #4c77dd 0%, #16bfa5 100%);
+  --brand-gradient: linear-gradient(135deg, #2f766f 0%, #6f9474 100%);
+  --brand-gradient-soft: linear-gradient(135deg, rgba(116, 182, 172, 0.1) 0%, rgba(143, 181, 149, 0.1) 100%);
+
+  --scrollbar-track: #161b19;
+  --scrollbar-thumb: #3b4642;
+  --scrollbar-thumb-hover: #4d5a55;
+  --topbar-bg: rgba(20, 25, 23, 0.9);
 }
 
 * {
@@ -189,29 +236,20 @@ body {
   transition: background var(--motion-base), color var(--motion-base);
 }
 
-/* MMC scrollbars: slim, rounded, theme-aware. */
+/* Scrollbars: slim, rounded, theme-aware. */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: #eef6fb;
+  background: var(--scrollbar-track);
 }
 ::-webkit-scrollbar-thumb {
-  background: #9cb0c9;
+  background: var(--scrollbar-thumb);
   border-radius: 8px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #738aa8;
-}
-:root[data-theme='dark'] ::-webkit-scrollbar-track {
-  background: #0b1626;
-}
-:root[data-theme='dark'] ::-webkit-scrollbar-thumb {
-  background: #334966;
-}
-:root[data-theme='dark'] ::-webkit-scrollbar-thumb:hover {
-  background: #466384;
+  background: var(--scrollbar-thumb-hover);
 }
 
 h1, h2, h3, h4 {
@@ -252,7 +290,7 @@ a {
   gap: 0.9rem;
   height: var(--header-height);
   padding: 0 1rem;
-  background: rgba(255, 255, 255, 0.82);
+  background: var(--topbar-bg);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
@@ -260,10 +298,6 @@ a {
   top: 0;
   z-index: 20;
   transition: background var(--motion-base), border-color var(--motion-base);
-}
-
-:root[data-theme='dark'] .topbar {
-  background: rgba(9, 21, 36, 0.9);
 }
 
 .topbar-spacer {
@@ -1170,6 +1204,10 @@ pre {
 
 .artifact-card.tone-info {
   border-left-color: var(--primary-light);
+}
+
+.artifact-card.tone-approved {
+  border-left-color: var(--approved);
 }
 
 .artifact-card.tone-danger {
@@ -2224,7 +2262,7 @@ pre {
   font-weight: 800;
   font-size: 0.85rem;
   flex-shrink: 0;
-  box-shadow: 0 6px 14px -5px rgba(36, 82, 199, 0.55);
+  box-shadow: 0 6px 14px -6px rgba(46, 107, 102, 0.5);
 }
 
 .sidebar-brand-name {
@@ -2363,7 +2401,7 @@ main [id] {
     display: block;
     position: fixed;
     inset: 0;
-    background: rgba(7, 17, 31, 0.45);
+    background: var(--overlay);
     z-index: 55;
   }
 
@@ -2464,7 +2502,7 @@ main [id] {
   overflow: hidden;
   isolation: isolate;
   color: #fff;
-  background: linear-gradient(132deg, #071b3a 0%, #2452c7 54%, #13bfa6 100%);
+  background: linear-gradient(140deg, #1f3a36 0%, #2e6b66 52%, #6f9474 100%);
 }
 
 .auth-hero-panel::before {
@@ -2494,7 +2532,7 @@ main [id] {
   border-radius: 12px;
   background: #fff;
   box-shadow: 0 16px 36px rgba(0, 0, 0, 0.2);
-  color: #0b6fd3;
+  color: #2e6b66;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2617,7 +2655,7 @@ main [id] {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 14px;
-  box-shadow: 0 24px 48px -18px rgba(18, 38, 63, 0.14);
+  box-shadow: 0 24px 48px -18px rgba(34, 44, 40, 0.14);
   padding: 2.75rem;
 }
 
@@ -2922,7 +2960,7 @@ main [id] {
 .dialog-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(7, 27, 58, 0.42);
+  background: var(--overlay);
   backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
@@ -3208,7 +3246,9 @@ main [id] {
   margin-top: auto;
 }
 
-/* Status pill variants (used alongside the base .status-pill) */
+/* Status pill variants (used alongside the base .status-pill). One family per workflow
+   state — see the token header. Approved and Blocked also differ in shape (outline /
+   dashed outline) so they never rely on colour alone. */
 
 .status-pill.tone-neutral {
   background: var(--neutral-soft);
@@ -3216,8 +3256,21 @@ main [id] {
 }
 
 .status-pill.tone-info {
-  background: var(--primary-soft);
-  color: var(--primary);
+  background: var(--progress-soft);
+  color: var(--progress-strong);
+}
+
+.status-pill.tone-approved {
+  background: var(--approved-soft);
+  color: var(--approved-strong);
+  box-shadow: inset 0 0 0 1px var(--approved);
+}
+
+.status-pill.tone-blocked {
+  background: var(--blocked-soft);
+  color: var(--blocked-strong);
+  outline: 1px dashed var(--blocked);
+  outline-offset: -1px;
 }
 
 .status-pill.tone-success {

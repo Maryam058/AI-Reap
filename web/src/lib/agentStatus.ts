@@ -11,7 +11,7 @@ export const STEP_STATUS: Record<number, { label: string; tone: string }> = {
   0: { label: 'Pending', tone: 'neutral' },
   1: { label: 'Running', tone: 'info' },
   2: { label: 'Awaiting decision', tone: 'warning' },
-  3: { label: 'Approved', tone: 'success' },
+  3: { label: 'Approved', tone: 'approved' },
   4: { label: 'Rejected', tone: 'danger' },
   5: { label: 'Failed', tone: 'danger' },
 };

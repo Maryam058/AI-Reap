@@ -4,54 +4,58 @@
    ========================================================================= */
 
 :root {
-  /* Charts: one blue as the primary series, a 7-step sequential ramp for the ordered SDLC phases,
-     and status colours reserved for status meaning (always paired with a label). */
-  --chart-1: #2452c7;
-  --chart-p1: #8b5cf6;
-  --chart-p2: #6366f1;
-  --chart-p3: #3b82f6;
-  --chart-p4: #06b6d4;
-  --chart-p5: #14b8a6;
-  --chart-p6: #f59e0b;
-  --chart-p7: #f97316;
-  --chart-c1: #4f6df5;
-  --chart-c2: #18b987;
-  --chart-c3: #f5a416;
-  --chart-c4: #8b5cf6;
-  --chart-c5: #06b6d4;
-  --chart-c6: #ec4899;
-  --chart-c7: #f97316;
-  --chart-c8: #84cc16;
-  --chart-c9: #64748b;
-  --chart-neutral: #a9b7c9;
-  --chart-warning: #f5a416;
-  --chart-success: #18b987;
-  --chart-danger: #f2545b;
-  --chart-track: #e8eff7;
-  --chart-grid: #e3ebf4;
+  /* Charts: teal as the primary series, a 7-step natural ramp (sage → teal → slate → ochre)
+     for the ordered SDLC phases, and status colours reserved for status meaning
+     (always paired with a label). */
+  --chart-1: #2e6b66;
+  --chart-p1: #9cb99c;
+  --chart-p2: #74a383;
+  --chart-p3: #4f8c80;
+  --chart-p4: #2e6b66;
+  --chart-p5: #4a6d96;
+  --chart-p6: #c28b2c;
+  --chart-p7: #b8693a;
+  --chart-c1: #2e6b66;
+  --chart-c2: #6b8f72;
+  --chart-c3: #c28b2c;
+  --chart-c4: #4a6d96;
+  --chart-c5: #8a7ba6;
+  --chart-c6: #b5514a;
+  --chart-c7: #b8693a;
+  --chart-c8: #98a35a;
+  --chart-c9: #7d8780;
+  --chart-neutral: #b9bfb8;
+  --chart-warning: #c28b2c;
+  --chart-success: #5e8f63;
+  --chart-danger: #b5514a;
+  --chart-track: #ecebe5;
+  --chart-grid: #e6e4dd;
 }
 
 :root[data-theme='dark'] {
-  --chart-1: #6c92e6;
-  --chart-p1: #a78bfa;
-  --chart-p2: #818cf8;
-  --chart-p3: #60a5fa;
-  --chart-p4: #22d3ee;
-  --chart-p5: #2dd4bf;
-  --chart-p6: #fbbf24;
-  --chart-p7: #fb923c;
-  --chart-c1: #7c93ff;
-  --chart-c2: #34d399;
-  --chart-c3: #fbbf24;
-  --chart-c4: #a78bfa;
-  --chart-c5: #22d3ee;
-  --chart-c6: #f472b6;
-  --chart-c7: #fb923c;
-  --chart-c8: #a3e635;
-  --chart-c9: #94a3b8;
-  --chart-neutral: #63758f;
-  --chart-track: #16273d;
-  --chart-grid: #1c2e46;
+  --chart-1: #74b6ac;
+  --chart-p1: #b3cfb3;
+  --chart-p2: #93c09f;
+  --chart-p3: #7cbcaf;
+  --chart-p4: #5aa59b;
+  --chart-p5: #8dafd6;
+  --chart-p6: #d9aa52;
+  --chart-p7: #db8d5f;
+  --chart-c1: #74b6ac;
+  --chart-c2: #8fb595;
+  --chart-c3: #d9aa52;
+  --chart-c4: #8dafd6;
+  --chart-c5: #b0a3cc;
+  --chart-c6: #e08078;
+  --chart-c7: #db8d5f;
+  --chart-c8: #bcc57e;
+  --chart-c9: #9aa49d;
+  --chart-neutral: #55605b;
+  --chart-warning: #d9aa52;
+  --chart-success: #88ba8c;
+  --chart-danger: #e08078;
+  --chart-track: #252c29;
+  --chart-grid: #2b3330;
 }
 
 /* ---- Utilities ---------------------------------------------------------- */
@@ -277,7 +281,7 @@ main {
 
 .sidebar {
   padding: 0 0.5rem;
-  box-shadow: 4px 0 20px rgba(18, 38, 63, 0.03);
+  box-shadow: 4px 0 20px rgba(34, 44, 40, 0.03);
 }
 .sidebar.collapsed {
   padding-bottom: 0;
@@ -293,7 +297,7 @@ main {
   width: 34px;
   height: 34px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #0b6fd3 0%, #10aeb8 100%);
+  background: var(--brand-gradient);
   font-size: 0.78rem;
   font-weight: 800;
   letter-spacing: 0.02em;
@@ -4635,6 +4639,12 @@ a.btn-ghost {
 .qa-meter-seg.tone-warning {
   background: var(--warning-strong);
 }
+.qa-meter-seg.tone-blocked {
+  background: var(--blocked);
+}
+.qa-meter-seg.tone-approved {
+  background: var(--approved);
+}
 .qa-meter-seg.tone-info {
   background: var(--primary);
 }
@@ -5668,12 +5678,7 @@ a.btn-ghost {
 
 /* ---- Stage visibility & project opening --------------------------------- */
 
-/* Approved: its own outlined tone, so it never reads as Completed (green). */
-.status-pill.tone-approved {
-  background: var(--surface);
-  color: var(--primary);
-  box-shadow: inset 0 0 0 1.5px var(--primary);
-}
+/* Approved: its own outlined slate-blue tone (index.css), so it never reads as Completed (sage). */
 
 /* Project card: the current stage leads, the next stage follows. */
 .project-card-top .menu {

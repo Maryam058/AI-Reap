@@ -16,7 +16,7 @@ const OUTCOME: Record<number, { label: string; tone: string }> = {
   [WORK_OUTCOME.TaskReopened]: { label: 'Reopened', tone: 'warning' },
   [WORK_OUTCOME.TestPassed]: { label: 'Passed', tone: 'success' },
   [WORK_OUTCOME.TestFailed]: { label: 'Failed', tone: 'danger' },
-  [WORK_OUTCOME.TestBlocked]: { label: 'Blocked', tone: 'warning' },
+  [WORK_OUTCOME.TestBlocked]: { label: 'Blocked', tone: 'blocked' },
 };
 
 const TEST_RESULT_BUTTONS: { outcome: WorkOutcome; label: string; className: string }[] = [

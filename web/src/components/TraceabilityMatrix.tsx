@@ -90,7 +90,7 @@ function OrphanLinker({ orphan, candidates, onLinked }: { orphan: TraceabilityOr
 }
 
 /** Live traceability matrix: one row per functional requirement, with the flow Requirement → Design → Development → Test above it. */
-export function TraceabilityMatrix({ projectId }: { projectId: string }) {
+export function TraceabilityMatrix({ projectId, onChange }: { projectId: string; /** Called after a link is saved, so lifecycle checks and stage statuses refresh. */ onChange?: () => void }) {
   const { token, hasRole } = useAuth();
   // The same roles the link endpoint allows (TraceabilityController.WriterRoles).
   const canLink = hasRole('Administrator') || hasRole('BusinessAnalyst');
@@ -191,7 +191,10 @@ export function TraceabilityMatrix({ projectId }: { projectId: string }) {
                 {canLink && (
                   <ul className="trace-link-list">
                     {list.map((o) => (
-                      <OrphanLinker key={o.id} orphan={o} candidates={linkCandidates(o, rows, gaps === 'failed' ? null : gaps, rejected)} onLinked={load} />
+                      <OrphanLinker key={o.id} orphan={o} candidates={linkCandidates(o, rows, gaps === 'failed' ? null : gaps, rejected)} onLinked={() => {
+                        void load();
+                        onChange?.();
+                      }} />
                     ))}
                   </ul>
                 )}

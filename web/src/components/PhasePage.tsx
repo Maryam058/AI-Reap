@@ -5,6 +5,7 @@ import { stageLabel, stageState } from '../lib/lifecycle';
 import { phasePath, workArea } from '../lib/workAreas';
 import type { StageKey } from '../lib/stages';
 import { StageHeader, StageNextStep } from './stage/StageHeader';
+import { StageGapsPanel } from './stage/StageGapsPanel';
 import { IconSparkles } from './icons';
 
 /**
@@ -50,6 +51,8 @@ export function PhasePage({ phaseKey, actions, children }: { phaseKey: StageKey;
           </>
         }
       />
+
+      <StageGapsPanel key={`${project.id}|${phaseKey}`} stageKey={phaseKey} />
 
       <div className="phase-body">{children}</div>
 

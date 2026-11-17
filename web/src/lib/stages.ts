@@ -173,10 +173,99 @@ export function previousStage(key: StageKey): WorkspaceStage | null {
   return i > 0 ? STAGES[i - 1] : null;
 }
 
+/** A failing or passing exit check, as the lifecycle state reports it (only the fields used here). */
+export interface StageCheck {
+  label: string;
+  passed: boolean;
+  detail?: string;
+  /** Present on failing checks: where the work that meets it is done (ExitCheckGuidanceService). */
+  guidance?: { blockers?: { destination: { area: string } }[] } | null;
+}
+
 /** The part of the lifecycle state the stage statuses use (absent until it has loaded). */
-export interface StageSignals {
+export interface StageSignals<C extends StageCheck = StageCheck> {
   pendingTransition?: { fromStatus?: number | null; toStatus: number } | null;
-  evidenceGaps?: { stage: number }[];
+  /** The current lifecycle status's exit checks. */
+  exitChecks?: C[];
+  /** Lifecycle statuses already passed whose exit checks no longer hold (with every check, when sent). */
+  evidenceGaps?: { stage: number; label?: string; checks?: C[] }[];
+}
+
+/**
+ * The stage a guidance destination area belongs to (the backend's CheckAreas). Project context,
+ * members, stakeholders and sources are all Gathering; the lifecycle panel itself has no stage.
+ */
+const AREA_STAGE: Record<string, StageKey> = {
+  context: 'gathering',
+  members: 'gathering',
+  stakeholders: 'gathering',
+  sources: 'gathering',
+  analysis: 'analysis',
+  validation: 'validation',
+  design: 'design',
+  development: 'development',
+  testing: 'testing',
+  traceability: 'traceability',
+};
+
+function checkAreas(check: StageCheck): StageKey[] {
+  const keys = (check.guidance?.blockers ?? []).map((b) => AREA_STAGE[b.destination?.area]).filter((k): k is StageKey => !!k);
+  return [...new Set(keys)];
+}
+
+/**
+ * Whether an exit check of lifecycle status `lifecycleStatus` concerns `stage`. Most lifecycle
+ * statuses are served by one stage; two are shared (Analysis & Validation serve Analysis; Testing &
+ * Traceability serve Testing). For a shared one the check goes to the sharer(s) its guidance sends
+ * the user to; a check whose work happens in neither (e.g. QA sign-off, a requirement edited since
+ * approval) stays with the first sharer, which owns that lifecycle status.
+ */
+function checkBelongsTo(stage: WorkspaceStage, lifecycleStatus: number, check: StageCheck): boolean {
+  const sharers = STAGES.filter((s) => s.kind === 'work' && s.serves.includes(lifecycleStatus));
+  if (sharers.length <= 1) return sharers[0]?.key === stage.key;
+  const areas = checkAreas(check);
+  const matching = sharers.filter((s) => areas.includes(s.key));
+  return matching.length > 0 ? matching.some((s) => s.key === stage.key) : sharers[0].key === stage.key;
+}
+
+/** One exit check that concerns a stage, and the lifecycle status it is an exit check of. */
+export interface StageGapItem<C extends StageCheck = StageCheck> {
+  check: C;
+  lifecycleStatus: number;
+  /**
+   * 'attention' — the project already passed this lifecycle status but the check is reported again
+   * (an evidence gap); 'todo' — an exit check of the project's current lifecycle status.
+   */
+  kind: 'attention' | 'todo';
+}
+
+/**
+ * Every exit check that concerns a work stage, passed and failing, from the backend's lifecycle
+ * state: the checks of a passed lifecycle status the stage serves that is reported as an evidence
+ * gap, and the current lifecycle status's exit checks when the stage serves it. Pass/fail is the
+ * backend's; only the attribution to a stage is made here.
+ */
+export function stageChecks<C extends StageCheck>(stage: WorkspaceStage, projectStatus: number, signals?: StageSignals<C> | null): StageGapItem<C>[] {
+  if (stage.kind === 'tool' || !signals) return [];
+  const items: StageGapItem<C>[] = [];
+  for (const gap of signals.evidenceGaps ?? []) {
+    if (!stage.serves.includes(gap.stage) || gap.stage >= projectStatus) continue;
+    // A response without per-check detail: the whole lifecycle status is a gap of every stage serving it.
+    if (!gap.checks) {
+      items.push({ check: { label: `${gap.label ?? stageLabel(gap.stage)} exit checks`, passed: false } as C, lifecycleStatus: gap.stage, kind: 'attention' });
+      continue;
+    }
+    for (const check of gap.checks) if (checkBelongsTo(stage, gap.stage, check)) items.push({ check, lifecycleStatus: gap.stage, kind: 'attention' });
+  }
+  if (stage.serves.includes(projectStatus) && projectStatus < LAST_STAGE) {
+    for (const check of signals.exitChecks ?? []) if (checkBelongsTo(stage, projectStatus, check)) items.push({ check, lifecycleStatus: projectStatus, kind: 'todo' });
+  }
+  return items;
+}
+
+/** The failing checks that make a stage "Needs attention" (lifecycle statuses already passed only). */
+export function stageGaps<C extends StageCheck>(stage: WorkspaceStage, projectStatus: number, signals?: StageSignals<C> | null): StageGapItem<C>[] {
+  return stageChecks(stage, projectStatus, signals).filter((i) => i.kind === 'attention' && !i.check.passed);
 }
 
 export const STAGE_STATUS_LABEL: Record<StageStatus, string> = {
@@ -189,15 +278,23 @@ export const STAGE_STATUS_LABEL: Record<StageStatus, string> = {
   ready: 'Ready to review',
 };
 
-/** Status of one stage for a project, from Project.status and (optionally) its lifecycle state. */
+/**
+ * Status of one stage for a project, from Project.status and (optionally) its lifecycle state:
+ *   - tools are always available (the Review is "ready" once the lifecycle is completed);
+ *   - a served lifecycle status already passed whose checks for this stage no longer hold → needs
+ *     attention (also while a later lifecycle status it serves is current);
+ *   - every served lifecycle status passed → completed;
+ *   - a served lifecycle status current → awaiting approval while a Reviewer request is pending,
+ *     otherwise in progress;
+ *   - otherwise not started.
+ * Opening a stage never changes its status; only the backend's evidence and transitions do.
+ */
 export function stageStatus(stage: WorkspaceStage, projectStatus: number, signals?: StageSignals | null): StageStatus {
   const finished = projectStatus >= LAST_STAGE;
   if (stage.kind === 'tool') return stage.key === 'review' && finished ? 'ready' : 'available';
   const states = stage.serves.map((s) => stageState(s, projectStatus));
-  const gaps = signals?.evidenceGaps ?? [];
-  if (states.every((s) => s === 'completed')) {
-    return stage.serves.some((s) => gaps.some((g) => g.stage === s)) ? 'attention' : 'completed';
-  }
+  if (stageGaps(stage, projectStatus, signals).length > 0) return 'attention';
+  if (states.every((s) => s === 'completed')) return 'completed';
   if (states.includes('current')) return signals?.pendingTransition ? 'awaiting' : 'in-progress';
   return 'not-started';
 }
@@ -209,8 +306,10 @@ export function stageStatusReason(stage: WorkspaceStage, projectStatus: number, 
   switch (status) {
     case 'completed':
       return `The project has passed the ${milestones} lifecycle status.`;
-    case 'attention':
-      return `The project passed ${milestones}, but some of its exit checks no longer hold.`;
+    case 'attention': {
+      const n = stageGaps(stage, projectStatus, signals).length;
+      return `The project passed ${milestones}, but ${n === 1 ? '1 of its exit checks no longer holds' : `${n} of its exit checks no longer hold`}. Each one is listed on this page with how to fix it.`;
+    }
     case 'awaiting':
       return `Waiting for a Reviewer to approve the move to ${stageLabel(signals?.pendingTransition?.toStatus)}.`;
     case 'in-progress':
@@ -246,8 +345,27 @@ export function activeStagesLabel(projectStatus: number): string {
     .join(' & ');
 }
 
-/** How many of the seven work stages are completed (tools excluded). Derived, never stored. */
-export function completedWorkStages(projectStatus: number): { done: number; total: number } {
+/**
+ * How many of the seven work stages are completed (tools excluded), and how many need attention.
+ * Derived, never stored: with the lifecycle state, a stage whose checks no longer hold is not
+ * counted as completed.
+ */
+export function completedWorkStages(projectStatus: number, signals?: StageSignals | null): { done: number; total: number; attention: number } {
   const work = STAGES.filter((s) => s.kind === 'work');
-  return { done: work.filter((s) => stageStatus(s, projectStatus) === 'completed').length, total: work.length };
+  const statuses = work.map((s) => stageStatus(s, projectStatus, signals));
+  return { done: statuses.filter((s) => s === 'completed').length, total: work.length, attention: statuses.filter((s) => s === 'attention').length };
+}
+
+/**
+ * The wording beside a lifecycle progress percentage. The percentage is the formally approved
+ * lifecycle position (Project.status, lib/lifecycle) and is never lowered; outstanding work is the
+ * separate count of work stages whose exit checks no longer hold. Every progress display uses this,
+ * so a 100% is never shown without its open gaps.
+ */
+export const APPROVED_PROGRESS_LABEL = 'Approved lifecycle progress';
+
+export function outstandingWorkNote(projectStatus: number, signals?: StageSignals | null): string | null {
+  const { attention } = completedWorkStages(projectStatus, signals);
+  if (attention === 0) return null;
+  return `${attention} ${attention === 1 ? 'stage needs' : 'stages need'} attention`;
 }

@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { ARTIFACT_TYPE_VALUES, type ArtifactSummary, type ProjectDashboard, type TraceabilityRow, type Stakeholder } from '../../api/types';
-import { activeStages, STAGE_COUNT, STAGES, stageStatus, type StageKey, type StageSignals } from '../../lib/stages';
+import { activeStages, STAGE_COUNT, STAGES, stageGaps, stageStatus, type StageKey, type StageSignals } from '../../lib/stages';
 import { phasePath } from '../../lib/workAreas';
 import { IconArrowRight } from '../icons';
 import { StageIcon } from './StageIcon';
@@ -72,7 +72,8 @@ export function ProjectJourney({ projectId, status, signals, data }: { projectId
         {STAGES.map((s) => {
           const st = stageStatus(s, status, signals);
           const here = now.has(s.key);
-          const figure = stageFigure(s.key, data);
+          const gaps = st === 'attention' ? stageGaps(s, status, signals).length : 0;
+          const figure = gaps > 0 ? `${plural(gaps, 'gap', 'gaps')} to resolve` : stageFigure(s.key, data);
           return (
             <li key={s.key} className={`journey-card st-${st}${here ? ' here' : ''}${s.kind === 'tool' ? ' tool' : ''}`}>
               <Link to={phasePath(projectId, s.segment)} className="journey-link">
@@ -92,10 +93,10 @@ export function ProjectJourney({ projectId, status, signals, data }: { projectId
                 <span className="journey-summary">{s.summary}</span>
                 <span className="journey-foot">
                   <StageStatusPill status={st} />
-                  {figure && <span className="journey-figure">{figure}</span>}
+                  {figure && <span className={`journey-figure${gaps > 0 ? ' warn' : ''}`}>{figure}</span>}
                 </span>
                 <span className="journey-open" aria-hidden="true">
-                  Open <IconArrowRight width={13} height={13} />
+                  {gaps > 0 ? 'Resolve' : 'Open'} <IconArrowRight width={13} height={13} />
                 </span>
               </Link>
             </li>

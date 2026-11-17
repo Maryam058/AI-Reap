@@ -11,7 +11,7 @@ const VISIBLE_ITEMS = 8;
 const TONE: Record<QaState, string> = {
   passed: 'success',
   failed: 'danger',
-  blocked: 'warning',
+  blocked: 'blocked',
   notExecuted: 'neutral',
   needsApproval: 'info',
   unavailable: 'neutral',

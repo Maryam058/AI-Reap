@@ -60,7 +60,7 @@ const STATUS_TONE: Record<number, string> = {
   0: 'info',
   1: 'neutral',
   2: 'warning',
-  3: 'success',
+  3: 'approved',
   4: 'danger',
   5: 'info',
   6: 'success',

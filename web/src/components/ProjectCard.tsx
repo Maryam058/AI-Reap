@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import type { Project, ProjectLifecycleState } from '../api/types';
 import { isGatedStage, lifecycleProgress, stageLabel } from '../lib/lifecycle';
-import { activeStagesLabel, currentStage, STAGE_COUNT } from '../lib/stages';
+import { activeStagesLabel, APPROVED_PROGRESS_LABEL, currentStage, outstandingWorkNote, STAGE_COUNT } from '../lib/stages';
 import { formatRelativeTime, statusLabel, statusVariant } from '../lib/format';
 import { ProgressBar } from './ui/ProgressBar';
 import { StageDots } from './stage/StageNavigator';
@@ -23,7 +23,7 @@ export function ProjectCard({
 }) {
   const progress = lifecycleProgress(project.status);
   const pending = lifecycle?.pendingTransition ?? null;
-  const gaps = lifecycle?.evidenceGaps.length ?? 0;
+  const outstanding = outstandingWorkNote(project.status, lifecycle);
   const focus = currentStage(project.status);
 
   return (
@@ -49,7 +49,7 @@ export function ProjectCard({
         </span>
         <span className="project-card-next">
           {progress.finished ? (
-            'Lifecycle completed'
+            outstanding ? 'Lifecycle approved · gaps reopened since' : 'Lifecycle completed'
           ) : (
             <>
               Next: <strong>{stageLabel(project.status + 1)}</strong>
@@ -78,14 +78,15 @@ export function ProjectCard({
 
       <div className="project-card-progress">
         <div className="progress-meta">
-          <span>Overall progress</span>
+          <span>{APPROVED_PROGRESS_LABEL}</span>
           <strong>{progress.percent}%</strong>
         </div>
         <ProgressBar percent={progress.percent} />
         <StageDots status={project.status} signals={lifecycle} />
-        {gaps > 0 && (
+        {outstanding && (
           <span className="lc-gap-note">
-            <IconAlert width={12} height={12} /> Evidence gap in {gaps} earlier {gaps === 1 ? 'stage' : 'stages'}
+            <IconAlert width={12} height={12} /> {progress.finished ? 'Approved, but ' : ''}
+            {outstanding}
           </span>
         )}
       </div>
