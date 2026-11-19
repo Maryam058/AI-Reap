@@ -51,6 +51,10 @@ public sealed class RequirementAnalysisRecord
     public List<Guid> AcceptedQuestionIds { get; set; } = new();
     public List<RejectedClarification> Rejected { get; set; } = new();
     public int SkippedDuplicates { get; set; }
+
+    // Rejected candidates (also listed in Rejected) whose possible gap no saved question covers, kept for a
+    // reviewer (ClarificationCandidateValidator.HeldForReview). Null on records made before it was kept.
+    public List<HeldClarification>? HeldForReview { get; set; }
 }
 
 public static class RequirementAnalysisRecords

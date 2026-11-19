@@ -35,9 +35,12 @@ public sealed record RuleState(string Attribute, IReadOnlySet<string> AttributeT
 //                       exception, a precedence, a scope), else null.
 //   DifferentSubjects   the shared words name different things ("Referral notifications" / "Invoice
 //                       notifications"), else null.
+//   SameRule            both passages state the same rule in different words ("must be approved by the
+//                       line manager" / "the line manager authorises every ..."), else null.
 public sealed record RuleRelation(
     RuleStatement First, RuleStatement Second, IReadOnlyList<string> SharedSubject,
-    string? ExclusiveConditions, string? Conflict, RuleResolution? Resolution, string? DifferentSubjects = null);
+    string? ExclusiveConditions, string? Conflict, RuleResolution? Resolution, string? DifferentSubjects = null,
+    string? SameRule = null);
 
 public sealed record RuleResolution(int Line, string Text, string Marker);
 
@@ -94,25 +97,60 @@ public static partial class RuleRelations
             OutcomeStates: States(outcome),
             Context: context,
             InheritedStates: inheritedStates,
-            Scope: Scopes(condition, scoping),
+            Scope: Scopes(condition, Subject(outcome), scoping),
             ExplicitException: ExceptionWording().IsMatch(sentence) || scoping.Any(c => c.Kind is "lead-in" or "scope" && ExceptionWording().IsMatch(c.Text)));
     }
 
-    public static RuleRelation Compare(RuleStatement first, RuleStatement second, IEnumerable<(int Line, string Text)> elsewhere)
+    // aliases: terms the source itself says are the same thing (TermAliases), merged on both sides.
+    public static RuleRelation Compare(
+        RuleStatement first, RuleStatement second, IEnumerable<(int Line, string Text)> elsewhere, TermAliases? aliases = null)
     {
-        var firstTerms = ClarificationCandidateValidator.Terms(first.Text);
-        var secondTerms = ClarificationCandidateValidator.Terms(second.Text);
+        aliases ??= TermAliases.None;
+        var others = elsewhere.ToList();
+        var firstTerms = aliases.Canon(ClarificationCandidateValidator.Terms(first.Text));
+        var secondTerms = aliases.Canon(ClarificationCandidateValidator.Terms(second.Text));
         var shared = firstTerms.Where(t => secondTerms.Contains(t) && !t.Any(char.IsDigit)).ToHashSet(StringComparer.Ordinal);
+        var conflict = Conflict(first, second, firstTerms, secondTerms);
+        var exclusive = ExclusiveConditions(first, second, others, aliases);
         return new RuleRelation(
-            first, second, Display(first.Text, shared),
-            ExclusiveConditions(first, second), Conflict(first, second),
-            Resolve(first, second, firstTerms, secondTerms, elsewhere),
-            DifferentSubjects(first, second, shared));
+            first, second, Display(first.Text, shared, aliases),
+            exclusive, conflict,
+            Resolve(first, second, firstTerms, secondTerms, others, aliases),
+            DifferentSubjects(first, second, shared, aliases),
+            SameRule(first, second, firstTerms, secondTerms, conflict, exclusive));
+    }
+
+    // The scope distinctions a text states ("new", "amended", "resubmission" ...), one value per dimension
+    // (a dimension written both ways is left out) - for comparing two questions' conditions.
+    public static IReadOnlyDictionary<string, string> ScopesOf(string? text) =>
+        Scopes(text ?? string.Empty, string.Empty, []).ToDictionary(s => s.Key, s => s.Value.Value, StringComparer.Ordinal);
+
+    // The attributes a text tests or sets ("'Is Careway' is not enabled", "Body Side = Bilateral").
+    public static IReadOnlyList<RuleState> StatesOf(string? text) => States(text ?? string.Empty);
+
+    // ---- same rule ---------------------------------------------------------------------------------
+
+    public const double SameRuleSimilarity = 0.6;
+
+    // Two passages that say the same thing in other words: mostly the same terms (after synonyms, phrases
+    // and the source's own aliases), the same polarity, and nothing that clashes or separates them.
+    private static string? SameRule(RuleStatement a, RuleStatement b, HashSet<string> aTerms, HashSet<string> bTerms, string? conflict, string? exclusive)
+    {
+        if (conflict is not null || exclusive is not null || a.NegativeOutcome != b.NegativeOutcome)
+        {
+            return null;
+        }
+
+        var aWords = aTerms.Where(t => !t.Any(char.IsDigit)).ToHashSet(StringComparer.Ordinal);
+        var bWords = bTerms.Where(t => !t.Any(char.IsDigit)).ToHashSet(StringComparer.Ordinal);
+        return Jaccard(aWords, bWords) >= SameRuleSimilarity
+            ? $"both say: {string.Join(", ", Display(a.Text, aWords.Where(bWords.Contains).ToHashSet(StringComparer.Ordinal), TermAliases.None).Take(6))}"
+            : null;
     }
 
     // ---- 2. conditions -----------------------------------------------------------------------------
 
-    private static string? ExclusiveConditions(RuleStatement a, RuleStatement b)
+    private static string? ExclusiveConditions(RuleStatement a, RuleStatement b, List<(int Line, string Text)> elsewhere, TermAliases aliases)
     {
         // States the rule tests itself and those it inherits ("'Is Careway' is enabled" in its heading).
         foreach (var x in a.ConditionStates.Concat(a.InheritedStates))
@@ -142,10 +180,11 @@ public static partial class RuleRelations
         }
 
         // A general rule and a rule for a narrower case: the narrower one is an exception to the general
-        // one only when it says so in words, or when its condition is an explicit on/off setting ("If
-        // 'Is Careway' is disabled, referrals are not sent"). Any other condition is not assumed to
-        // settle the general rule: "Wrist/hand is not supported" against "If Body Side = Bilateral ...
-        // Wrist, call the API twice" stays a question.
+        // one only when it says so in words, or when its condition is an explicit on/off setting that is
+        // established to govern what the general rule is about ("If 'Is Careway' is disabled, referrals are
+        // not sent" against a rule about sending to Careway). Any other condition is not assumed to settle
+        // the general rule: "Wrist/hand is not supported" against "If Body Side = Bilateral ... Wrist, call
+        // the API twice" stays a question, and so does a setting nothing links to the general rule.
         if (a.ExplicitException != b.ExplicitException)
         {
             var exception = a.ExplicitException ? a : b;
@@ -155,11 +194,16 @@ public static partial class RuleRelations
         if ((a.Condition.Length == 0) != (b.Condition.Length == 0))
         {
             var (general, specific) = a.Condition.Length == 0 ? (a, b) : (b, a);
-            var generalTerms = ClarificationCandidateValidator.Terms(general.Text);
-            if (specific.ConditionStates.Any(s => s.Positive is not null)
-                && ConditionTerms(specific.Condition).Any(t => !generalTerms.Contains(t)))
+            var generalTerms = aliases.Canon(ClarificationCandidateValidator.Terms(general.Text));
+            if (ConditionTerms(specific.Condition).Any(t => !generalTerms.Contains(t)))
             {
-                return $"one is the general rule and the other applies only when \"{Shorten(specific.Condition.Trim())}\", an explicit setting that makes it an exception";
+                foreach (var setting in specific.ConditionStates.Where(s => s.Positive is not null))
+                {
+                    if (Governs(setting, general, specific, generalTerms, elsewhere, aliases) is { } how)
+                    {
+                        return $"one is the general rule and the other applies only when \"{Shorten(specific.Condition.Trim())}\", an explicit setting that makes it an exception ({how})";
+                    }
+                }
             }
         }
 
@@ -192,6 +236,47 @@ public static partial class RuleRelations
         return item is null ? string.Empty : $"; \"{Shorten(item.Text)}\" is inherited from the {item.Kind} at line {item.Line + 1}";
     }
 
+    // How a setting is known to govern what a rule is about, else null (not established, so it settles
+    // nothing). Similar wording alone never links them ("'Approval emails'" shares "approval" with a rule
+    // about leave approval, and says nothing about whether it decides that approval). Established when:
+    //   another passage says the setting controls what the rule concerns ("The 'Fast track' setting
+    //   controls whether line manager approval is needed."); or
+    //   the setting's own rule reverses the general rule's own action - opposite polarity, and the first
+    //   clause of its outcome uses nothing but the general rule's words (at least two besides the name) -
+    //   and the setting is named wholly after what the general rule is about ("If 'Is Careway' is
+    //   disabled, referrals are not sent to Careway" against "Axis sends referrals to Careway"). Both are
+    //   required, never the name alone. A rule that states a different action under the setting ("If 'Is
+    //   Careway' is enabled, Wrist referrals are sent to the API twice" against "Wrist/hand is not
+    //   supported by Careway") reverses nothing: it clashes, and the question stays.
+    private static string? Governs(
+        RuleState setting, RuleStatement general, RuleStatement specific, HashSet<string> ruleTerms,
+        List<(int Line, string Text)> elsewhere, TermAliases aliases)
+    {
+        var name = aliases.Canon(setting.AttributeTerms.ToHashSet(StringComparer.Ordinal));
+        var action = aliases.Canon(ClarificationCandidateValidator.Terms(Regex.Split(specific.Outcome, @"[,;]|\b(?:and|but|then)\b")[0]));
+        action.ExceptWith(name);
+        if (name.Count > 0 && name.IsSubsetOf(ruleTerms) && general.NegativeOutcome != specific.NegativeOutcome
+            && action.Count >= 2 && action.IsSubsetOf(ruleTerms))
+        {
+            return $"the setting \"{setting.Attribute.Trim('\'', '"', ' ')}\" is named after what the general rule is about and its own rule switches that behaviour the other way";
+        }
+
+        // What it controls - the words after "controls" - must name the rule's own subject (two of its
+        // terms besides the setting's name): "controls reminder emails sent to managers" is about reminder
+        // emails, not about the approval a rule on managers' approval concerns.
+        foreach (var (line, text) in elsewhere)
+        {
+            var terms = aliases.Canon(ClarificationCandidateValidator.Terms(text));
+            if (name.Count > 0 && name.IsSubsetOf(terms) && Control().Match(text) is { Success: true } control
+                && aliases.Canon(ClarificationCandidateValidator.Terms(text[(control.Index + control.Length)..])).Count(t => ruleTerms.Contains(t) && !name.Contains(t)) >= 2)
+            {
+                return $"line {line + 1} says the setting controls it: \"{Shorten(text)}\"";
+            }
+        }
+
+        return null;
+    }
+
     private static string DimensionName(string dimension) => dimension switch
     {
         "workflow" => "workflows",
@@ -202,10 +287,11 @@ public static partial class RuleRelations
         _ => "scopes"
     };
 
-    // The scope distinctions a rule states: in its own condition first, then in each inherited item (a
-    // heading's title, lead-in, scope sentence, table caption). A dimension stated with two values is
-    // ambiguous and dropped.
-    private static Dictionary<string, RuleScope> Scopes(string condition, IReadOnlyList<InheritedContext> context)
+    // The scope distinctions a rule states: in its own condition first, then its subject ("Modified
+    // referrals" in "Modified referrals do not need a GP letter"), then each inherited item (a heading's
+    // title, lead-in, scope sentence, table caption). A dimension stated with two values is ambiguous and
+    // dropped.
+    private static Dictionary<string, RuleScope> Scopes(string condition, string subject, IReadOnlyList<InheritedContext> context)
     {
         var found = new List<RuleScope>();
         void Read(string text, string from)
@@ -220,6 +306,7 @@ public static partial class RuleRelations
         }
 
         Read(condition, "its own condition");
+        Read(subject, "its subject");
         foreach (var c in context)
         {
             Read(c.Kind == "heading" ? HeadingTitle(c.Text) : c.Text, $"{c.Kind} \"{Shorten(c.Text)}\", line {c.Line + 1}");
@@ -232,16 +319,16 @@ public static partial class RuleRelations
 
     private static readonly (string Dimension, string Value, Regex Pattern)[] ScopeWords =
     [
-        ("workflow", "create", new(@"\b(?:new|creat(?:e|es|ed|ing|ion))\b", RegexOptions.IgnoreCase)),
-        ("workflow", "update", new(@"\b(?:amend(?:s|ed|ing|ments?)?|updat(?:e|es|ed|ing)|modif(?:y|ies|ied|ications?)|chang(?:e|es|ed)|edit(?:s|ed)?|existing)\b", RegexOptions.IgnoreCase)),
-        ("submission", "initial", new(@"\b(?:initial|first|original) (?:submissions?|requests?|referrals?|applications?)\b|\bfirst[- ]time\b", RegexOptions.IgnoreCase)),
-        ("submission", "resubmission", new(@"\bre-?submi(?:t|ts|tted|ssions?)\b", RegexOptions.IgnoreCase)),
-        ("decision", "accepted", new(@"\b(?:accepted|approved)\b", RegexOptions.IgnoreCase)),
-        ("decision", "rejected", new(@"\b(?:rejected|declined|denied|refused)\b", RegexOptions.IgnoreCase)),
+        ("workflow", "create", new(@"\b(?:new|newly|creat(?:e|es|ed|ing|ion))\b", RegexOptions.IgnoreCase)),
+        ("workflow", "update", new(@"\b(?:amend(?:s|ed|ing|ments?)?|updat(?:e|es|ed|ing)|modif(?:y|ies|ied|ications?)|chang(?:e|es|ed)|edit(?:s|ed)?|revis(?:e|es|ed|ing|ions?)|alter(?:s|ed|ations?)?|existing)\b", RegexOptions.IgnoreCase)),
+        ("submission", "initial", new(@"\b(?:initial|first|original) (?:submissions?|requests?|referrals?|applications?)\b|\bfirst[- ]time\b|\bsubmitted for the first time\b", RegexOptions.IgnoreCase)),
+        ("submission", "resubmission", new(@"\bre-?submi(?:t|ts|tted|tting|ssions?)\b|\bsubmit(?:s|ted|ting)? (?:\w+ )?again\b|\bsent again\b|\bsecond submission\b", RegexOptions.IgnoreCase)),
+        ("decision", "accepted", new(@"\b(?:accepted|approved|authori[sz]ed|granted)\b", RegexOptions.IgnoreCase)),
+        ("decision", "rejected", new(@"\b(?:rejected|declined|denied|refused|turned down)\b", RegexOptions.IgnoreCase)),
         ("laterality", "individual", new(@"\b(?:individual|unilateral|single[- ]sided)\b", RegexOptions.IgnoreCase)),
         ("laterality", "bilateral", new(@"\bbilateral\b", RegexOptions.IgnoreCase)),
-        ("obligation", "mandatory", new(@"\b(?:mandatory|compulsory)\b", RegexOptions.IgnoreCase)),
-        ("obligation", "optional", new(@"\boptional\b", RegexOptions.IgnoreCase))
+        ("obligation", "mandatory", new(@"(?<!\bnot )\b(?:mandatory|compulsory|obligatory|required)\b", RegexOptions.IgnoreCase)),
+        ("obligation", "optional", new(@"\b(?:optional|not (?:mandatory|compulsory|obligatory|required))\b", RegexOptions.IgnoreCase))
     ];
 
     // "## 4.2 Referral amendments" -> "Referral amendments".
@@ -253,16 +340,16 @@ public static partial class RuleRelations
     // A shared word each rule qualifies differently - in its own text or its heading/caption - with a
     // qualifier the other rule never mentions: "Referral notifications" and "Invoice notifications",
     // "approved leave requests" and "draft leave requests" are different things.
-    private static string? DifferentSubjects(RuleStatement a, RuleStatement b, HashSet<string> shared)
+    private static string? DifferentSubjects(RuleStatement a, RuleStatement b, HashSet<string> shared, TermAliases aliases)
     {
         var aWords = Surroundings(a);
         var bWords = Surroundings(b);
-        var aAll = ClarificationCandidateValidator.Terms(string.Join(" ", aWords));
-        var bAll = ClarificationCandidateValidator.Terms(string.Join(" ", bWords));
+        var aAll = aliases.Canon(ClarificationCandidateValidator.Terms(string.Join(" ", aWords)));
+        var bAll = aliases.Canon(ClarificationCandidateValidator.Terms(string.Join(" ", bWords)));
         foreach (var term in shared)
         {
-            var aQualifiers = Qualifiers(aWords, term).Where(q => !bAll.Contains(q.Term)).ToList();
-            var bQualifiers = Qualifiers(bWords, term).Where(q => !aAll.Contains(q.Term)).ToList();
+            var aQualifiers = Qualifiers(aWords, term, aliases).Where(q => !bAll.Contains(q.Term)).ToList();
+            var bQualifiers = Qualifiers(bWords, term, aliases).Where(q => !aAll.Contains(q.Term)).ToList();
             if (aQualifiers.Count > 0 && bQualifiers.Count > 0)
             {
                 return $"\"{aQualifiers[0].Phrase}\" against \"{bQualifiers[0].Phrase}\"";
@@ -278,19 +365,19 @@ public static partial class RuleRelations
 
     // The content word written just before the term ("Referral notifications" -> referral), per text -
     // within one phrase: "for the client, referrals" does not make "client" a qualifier of "referrals".
-    private static IEnumerable<(string Term, string Phrase)> Qualifiers(List<string> texts, string term)
+    private static IEnumerable<(string Term, string Phrase)> Qualifiers(List<string> texts, string term, TermAliases aliases)
     {
         foreach (var text in texts.SelectMany(t => Regex.Split(t, @"[,;:.!?()\[\]]|\s[-–]\s")))
         {
             var words = Word().Matches(text).Select(m => m.Value).ToList();
             for (var i = 1; i < words.Count; i++)
             {
-                if (ClarificationCandidateValidator.Terms(words[i]).FirstOrDefault() != term)
+                if (Term(words[i], aliases) != term)
                 {
                     continue;
                 }
 
-                var before = ClarificationCandidateValidator.Terms(words[i - 1]).FirstOrDefault();
+                var before = Term(words[i - 1], aliases);
                 if (before is not null && before != term && !before.Any(char.IsDigit))
                 {
                     yield return (before, $"{words[i - 1]} {words[i]}");
@@ -299,7 +386,10 @@ public static partial class RuleRelations
         }
     }
 
-    private static bool SameAttribute(RuleState x, RuleState y) =>
+    private static string? Term(string word, TermAliases aliases) =>
+        ClarificationCandidateValidator.Terms(word).FirstOrDefault() is { } t ? aliases.Canon(t) : null;
+
+    public static bool SameAttribute(RuleState x, RuleState y) =>
         x.AttributeTerms.Count > 0 && y.AttributeTerms.Count > 0
         && (x.AttributeTerms.IsSubsetOf(y.AttributeTerms) || y.AttributeTerms.IsSubsetOf(x.AttributeTerms));
 
@@ -312,7 +402,7 @@ public static partial class RuleRelations
 
     // ---- 3. outcomes -------------------------------------------------------------------------------
 
-    private static string? Conflict(RuleStatement a, RuleStatement b)
+    private static string? Conflict(RuleStatement a, RuleStatement b, HashSet<string> aTerms, HashSet<string> bTerms)
     {
         if (a.NegativeOutcome != b.NegativeOutcome)
         {
@@ -347,10 +437,18 @@ public static partial class RuleRelations
             }
         }
 
-        if (a.Restrictive || b.Restrictive)
+        // One restriction against a rule that allows: a clash. Two restrictions clash only when they
+        // restrict differently - "Only managers may approve leave" and "Leave may be approved by managers
+        // only" are the same restriction in other words.
+        if (a.Restrictive != b.Restrictive)
         {
             var restrictive = a.Restrictive ? a : b;
             return $"one rule restricts what the other allows (\"{Shorten(restrictive.Text)}\")";
+        }
+
+        if (a.Restrictive && b.Restrictive && Jaccard(aTerms, bTerms) < SameRuleSimilarity)
+        {
+            return $"the rules restrict it differently (\"{Shorten(a.Text)}\" against \"{Shorten(b.Text)}\")";
         }
 
         return null;
@@ -359,7 +457,7 @@ public static partial class RuleRelations
     // ---- 4. resolution elsewhere ---------------------------------------------------------------------
 
     private static RuleResolution? Resolve(
-        RuleStatement a, RuleStatement b, HashSet<string> aTerms, HashSet<string> bTerms, IEnumerable<(int Line, string Text)> elsewhere)
+        RuleStatement a, RuleStatement b, HashSet<string> aTerms, HashSet<string> bTerms, IEnumerable<(int Line, string Text)> elsewhere, TermAliases aliases)
     {
         var onlyA = aTerms.Where(t => !bTerms.Contains(t)).ToHashSet(StringComparer.Ordinal);
         var onlyB = bTerms.Where(t => !aTerms.Contains(t)).ToHashSet(StringComparer.Ordinal);
@@ -372,7 +470,7 @@ public static partial class RuleRelations
 
             // It names something only the first rule has and something only the second has, so it is
             // about these two rules - and it is not just one of them written again.
-            var terms = ClarificationCandidateValidator.Terms(text);
+            var terms = aliases.Canon(ClarificationCandidateValidator.Terms(text));
             if (terms.Overlaps(onlyA) && terms.Overlaps(onlyB) && Jaccard(terms, aTerms) < 0.8 && Jaccard(terms, bTerms) < 0.8)
             {
                 return new RuleResolution(line, text, marker.Value);
@@ -440,6 +538,14 @@ public static partial class RuleRelations
         return trailing.Success ? (trailing.Groups["c"].Value, trailing.Groups["o"].Value) : (string.Empty, sentence);
     }
 
+    // The words before the main verb of an outcome ("Modified referrals" in "Modified referrals do not
+    // need a GP letter"); empty when no modal or auxiliary is found within its first words.
+    private static string Subject(string outcome)
+    {
+        var m = SubjectEnd().Match(outcome);
+        return m.Success && m.Index <= 80 ? outcome[..m.Index] : string.Empty;
+    }
+
     private static List<RuleQuantity> Quantities(string text) => Quantity().Matches(text)
         .Select(m => (Value: m.Groups["n"].Value, Unit: ClarificationCandidateValidator.Terms(m.Groups["u"].Value).FirstOrDefault()))
         .Where(q => q.Unit is not null)
@@ -459,8 +565,9 @@ public static partial class RuleRelations
         {
             var attribute = m.Groups["a"].Value.Trim();
             var value = m.Groups["v"].Value.ToLowerInvariant();
-            states.Add(new RuleState(attribute, AttributeTerms(attribute), value,
-                value is "enabled" or "on" or "true" or "active" or "yes" or "ticked" or "checked" or "selected" or "set"));
+            var positive = value is "enabled" or "on" or "true" or "active" or "activated" or "yes" or "ticked" or "checked" or "selected" or "set";
+            var negated = m.Groups["not"].Success;
+            states.Add(new RuleState(attribute, AttributeTerms(attribute), negated ? $"not {value}" : value, negated ? !positive : positive));
         }
 
         foreach (Match m in Assignment().Matches(text))
@@ -480,13 +587,13 @@ public static partial class RuleRelations
     }
 
     // The words of the text whose terms are in the set, as written (first spelling of each term).
-    private static List<string> Display(string text, HashSet<string> terms)
+    private static List<string> Display(string text, HashSet<string> terms, TermAliases aliases)
     {
         var shown = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (Match word in Word().Matches(text))
         {
-            var term = ClarificationCandidateValidator.Terms(word.Value).FirstOrDefault();
+            var term = Term(word.Value, aliases);
             if (term is not null && terms.Contains(term) && seen.Add(term))
             {
                 shown.Add(word.Value);
@@ -537,8 +644,17 @@ public static partial class RuleRelations
     [GeneratedRegex(@"(?<n>\d+(?:[.,]\d+)?)\s*-?\s*(?:working |business |calendar )?(?<u>[\p{L}]{2,})", RegexOptions.IgnoreCase)]
     private static partial Regex Quantity();
 
-    [GeneratedRegex(@"['""‘’“”]?(?<a>[\p{L}][\p{L}\p{N} _/-]{0,40}?)['""‘’“”]?\s+(?:is|are|has been|have been|was)\s+(?:set to\s+)?(?<v>enabled|disabled|on|off|true|false|active|inactive|yes|no|ticked|unticked|checked|unchecked|selected|deselected|set|unset)\b", RegexOptions.IgnoreCase)]
+    // "'Is Careway' is disabled", "Auto-approve is turned off", "the setting is not enabled" (negated).
+    [GeneratedRegex(@"['""‘’“”]?(?<a>[\p{L}][\p{L}\p{N} _/-]{0,40}?)['""‘’“”]?\s+(?:is|are|has been|have been|was|were)\s+(?<not>not\s+)?(?:set to\s+|turned\s+|switched\s+)?(?<v>enabled|disabled|on|off|true|false|active|inactive|activated|deactivated|yes|no|ticked|unticked|checked|unchecked|selected|deselected|set|unset)\b", RegexOptions.IgnoreCase)]
     private static partial Regex Flag();
+
+    // Where the subject of an outcome ends: its modal or auxiliary verb.
+    [GeneratedRegex(@"\b(?:must|shall|should|will|may|can|cannot|need(?:s)? to|do not|does not|don't|doesn't|is|are|require[sd]?|need(?:s)?)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex SubjectEnd();
+
+    // A sentence saying a setting controls something.
+    [GeneratedRegex(@"\b(?:controls?|determines?|governs?|decides?|switch(?:es)? (?:on|off)|turns? (?:on|off)|enables?|disables?|bypass(?:es)?|skips?|overrides?)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex Control();
 
     [GeneratedRegex(@"(?<a>[\p{L}][\p{L}\p{N} _/-]{0,40}?)\s*(?:==|=|\bequals\b|\bis set to\b)\s*['""‘’“”]?(?<v>[\p{L}\p{N}_-]+)", RegexOptions.IgnoreCase)]
     private static partial Regex Assignment();

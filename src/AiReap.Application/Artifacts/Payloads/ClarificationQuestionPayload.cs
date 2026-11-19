@@ -43,6 +43,18 @@ public class ClarificationQuestionPayload
     // rules were compared - each rule's passage, condition, outcome and the context it inherits, every
     // item with its source line. Null on other questions and on questions made before it was recorded.
     public RuleComparisonPayload? RuleComparison { get; set; }
+
+    // Server-owned, set when the question is accepted (CqValidation-v4 onwards): what each validation
+    // check found - evidence, information gap, impact, conditions, cross-reference, assumptions,
+    // duplicates. A record of the checks, not a score. Null on questions made before it was recorded.
+    public List<QualityCheckPayload>? Assessment { get; set; }
+}
+
+public class QualityCheckPayload
+{
+    public string Criterion { get; set; } = string.Empty;
+    public string Result { get; set; } = string.Empty; // passed | failed | not-applicable
+    public string Detail { get; set; } = string.Empty;
 }
 
 public class RuleComparisonPayload

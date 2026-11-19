@@ -25,7 +25,9 @@ public record AnalyzeRequirementResult(
     IReadOnlyList<RejectedClarification>? RejectedCandidates = null,
     AnalysisRetrievalReport? Retrieval = null,
     // Regeneration only: how the new run relates to the questions already saved.
-    AnalysisReconciliation? Reconciliation = null)
+    AnalysisReconciliation? Reconciliation = null,
+    // Rejected candidates whose possible gap no question covers, kept for a reviewer (never saved as questions).
+    IReadOnlyList<HeldClarification>? HeldForReview = null)
 {
     public bool Stale => StaleReasons is { Count: > 0 };
 }

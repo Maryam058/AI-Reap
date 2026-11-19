@@ -21,14 +21,27 @@ public sealed record ExistingClarification(
 
 public sealed record CandidateRejection(string Code, string Message, string? RelatedCode = null, string? Location = null);
 
+// One criterion of a candidate's quality assessment: Result is passed | failed | not-applicable, Detail
+// what was found (the rejection message when it failed).
+public sealed record QualityCheck(string Criterion, string Result, string Detail);
+
+// A candidate rejected only as an unsupported assumption whose issue no other question covers, kept for
+// a reviewer (ClarificationCandidateValidator.HeldForReview): the question as asked, its located evidence,
+// the passage that denies its assumption (0-based line) and why it is held. Never rewritten or answered.
+public sealed record HeldClarification(
+    string Topic, string Question, string? Kind, IReadOnlyList<SourceReferencePayload> Evidence,
+    int DenialLine, string DenialText, string Location, string Note);
+
 // Outcome for one candidate: Accepted with its located evidence, or the reasons it was rejected.
+// Assessment: what each check found, for traceability (never a substitute for the checks).
 public sealed record CandidateVerdict(
     ClarificationCandidate Candidate,
     string? Kind,
     IReadOnlyList<SourceReferencePayload> Evidence,
     IReadOnlyList<string> RequirementRefs,
     IReadOnlyList<CandidateRejection> Rejections,
-    RuleRelation? Relation = null)
+    RuleRelation? Relation = null,
+    IReadOnlyList<QualityCheck>? Assessment = null)
 {
     public bool Accepted => Rejections.Count == 0;
 }
@@ -68,6 +81,12 @@ public sealed record CandidateVerdict(
 //                                               workflows; a scope only one rule states is unknown;
 //                          different-subjects   (contradiction) the shared words name different things
 //                                               ("Referral notifications" / "Invoice notifications");
+//                          same-rule            (contradiction) both passages state the same rule in
+//                                               other words ("must be approved by the line manager" /
+//                                               "the line manager authorises every leave request");
+//                        A setting settles a general rule only when it is established to govern it (its
+//                        name uses the rule's words, or a passage says it controls what the rule is
+//                        about); an unrelated setting is no reason to drop the question;
 //                          compatible-rules     (contradiction) both outcomes can hold together: neither
 //                                               refuses or restricts anything and no number or value
 //                                               differs - different behaviours are not a conflict;
@@ -76,6 +95,10 @@ public sealed record CandidateVerdict(
 //                        Two rules that overlap without anything saying how they interact (one refuses
 //                        an entity the other processes under an extra condition) are kept: that is the
 //                        unresolved relationship the question must ask about;
+//   unsupported-assumption  the question asks how/which/how many for something a passage of the source
+//                        says is not supported, not allowed or out of scope, without acknowledging it
+//                        ("How many API calls are made for a bilateral Wrist referral?" against "... is
+//                        not supported by Careway") - it must ask how the passages relate instead;
 //   unrelated            the question shares no content term with its own evidence or the headings of
 //                        the sections that evidence sits in. Requirement IDs and numbers do not count: a
 //                        shared "FR-012" or "3.2" does not show the question is about the passage;
@@ -109,7 +132,20 @@ public sealed record CandidateVerdict(
 //                        both set the same two (or more) passages against each other are one issue,
 //                        whatever their wording. When both ask "who", role filler words ("responsible",
 //                        "role", "person") are left out of the comparison, so "Who approves X?" and
-//                        "Which role is responsible for authorising X?" are one question.
+//                        "Which role is responsible for authorising X?" are one question. Never a match
+//                        when the two state different cases (DifferentConditions: different numbers,
+//                        workflows, settings, or each a qualifier the other lacks - "for contractors" /
+//                        "for employees"), or when only one states a real condition - a number, scope,
+//                        setting, named party or a source term for a particular case ("Who approves
+//                        expense claims?" does not cover "... over £500?"); padding the source never
+//                        uses ("in the system") is not a condition.
+// Every verdict carries an Assessment: per criterion what the checks found (a record, not a score).
+// A candidate rejected only as an unsupported assumption, whose passages no other question covers, is
+// held for review (HeldForReview) rather than lost; it is never rewritten or saved as a question.
+// Terms: light stemming, a short list of synonyms (approve/authorise, disable/deactivate, mandatory/
+// compulsory), multi-word phrases ("signed off" = approve, "turned off" = disable), entity names kept
+// apart where the stem would merge them (employer/employee, clinician/clinic), and the terms the source
+// itself says are the same (TermAliases: "Patient (also referred to as Client)").
 // Limits: all similarity is lexical (light stemming and a short list of synonyms - approve/authorise,
 // remove/delete, ...), so a paraphrase with other vocabulary can still pass the duplicate and
 // answered-in-source checks, and a passage that matches the words and the kind of answer without really
@@ -117,7 +153,7 @@ public sealed record CandidateVerdict(
 // questions are only compared against, never changed.
 public static partial class ClarificationCandidateValidator
 {
-    public const string Version = "CqValidation-v3";
+    public const string Version = "CqValidation-v4";
 
     public const double DuplicateSimilarity = 0.6;
     public const double TopicDuplicateSimilarity = 0.4;
@@ -140,22 +176,25 @@ public static partial class ClarificationCandidateValidator
             References = SourceReferenceIndex.Build(sourceId, SourceText);
             Evidence = SourceEvidenceIndex.Build(SourceText);
             Locator = new ClarificationEvidenceLocator(References, Evidence, SourceText);
-            Sentences = SplitSentences(SourceText);
+            Aliases = TermAliases.From(SourceText);
+            Sentences = SplitSentences(SourceText, Aliases);
             Lines = SourceReferenceIndex.Lines(SourceText);
             _document = new Lazy<RuleContextIndex>(() => RuleContextIndex.Build(SourceText));
+            _frequency = new Lazy<Dictionary<string, int>>(() => Sentences.Where(s => !s.Heading)
+                .SelectMany(s => s.Terms).GroupBy(t => t, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal));
             NormalizedSource = SourceEvidence.Normalize(SourceText);
             foreach (var e in existing)
             {
                 var kind = NormalizeKind(e.Kind);
                 var legacy = kind is null && e.EvidenceLines.Count == 0;
-                var terms = Terms(e.Question);
-                var context = Terms(e.Question);
-                context.UnionWith(Terms(e.Topic));
+                var terms = TermsOf(e.Question);
+                var context = TermsOf(e.Question);
+                context.UnionWith(TermsOf(e.Topic));
                 HashSet<string>? answered = null;
                 if (ClosedStatuses.Contains(e.Status) && !string.IsNullOrWhiteSpace(e.Answer))
                 {
                     answered = new HashSet<string>(context, StringComparer.Ordinal);
-                    answered.UnionWith(Terms(e.Answer));
+                    answered.UnionWith(TermsOf(e.Answer));
                 }
 
                 // Where the question points: its evidence, else (a pre-v3 question) its resolved links, or
@@ -171,9 +210,25 @@ public static partial class ClarificationCandidateValidator
                 }
 
                 _known.Add(new Known(AiResultMerge.Key(e.Question), terms, TopicKey(e.Topic), e.EvidenceLines.ToHashSet(),
-                    kind, e.Code, e.Status, context, answered, places, QuestionFocus(e.Question), legacy, Runs(e.EvidenceLines)));
+                    kind, e.Code, e.Status, context, answered, places, QuestionFocus(e.Question), legacy, Runs(e.EvidenceLines), e.Question));
             }
         }
+
+        // Terms the source itself says are the same thing (TermAliases); none unless it says so.
+        public TermAliases Aliases { get; }
+
+        // A text's terms with the source's own aliases merged ("client" read as "patient" only when the
+        // source states they are the same).
+        public HashSet<string> TermsOf(string? text) => Aliases.Canon(Terms(text));
+
+        // In how many sentences of the source (headings left out) a term occurs.
+        private readonly Lazy<Dictionary<string, int>> _frequency;
+
+        internal int Frequency(string term) => _frequency.Value.GetValueOrDefault(term);
+
+        // A term few sentences use, so it names something specific ("wrist") rather than the document's
+        // general subject ("referral", "Careway").
+        internal bool Specific(string term) => Frequency(term) <= Math.Max(2, Sentences.Count / 20);
 
         public string SourceText { get; }
         public SourceReferenceIndex References { get; }
@@ -192,10 +247,11 @@ public static partial class ClarificationCandidateValidator
         internal void Remember(ClarificationCandidate candidate, string? kind, IEnumerable<SourceReferencePayload> evidence)
         {
             var lines = LinesOf(evidence);
-            var context = Terms(candidate.Question);
-            context.UnionWith(Terms(candidate.Topic));
-            _known.Add(new Known(AiResultMerge.Key(candidate.Question), Terms(candidate.Question), TopicKey(candidate.Topic),
-                lines, kind, null, "Accepted in this run", context, null, SectionsOfLines(lines), QuestionFocus(candidate.Question), false, Runs(lines)));
+            var context = TermsOf(candidate.Question);
+            context.UnionWith(TermsOf(candidate.Topic));
+            _known.Add(new Known(AiResultMerge.Key(candidate.Question), TermsOf(candidate.Question), TopicKey(candidate.Topic),
+                lines, kind, null, "Accepted in this run", context, null, SectionsOfLines(lines), QuestionFocus(candidate.Question), false, Runs(lines),
+                candidate.Question));
         }
 
         // The innermost sections (table of contents left out) the lines sit in.
@@ -209,11 +265,12 @@ public static partial class ClarificationCandidateValidator
     // A question already saved for the source, or accepted earlier in this run (Code null). ContextTerms:
     // its question and topic; AnsweredTerms: those and its answer, when it is closed with one; Places: the
     // sections it is located in (empty when not known); Legacy: saved before v3, without kind or evidence;
-    // Passages: its evidence lines as separate passages (runs of consecutive lines).
+    // Passages: its evidence lines as separate passages (runs of consecutive lines); Question: as written,
+    // for the condition comparison (QuestionConditions).
     internal sealed record Known(
         string Key, HashSet<string> Terms, string? TopicKey, HashSet<int> Lines, string? Kind, string? Code, string Status,
         HashSet<string> ContextTerms, HashSet<string>? AnsweredTerms, IReadOnlyList<SourceSection> Places,
-        IReadOnlySet<string> Focus, bool Legacy, IReadOnlyList<HashSet<int>> Passages);
+        IReadOnlySet<string> Focus, bool Legacy, IReadOnlyList<HashSet<int>> Passages, string Question);
 
     // Lines grouped into passages: each run of consecutive line numbers is one.
     internal static List<HashSet<int>> Runs(IEnumerable<int> lines)
@@ -307,8 +364,8 @@ public static partial class ClarificationCandidateValidator
                 "A contradiction must quote both conflicting statements, found at different places in the source."));
         }
 
-        var questionTerms = Terms(question);
-        if (evidence.Count > 0 && !Relevant(questionTerms, evidence))
+        var questionTerms = context.TermsOf(question);
+        if (evidence.Count > 0 && !Relevant(questionTerms, evidence, question))
         {
             rejections.Add(new("unrelated", "The question shares no content with the evidence it cites."));
         }
@@ -319,10 +376,21 @@ public static partial class ClarificationCandidateValidator
             relation = CrossReference(context, candidate, kind, questionTerms, evidence, rejections);
         }
 
-        if (evidence.Count > 0 && kind is not "contradiction" && AnsweredElsewhere(context, candidate, questionTerms, evidence) is { } answer)
+        if (question.Length > 0 && UnsupportedAssumption(context, question, questionTerms) is { } denial)
         {
+            var section = context.SectionsOfLines([denial.Line]).FirstOrDefault();
+            var location = section is not null ? $"{section.HeadingLine.TrimStart('#', ' ')} (line {denial.Line + 1})" : $"line {denial.Line + 1}";
+            rejections.Add(new("unsupported-assumption",
+                $"The question takes for granted something the source denies at {location}: \"{Shorten(denial.Text)}\". " +
+                "Ask how the passages relate instead of assuming either one.", Location: location));
+        }
+
+        (string Location, string Text)? answer = null;
+        if (evidence.Count > 0 && kind is not "contradiction" && AnsweredElsewhere(context, candidate, questionTerms, evidence) is { } found)
+        {
+            answer = found;
             rejections.Add(new("answered-in-source",
-                $"The source already states this at {answer.Location}: \"{Shorten(answer.Text)}\"", Location: answer.Location));
+                $"The source already states this at {found.Location}: \"{Shorten(found.Text)}\"", Location: found.Location));
         }
 
         if (question.Length > 0 && DuplicateOf(context, candidate, kind, questionTerms, evidence) is { } duplicate)
@@ -334,7 +402,128 @@ public static partial class ClarificationCandidateValidator
                 : new("duplicate", $"Duplicate of {name}.", duplicate.Code));
         }
 
-        return new CandidateVerdict(candidate, kind, evidence, RequirementRefsOf(evidence), rejections, relation);
+        return new CandidateVerdict(candidate, kind, evidence, RequirementRefsOf(evidence), rejections, relation,
+            Assess(context, candidate, kind, evidence, relation, rejections));
+    }
+
+    // ---- quality assessment ----------------------------------------------------------------------
+
+    // What each check found, criterion by criterion - a record of the deterministic checks above, not a
+    // score: a candidate is accepted only when none of them failed, whatever this says.
+    private static List<QualityCheck> Assess(
+        Context context, ClarificationCandidate candidate, string? kind, IReadOnlyList<SourceReferencePayload> evidence,
+        RuleRelation? relation, List<CandidateRejection> rejections)
+    {
+        string[] Failed(params string[] codes) => rejections.Where(r => codes.Contains(r.Code)).Select(r => $"{r.Code}: {r.Message}").ToArray();
+        QualityCheck Check(string criterion, string passed, params string[] codes)
+        {
+            var failed = Failed(codes);
+            return new QualityCheck(criterion, failed.Length > 0 ? "failed" : "passed", failed.Length > 0 ? string.Join(" ", failed) : passed);
+        }
+
+        var located = evidence.Where(e => e.Line >= 0).Select(e => $"line {e.Line + 1}").Distinct().ToList();
+        var checks = new List<QualityCheck>
+        {
+            Check("question-form", "One specific question of a known kind, with a reason and an impact.",
+                "missing-fields", "not-a-question", "multiple-questions", "invalid-kind", "generic", "unrelated"),
+            Check("source-evidence", $"{located.Count} passage(s) found verbatim in the source ({string.Join(", ", located)}).",
+                "no-evidence", "ambiguous-location", "contradiction-needs-both-statements"),
+            Check("business-impact", "The impact on requirements, design, implementation or acceptance is stated.", "missing-fields"),
+            kind == "contradiction"
+                ? new QualityCheck("information-gap", "not-applicable", "A contradiction is checked by cross-referencing its passages, not by searching for an answer.")
+                : Check("information-gap", "No other passage of the source answers it.", "answered-in-source"),
+            Check("unsupported-assumption", "Nothing it takes for granted is denied by the source.", "unsupported-assumption"),
+            Check("duplicate", "No existing or earlier question asks about the same issue under the same conditions.", "duplicate", "already-answered")
+        };
+
+        if (relation is null)
+        {
+            checks.Add(new QualityCheck("cross-reference", "not-applicable", "The question does not set two passages against each other."));
+            checks.Add(new QualityCheck("condition-clarity", "not-applicable", "No rule comparison was needed."));
+            return checks;
+        }
+
+        string Conditions(RuleStatement r) =>
+            $"line {r.Line + 1}: condition {(r.Condition.Trim().Length > 0 ? $"\"{Shorten(r.Condition.Trim())}\"" : "none written")}" +
+            (r.Scope.Count > 0 ? $", scope {string.Join(", ", r.Scope.Values.Select(s => $"{s.Dimension}={s.Value} ({s.From})"))}" : ", scope unknown") +
+            (r.Context.Count > 0 ? $", {r.Context.Count} inherited context item(s)" : string.Empty);
+        checks.Add(Check("condition-clarity", $"{Conditions(relation.First)}; {Conditions(relation.Second)}.", "different-conditions"));
+        checks.Add(Check("cross-reference",
+            relation.Conflict is { } conflict ? $"The rules overlap and clash ({conflict}); nothing in the source says how they relate." : "Kept as an ambiguity between the passages.",
+            "no-shared-subject", "one-sided", "different-subjects", "same-rule", "compatible-rules", "resolved-in-source"));
+        return checks;
+    }
+
+    // ---- assumptions -------------------------------------------------------------------------------
+
+    // A question that asks how to carry something out ("How many API calls are made for a bilateral Wrist
+    // referral?") while a passage of the source says that thing is not supported, not allowed or out of
+    // scope ("... the injury type is not supported by Careway") takes an unconfirmed business decision for
+    // granted. Only a passage that applies without a setting or scope of its own counts (one that holds
+    // only "If 'Is Careway' is disabled" says nothing about other cases), and the question must name
+    // something specific to it - at least two of its terms, one of them used by few sentences of the
+    // source, so the document's general subject ("referral", "Careway") is not enough. A question that
+    // acknowledges the restriction ("not supported", "whether", "rejected", "which rule") or asks yes/no
+    // assumes nothing.
+    private static (int Line, string Text)? UnsupportedAssumption(Context context, string question, HashSet<string> questionTerms)
+    {
+        if (!Presupposing().IsMatch(question) || Acknowledges().IsMatch(question))
+        {
+            return null;
+        }
+
+        foreach (var sentence in context.Sentences.Where(s => !s.Heading && s.Table < 0 && Denial().IsMatch(s.Text)))
+        {
+            var rule = RuleRelations.Read(sentence.Text);
+            if (rule.ConditionStates.Count > 0 || RuleRelations.ScopesOf(rule.Condition).Count > 0)
+            {
+                continue;
+            }
+
+            var shared = sentence.Terms.Where(t => questionTerms.Contains(t) && !t.Any(char.IsDigit)).ToList();
+            if (shared.Count >= 2 && shared.Any(context.Specific))
+            {
+                return (sentence.Line, sentence.Text);
+            }
+        }
+
+        return null;
+    }
+
+    // A candidate turned down only for taking for granted what the source denies may still point at a
+    // genuine gap - whether its passage applies to the case the other passage excludes. When no accepted
+    // or existing question takes that up (none cites the denying passage), it is held for a reviewer,
+    // as asked and with both passages, instead of disappearing among the rejections. Nothing is rewritten
+    // or answered: the record says only which passages meet and that their relation is unstated. Call
+    // after Validate, whose accepted questions the context remembers.
+    public static List<HeldClarification> HeldForReview(Context context, IEnumerable<CandidateVerdict> verdicts)
+    {
+        var held = new List<HeldClarification>();
+        foreach (var verdict in verdicts)
+        {
+            if (verdict.Rejections.Count == 0 || verdict.Rejections.Any(r => r.Code != "unsupported-assumption"))
+            {
+                continue;
+            }
+
+            var question = verdict.Candidate.Question.Trim();
+            if (UnsupportedAssumption(context, question, context.TermsOf(question)) is not { } denial
+                || context.KnownQuestions.Any(k => k.Lines.Contains(denial.Line))
+                || held.Any(h => h.DenialLine == denial.Line && LinesOf(h.Evidence).SetEquals(LinesOf(verdict.Evidence))))
+            {
+                continue;
+            }
+
+            var location = verdict.Rejections[0].Location ?? $"line {denial.Line + 1}";
+            var cited = string.Join(", ", verdict.Evidence.Where(e => e.Line >= 0).Select(e => $"line {e.Line + 1}").Distinct());
+            held.Add(new HeldClarification(
+                verdict.Candidate.Topic, question, verdict.Kind, verdict.Evidence, denial.Line, denial.Text, location,
+                $"Not asked as written: it assumes something the source denies at {location}. No other question covers how " +
+                $"that passage relates to the cited evidence ({(cited.Length > 0 ? cited : "unlocated")}); a reviewer should " +
+                "decide whether to ask it neutrally."));
+        }
+
+        return held;
     }
 
     // ---- cross-reference -------------------------------------------------------------------------
@@ -353,7 +542,7 @@ public static partial class ClarificationCandidateValidator
         var cited = LinesOf(evidence);
         var relation = RuleRelations.Compare(a, b, context.Sentences
             .Where(s => !s.Heading && s.Table < 0 && !cited.Contains(s.Line))
-            .Select(s => (s.Line, s.Text)));
+            .Select(s => (s.Line, s.Text)), context.Aliases);
 
         var sameSection = first.Heading is { Length: > 0 } && first.Heading == second.Heading;
         string Place(SourceReferencePayload e) => e.Heading is { Length: > 0 } h
@@ -369,8 +558,8 @@ public static partial class ClarificationCandidateValidator
             }
             else
             {
-                var aTerms = Terms(a.Text);
-                var bTerms = Terms(b.Text);
+                var aTerms = context.TermsOf(a.Text);
+                var bTerms = context.TermsOf(b.Text);
                 var shared = aTerms.Where(bTerms.Contains).ToHashSet(StringComparer.Ordinal);
                 if (!questionTerms.Overlaps(shared) && !(questionTerms.Overlaps(aTerms) && questionTerms.Overlaps(bTerms)))
                 {
@@ -391,7 +580,12 @@ public static partial class ClarificationCandidateValidator
                     $"Both rules can hold: they apply under different conditions ({exclusive})."));
             }
 
-            if (relation.SharedSubject.Count > 0 && relation.Conflict is null)
+            if (relation.SameRule is { } same)
+            {
+                rejections.Add(new("same-rule",
+                    $"The passages at {Place(first)} and {Place(second)} state the same rule in different words ({same}), so they do not contradict each other."));
+            }
+            else if (relation.SharedSubject.Count > 0 && relation.Conflict is null)
             {
                 rejections.Add(new("compatible-rules",
                     $"The passages at {Place(first)} and {Place(second)} describe different behaviours that can both apply " +
@@ -493,9 +687,21 @@ public static partial class ClarificationCandidateValidator
 
     // Requirement IDs, section numbers and other numbers are left out of both sides.
     public static bool Relevant(string? question, IReadOnlyList<SourceReferencePayload> evidence) =>
-        Relevant(Terms(question), evidence);
+        Relevant(Terms(question), evidence, question);
 
-    private static bool Relevant(HashSet<string> questionTerms, IReadOnlyList<SourceReferencePayload> evidence)
+    private static bool Relevant(HashSet<string> questionTerms, IReadOnlyList<SourceReferencePayload> evidence, string? question = null)
+    {
+        if (RelevantTerms(questionTerms, evidence, semantic: true))
+        {
+            return true;
+        }
+
+        // Read the old way too (no phrases, no entity names), so the newer reading never makes a stored
+        // question lose the overlap with its evidence it had before.
+        return question is not null && RelevantTerms(Terms(question, semantic: false), evidence, semantic: false);
+    }
+
+    private static bool RelevantTerms(HashSet<string> questionTerms, IReadOnlyList<SourceReferencePayload> evidence, bool semantic)
     {
         var words = questionTerms.Where(t => !t.Any(char.IsDigit)).ToHashSet(StringComparer.Ordinal);
         if (words.Count == 0)
@@ -506,8 +712,8 @@ public static partial class ClarificationCandidateValidator
         var context = new HashSet<string>(StringComparer.Ordinal);
         foreach (var e in evidence)
         {
-            context.UnionWith(Terms(e.Excerpt));
-            context.UnionWith(Terms(e.Heading?.TrimStart('#', ' ')));
+            context.UnionWith(Terms(e.Excerpt, semantic));
+            context.UnionWith(Terms(e.Heading?.TrimStart('#', ' '), semantic));
         }
 
         return words.Overlaps(context);
@@ -533,7 +739,7 @@ public static partial class ClarificationCandidateValidator
         var question = candidate.Question.Trim();
         var focus = QuestionFocus(question);
         var evidenceLines = LinesOf(evidence);
-        var evidenceTerms = evidence.Select(e => Terms(e.Excerpt)).Where(t => t.Count > 0).ToList();
+        var evidenceTerms = evidence.Select(e => context.TermsOf(e.Excerpt)).Where(t => t.Count > 0).ToList();
         var evidenceWords = evidenceTerms.SelectMany(t => t).ToHashSet(StringComparer.Ordinal);
 
         string Locate(Sentence sentence)
@@ -666,8 +872,9 @@ public static partial class ClarificationCandidateValidator
         return focus.Contains("quantity") && Quantity().IsMatch(text);
     }
 
-    private static List<Sentence> SplitSentences(string text)
+    private static List<Sentence> SplitSentences(string text, TermAliases aliases)
     {
+        HashSet<string> Terms(string t) => aliases.Canon(ClarificationCandidateValidator.Terms(t));
         var sentences = new List<Sentence>();
         var lines = SourceReferenceIndex.Lines(text);
         List<string>? header = null;
@@ -758,6 +965,16 @@ public static partial class ClarificationCandidateValidator
                 continue;
             }
 
+            // Both ask "who": "responsible", "role", "person" add nothing to tell them apart.
+            var person = focus.Contains("person") && known.Focus.Contains("person");
+            var (mine, theirs) = person ? (WithoutRoleFillers(terms), WithoutRoleFillers(known.Terms)) : (terms, known.Terms);
+
+            // Different numbers, workflows or settings: different cases, however alike the words.
+            if (DifferentConditions(context, candidate.Question, known.Question, mine, theirs, strongOnly: true) is not null)
+            {
+                continue;
+            }
+
             // The same two (or more) passages set against each other: one issue, however it is worded.
             if (passages.Count >= 2 && known.Passages.Count >= 2
                 && passages.All(p => p.Overlaps(known.Lines)) && known.Passages.All(p => p.Overlaps(lines)))
@@ -765,10 +982,20 @@ public static partial class ClarificationCandidateValidator
                 return (known.Code, known.Status);
             }
 
-            // Both ask "who": "responsible", "role", "person" add nothing to tell them apart.
-            var similarity = focus.Contains("person") && known.Focus.Contains("person")
-                ? Jaccard(WithoutRoleFillers(terms), WithoutRoleFillers(known.Terms))
-                : Jaccard(terms, known.Terms);
+            // Each qualifies what it asks about differently ("for contractors" / "for employees").
+            if (DifferentConditions(context, candidate.Question, known.Question, mine, theirs, strongOnly: false) is not null)
+            {
+                continue;
+            }
+
+            // A question saved before v3 is located only by its links: one that points at another
+            // section than the candidate's evidence asks about another passage, however alike the words.
+            if (known.Legacy && places.Count > 0 && known.Places.Count > 0 && !SamePlace(places, known.Places))
+            {
+                continue;
+            }
+
+            var similarity = Jaccard(mine, theirs);
             if (similarity >= DuplicateSimilarity
                 || (topic is not null && topic == known.TopicKey && similarity >= TopicDuplicateSimilarity)
                 || (lines.Count > 0 && lines.SetEquals(known.Lines) && kind is not null && kind == known.Kind && similarity >= SameEvidenceSimilarity)
@@ -780,6 +1007,111 @@ public static partial class ClarificationCandidateValidator
         }
 
         return null;
+    }
+
+    // Why two similarly worded questions still ask about different cases, else null - so neither is
+    // dropped as a duplicate of the other (unknown is never taken as the same):
+    //   numbers   both name numbers and they differ ("claims over £500" / "claims over £1,000");
+    //   scope     the same workflow/scope dimension with different values ("new" / "amended referrals");
+    //   setting   the same setting tested both ways ("when 'Auto-approve' is on" / "... is off");
+    //   qualifier (strongOnly false) each has a term the other lacks that qualifies what it asks about -
+    //             the first content word of a phrase opened by for/of/from/by/when/if/during/over/under/
+    //             above/below/with/without/on/in/at, or a word written just before a word both share
+    //             ("contractor expense claims" / "employee expense claims", "approves" / "reviews").
+    //   one-sided (strongOnly false) only one question states a condition - a scope, a setting, or a
+    //             qualifier that is a number, a named party (EntityNouns) or a term the source uses for a
+    //             particular case (Context.Specific) - so it asks about a narrower case than the other.
+    //             A one-sided qualifier that is padding ("in the system", "final") is not a difference.
+    private static string? DifferentConditions(Context context, string a, string b, HashSet<string> aTerms, HashSet<string> bTerms, bool strongOnly)
+    {
+        var aNumbers = aTerms.Where(t => t.Any(char.IsDigit)).ToHashSet(StringComparer.Ordinal);
+        var bNumbers = bTerms.Where(t => t.Any(char.IsDigit)).ToHashSet(StringComparer.Ordinal);
+        if (aNumbers.Count > 0 && bNumbers.Count > 0 && !aNumbers.SetEquals(bNumbers))
+        {
+            return "numbers";
+        }
+
+        var aScopes = RuleRelations.ScopesOf(a);
+        var bScopes = RuleRelations.ScopesOf(b);
+        if (aScopes.Any(s => bScopes.TryGetValue(s.Key, out var v) && v != s.Value))
+        {
+            return "scope";
+        }
+
+        var bStates = RuleRelations.StatesOf(b);
+        if (RuleRelations.StatesOf(a).Any(x => bStates.Any(y => RuleRelations.SameAttribute(x, y) && x.Positive is { } px && y.Positive is { } py && px != py)))
+        {
+            return "setting";
+        }
+
+        if (strongOnly)
+        {
+            return null;
+        }
+
+        var onlyA = aTerms.Where(t => !bTerms.Contains(t)).ToHashSet(StringComparer.Ordinal);
+        var onlyB = bTerms.Where(t => !aTerms.Contains(t)).ToHashSet(StringComparer.Ordinal);
+        var shared = aTerms.Where(bTerms.Contains).ToHashSet(StringComparer.Ordinal);
+        var aQualifiers = QualifierTerms(context, a, shared).Where(onlyA.Contains).ToList();
+        var bQualifiers = QualifierTerms(context, b, shared).Where(onlyB.Contains).ToList();
+        if (aQualifiers.Count > 0 && bQualifiers.Count > 0)
+        {
+            return "qualifier";
+        }
+
+        // One question narrows the other ("Who approves expense claims?" / "... over £500?"): the narrow
+        // case may well have its own answer, so the general question does not cover it - when what narrows
+        // it is a real condition: a number, a workflow or other scope, a setting state, a named party, or a
+        // term the source itself uses for a particular case. Padding the source never uses ("in the
+        // system", "final approval") or its general vocabulary narrows nothing: the term overlap decides.
+        if (aScopes.Keys.Any(k => !bScopes.ContainsKey(k)) || bScopes.Keys.Any(k => !aScopes.ContainsKey(k)))
+        {
+            return "one-sided scope";
+        }
+
+        var aStates = RuleRelations.StatesOf(a);
+        if ((aStates.Count > 0) != (bStates.Count > 0))
+        {
+            return "one-sided setting";
+        }
+
+        // A source term narrows only when a qualifying phrase introduces it ("for employees"); a word just
+        // before a shared one is often the sentence's own subject ("the portal respond").
+        var phrased = QualifierTerms(context, a, shared, phrasesOnly: true).Where(onlyA.Contains)
+            .Concat(QualifierTerms(context, b, shared, phrasesOnly: true).Where(onlyB.Contains)).ToHashSet(StringComparer.Ordinal);
+        bool Narrows(string t) => t.Any(char.IsDigit) || EntityNouns.Contains(t) || (phrased.Contains(t) && context.Frequency(t) > 0 && context.Specific(t));
+        return aQualifiers.Concat(bQualifiers).Any(Narrows) ? "one-sided condition" : null;
+    }
+
+    private static readonly HashSet<string> QualifyingPrepositions = new(StringComparer.Ordinal)
+    {
+        "for", "of", "from", "by", "when", "if", "during", "over", "under", "above", "below", "with", "without", "on", "in", "at"
+    };
+
+    private static HashSet<string> QualifierTerms(Context context, string question, HashSet<string> shared, bool phrasesOnly = false)
+    {
+        var qualifiers = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var phrase in Regex.Split(question.ToLowerInvariant(), @"[,;:.!?()]"))
+        {
+            var words = Word().Matches(phrase).Select(m => m.Value).ToList();
+            var terms = words.Select(w => context.TermsOf(w).FirstOrDefault()).ToList();
+            for (var i = 0; i < words.Count; i++)
+            {
+                if (QualifyingPrepositions.Contains(words[i]))
+                {
+                    if (Enumerable.Range(i + 1, Math.Min(3, words.Count - i - 1)).Select(k => terms[k]).FirstOrDefault(t => t is not null) is { } first)
+                    {
+                        qualifiers.Add(first);
+                    }
+                }
+                else if (!phrasesOnly && terms[i] is { } term && i + 1 < words.Count && terms[i + 1] is { } next && shared.Contains(next) && !shared.Contains(term))
+                {
+                    qualifiers.Add(term);
+                }
+            }
+        }
+
+        return qualifiers;
     }
 
     // Words a "who" question uses only to ask for a person (stemmed as Terms stems them).
@@ -859,15 +1191,55 @@ public static partial class ClarificationCandidateValidator
         ["staff"] = "employ", ["worker"] = "employ",                                   // employee
         ["permit"] = "allow", ["permis"] = "allow",                                    // permit, permission
         ["retent"] = "retain", ["keep"] = "retain", ["kept"] = "retain",               // retention, keep
+        ["deacti"] = "disabl", ["inacti"] = "disabl",                                  // deactivate(d), inactive
+        ["activa"] = "enabl", ["activ"] = "enabl",                                     // activate(d), active, activation
+        ["compul"] = "mandat", ["obliga"] = "mandat",                                  // compulsory, obligatory
+        ["sent"] = "send",                                                             // sent (irregular past of send)
+    };
+
+    // Expressions of several words read as the one word they mean before terms are taken: "signed off"
+    // and "granted approval" are "approve", "turned off" is "disable". Only wording whose meaning does
+    // not depend on the domain is listed; "create" / "generate" / "produce" are deliberately not merged.
+    private static readonly (Regex Pattern, string Word)[] Phrases =
+    [
+        (new(@"\b(?:sign(?:s|ed|ing)?[- ]off(?: on)?|(?:grant(?:s|ed|ing)?|give(?:s|n)?|gave) (?:the |their |final )?approval(?: (?:for|of|to))?)\b", RegexOptions.Compiled), "approve"),
+        (new(@"\b(?:turn(?:s|ed|ing)?|switch(?:es|ed|ing)?|toggle(?:s|d)?) off\b", RegexOptions.Compiled), "disable"),
+        (new(@"\b(?:turn(?:s|ed|ing)?|switch(?:es|ed|ing)?|toggle(?:s|d)?) on\b", RegexOptions.Compiled), "enable"),
+        (new(@"\bbrand[- ]new\b", RegexOptions.Compiled), "new"),
+        (new(@"\bsubmit(?:s|ted|ting)? (?:it |them |the \w+ )?again\b|\bsent again\b", RegexOptions.Compiled), "resubmit")
+    ];
+
+    // Names of people or parties that the 6-letter stem would merge with a different word ("employer"
+    // with "employee", "clinician" with "clinic", "referrer" with "referral", "applicant" with
+    // "application"): each is kept as its own term so different entities are never read as one.
+    private static readonly HashSet<string> EntityNouns = new(StringComparer.Ordinal)
+    {
+        "employer", "clinician", "contractor", "customer", "supplier", "provider", "consultant", "physician",
+        "applicant", "participant", "administrator", "practitioner", "referrer", "requester", "subscriber", "manager"
     };
 
     // Content words of a text, lightly stemmed (one suffix stripped, then at most 6 letters) so
     // "approve", "approval" and "approved" are one term, and near-synonyms mapped to one (Synonyms:
-    // "authorises" is "approve"). Numbers are kept as written.
-    public static HashSet<string> Terms(string? text)
+    // "authorises" is "approve"; Phrases: "signed off" is "approve"). Entity names the stem would merge
+    // with another word stay apart (EntityNouns). Numbers are kept as written. Terms a document itself
+    // links ("Patient (also referred to as Client)") are merged per source by TermAliases, not here.
+    public static HashSet<string> Terms(string? text) => Terms(text, semantic: true);
+
+    // semantic: false reads words without Phrases and EntityNouns (synonyms only ever merge, so they stay)
+    // - for the read-time relevance check, so no stored question loses an overlap it had under v3.
+    internal static HashSet<string> Terms(string? text, bool semantic)
     {
         var terms = new HashSet<string>(StringComparer.Ordinal);
-        foreach (Match match in Word().Matches((text ?? string.Empty).ToLowerInvariant()))
+        var lower = (text ?? string.Empty).ToLowerInvariant();
+        if (semantic)
+        {
+            foreach (var (pattern, replacement) in Phrases)
+            {
+                lower = pattern.Replace(lower, replacement);
+            }
+        }
+
+        foreach (Match match in Word().Matches(lower))
         {
             var word = match.Value;
             if (word.Any(char.IsDigit))
@@ -878,6 +1250,12 @@ public static partial class ClarificationCandidateValidator
 
             if (word.Length < 3 || StopWords.Contains(word))
             {
+                continue;
+            }
+
+            if (semantic && (EntityNouns.Contains(word) || (word.EndsWith('s') && EntityNouns.Contains(word[..^1]))))
+            {
+                terms.Add(word.EndsWith('s') && !EntityNouns.Contains(word) ? word[..^1] : word);
                 continue;
             }
 
@@ -947,6 +1325,19 @@ public static partial class ClarificationCandidateValidator
 
     [GeneratedRegex(@"\d|\b(?i:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|hundred|thousand|unlimited|no (?:limit|maximum|cap))\b")]
     private static partial Regex Quantity();
+
+    // A question that asks how, how many, which, when or who for something it takes as given. Open
+    // questions about behaviour ("What happens when ...", "How should ... be handled") presuppose nothing.
+    [GeneratedRegex(@"^\s*(?i:how|what|which|when|who|whom|where)\b(?!(?i:\s+(?:happens|should happen|is the expected|does the system do)\b))(?!.*\b(?i:handled?|handling|treated)\b)")]
+    private static partial Regex Presupposing();
+
+    // Wording that shows the question does not take the point as settled.
+    [GeneratedRegex(@"\b(?i:not|no|never|supports?|supported|whether|if|unless|despite|although|though|even|exceptions?|conflicts?|conflicting|contradict\w*|precedence|which rule|both|either|errors?|reject\w*|refus\w*|allowed|permitted|eligib\w*|exclud\w*|scope|valid\w*)\b")]
+    private static partial Regex Acknowledges();
+
+    // A passage that says something is not supported, not allowed or out of scope.
+    [GeneratedRegex(@"\b(?i:not supported|unsupported|not (?:allowed|permitted|eligible|accepted|available|offered|in scope)|out of scope|(?:is|are) excluded|cannot be (?:sent|submitted|processed|used|requested|booked|referred)|(?:must|shall|will) not be (?:sent|submitted|processed|accepted|used|referred))\b")]
+    private static partial Regex Denial();
 
     [GeneratedRegex(@"\b(?i:best practices?|industry standards?|any other|anything else|any (?:additional|further|more) (?:requirements?|features?|information|details?)|nice[- ]to[- ]have|future (?:enhancements?|releases?|versions?)|should we consider|do you have any|are there any (?:other|additional|further)|is there anything)\b")]
     private static partial Regex GenericQuestion();

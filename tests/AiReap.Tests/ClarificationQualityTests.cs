@@ -667,7 +667,7 @@ public class ClarificationQualityTests(ITestOutputHelper output)
 
         // The same list CompletenessFlagsTests asserts over HTTP (a SQL-backed test).
         Assert.Equal(["actors", "capabilities", "dataElements", "notes", "clarificationQuestions", "skippedDuplicates", "completeness",
-                "reused", "staleReasons", "analysisVersion", "analyzedAt", "coverage", "rejectedCandidates", "retrieval", "reconciliation", "stale"],
+                "reused", "staleReasons", "analysisVersion", "analyzedAt", "coverage", "rejectedCandidates", "retrieval", "reconciliation", "heldForReview", "stale"],
             json.Select(kv => kv.Key));
     }
 

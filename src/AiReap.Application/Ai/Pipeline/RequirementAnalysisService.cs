@@ -21,7 +21,7 @@ namespace AiReap.Application.Ai.Pipeline;
 //     and no saved question, answer or review is changed or removed.
 public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRunOperation
 {
-    internal const string PromptTemplateVersion = "RequirementAnalysis-v4";
+    internal const string PromptTemplateVersion = "RequirementAnalysis-v5";
 
     // Project-document retrieval per accepted question (KnowledgeRetriever): at most this many queries per
     // run, and only passages at or above the score are attached - as material a reviewer may want to see,
@@ -62,6 +62,19 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
           6. Check that the same issue is not already asked by another of your questions.
           7. Ask only when the answer is needed to implement or test the system correctly.
         Mentioning the same word in two places is never a reason to ask by itself.
+
+        Before keeping any question, verify all five:
+          a. it rests on passages actually written in the text;
+          b. it does not take for granted a business decision the text has not made - if one passage
+             says something is unsupported, excluded or not allowed, never ask how to process it as if
+             it were supported; ask how the passages relate instead;
+          c. its answer is not given anywhere in the text, in any wording;
+          d. the documented conditions (headings, list lead-ins, tables, settings, workflows) do not
+             already separate the rules;
+          e. a business owner's answer is genuinely needed to implement or test the requirement.
+        Treat different words as the same thing only when they clearly mean the same in this text
+        (approve / authorise); never assume two names are interchangeable (patient / client) unless the
+        text says so, and keep different entities, workflows and conditions apart.
 
         Then list in missingInformation ONLY the clarification questions that are genuinely needed. A
         question is justified only by a material, unresolved issue in the text, of one of these kinds:
@@ -216,7 +229,8 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
         record.Coverage,
         record.Rejected,
         record.Retrieval,
-        record.Reconciliation);
+        record.Reconciliation,
+        record.HeldForReview);
 
     // One save (ArtifactPersistence): the accepted questions, their versions and fingerprints, the raw
     // response audit rows and the analysis record. Validation runs inside the save's preparation, so a
@@ -291,7 +305,8 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
                     SourceEvidence = verdict.Evidence.ToList(),
                     RequirementRefs = verdict.RequirementRefs.ToList(),
                     RelatedDocuments = related.TryGetValue(AiResultMerge.Key(verdict.Candidate.Question), out var passages) ? passages : null,
-                    RuleComparison = Comparison(verdict.Relation)
+                    RuleComparison = Comparison(verdict.Relation),
+                    Assessment = verdict.Assessment?.Select(c => new QualityCheckPayload { Criterion = c.Criterion, Result = c.Result, Detail = c.Detail }).ToList()
                 };
 
                 var artifact = new Artifact
@@ -350,7 +365,8 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
                 Reconciliation = regenerated ? Reconcile(existing, rejected) : null,
                 AcceptedQuestionIds = created,
                 Rejected = rejected,
-                SkippedDuplicates = skipped
+                SkippedDuplicates = skipped,
+                HeldForReview = ClarificationCandidateValidator.HeldForReview(context, verdicts) is { Count: > 0 } held ? held : null
             };
 
             GenerationSupport.AddExecutions(
@@ -362,9 +378,9 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
 
         _logger.LogInformation(
             "RequirementAnalysis for source {SourceId}: {Candidates} candidate question(s), {Accepted} accepted, {Rejected} rejected " +
-            "({Skipped} duplicates of saved questions); coverage {Coverage}; project-document retrieval {Retrieval}.",
+            "({Skipped} duplicates of saved questions, {Held} held for review); coverage {Coverage}; project-document retrieval {Retrieval}.",
             source.Id, candidates.Count, questionArtifacts.Count, record.Rejected.Count, record.SkippedDuplicates,
-            coverage.Status, retrieval.ProjectDocuments);
+            record.HeldForReview?.Count ?? 0, coverage.Status, retrieval.ProjectDocuments);
 
         return (record, questionArtifacts);
     }

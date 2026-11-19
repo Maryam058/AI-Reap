@@ -115,8 +115,24 @@ public sealed partial class RuleContextIndex
             return new TableRowReading(reading, string.Empty, reading);
         }
 
-        var condition = string.Join(" and ", pairs.Except(outcome).Where(p => p.Header.Length > 0).Select(p => $"{p.Header} = {p.Cell}"));
+        // A cell holding a nested table (written "a, b; c, d" by the Word extraction) has no single value,
+        // so it is no condition: which of its rows applies is unknown, never its first value.
+        var condition = string.Join(" and ", pairs.Except(outcome).Where(p => p.Header.Length > 0 && !NestedTable(p.Cell)).Select(p => $"{p.Header} = {p.Cell}"));
         return new TableRowReading(reading, condition, string.Join("; ", outcome.Select(p => p.Cell)));
+    }
+
+    // A table inside a cell as DocxStructure writes it: two or more rows joined by "; ", each with the
+    // same number (one or more) of ", " cell breaks.
+    internal static bool NestedTable(string cell)
+    {
+        var rows = cell.Split("; ");
+        if (rows.Length < 2)
+        {
+            return false;
+        }
+
+        var breaks = rows.Select(r => r.Split(", ").Length - 1).ToList();
+        return breaks[0] >= 1 && breaks.All(b => b == breaks[0]);
     }
 
     // ---- headings ----------------------------------------------------------------------------------
@@ -227,14 +243,16 @@ public sealed partial class RuleContextIndex
         }
     }
 
-    // The caption just above a table (one blank line allowed): "Table 3: ..." or a line ending in ":".
+    // The caption just above a table (one blank line allowed): "Table 3: ...", a line ending in ":", or a
+    // bold title line ("**Bilateral processing**").
     private int? Caption(int header)
     {
         var i = header - 1;
         if (i >= 0 && _lines[i].Trim().Length == 0) i--;
         if (i < 0) return null;
         var line = _lines[i].Trim();
-        return Cells(line) is null && line.Length > 0 && (Regex.IsMatch(line, @"^(?i:table)\s+[\w.]+") || line.EndsWith(':')) ? i : null;
+        return Cells(line) is null && line.Length > 0
+            && (Regex.IsMatch(line, @"^(?i:table)\s+[\w.]+") || line.EndsWith(':') || Regex.IsMatch(line, @"^(\*\*|__)[^*_]{2,80}\1:?$")) ? i : null;
     }
 
     private static List<string>? Cells(string line)
@@ -294,8 +312,12 @@ public sealed partial class RuleContextIndex
     [GeneratedRegex(@"\b(?i:action|actions|outcome|result|response|behaviou?r|then|expected|handling|processing|system response|api call)\b")]
     private static partial Regex OutcomeColumn();
 
-    // "The following rules apply only when ...", "The rules in this section apply to amendments."
-    [GeneratedRegex(@"(?i:\b(?:the following|the rules below|the requirements below|these rules|the rules in this section|this section|in this section|the rest of this section)\b.*\bappl(?:y|ies)\b|\bappl(?:y|ies)\b.*\b(?:below|following)\b)")]
+    // "The following rules apply only when ...", "The rules in this section apply to amendments.", and a
+    // paragraph that introduces the workflow the section describes: "This section describes how amended
+    // referrals are processed.", "Amendments to an existing referral are handled as follows." A plain
+    // explanatory paragraph without such wording ("Referrals are amended by clinicians.") is not one:
+    // nothing says the rules after it are limited to what it mentions.
+    [GeneratedRegex(@"(?i:\b(?:the following|the rules below|the requirements below|these rules|the rules in this section|this section|in this section|the rest of this section)\b.*\bappl(?:y|ies)\b|\bappl(?:y|ies)\b.*\b(?:below|following)\b|^(?:this|the following) (?:section|subsection|chapter|workflow|process)\s+(?:describes|covers|defines|sets out|specifies|explains|outlines|details|deals with|relates to|concerns)\b|\b(?:are|is) (?:handled|processed|managed|performed|carried out|dealt with) as follows\b)")]
     private static partial Regex ScopeSetter();
 
     // "A referral is 'complex' when ...", "'Complex referral' means ...", "X is defined as ...".
