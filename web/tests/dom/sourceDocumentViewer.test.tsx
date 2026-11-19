@@ -4,7 +4,7 @@
 // extracted text with a reason, and on close returns focus to the link without moving the page.
 // The document renderers are replaced by fakes that build the text layer / paragraphs from the source
 // text, so what is tested is the navigation and highlighting, not pdf.js or docx-preview themselves.
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { ArtifactSummary, RequirementSource, SourceReference } from '../../src/api/types';
 import { ApiError } from '../../src/api/client';
@@ -65,12 +65,17 @@ vi.mock('../../src/lib/documentRenderers', () => ({
     const paragraphs = Array.from(article.querySelectorAll('p')).map((element) => ({ element, text: element.textContent ?? '' }));
     return { blocks: paragraphs, paragraphs };
   },
+  // jsdom has no layout, so no page is ever narrower than its pane (docxReflow.test.tsx covers the fit).
+  measureDocxLayout: () => null,
+  fitDocxToWidth: () => false,
+  markTableOverflow: () => {},
+  revealInTable: () => {},
 }));
 
 import { useState } from 'react';
 import { ClarificationQuestionCard } from '../../src/components/ClarificationQuestionCard';
 import { SourceDocumentViewer } from '../../src/components/SourceDocumentViewer';
-import { referenceAriaLabel } from '../../src/lib/sourceReferences';
+import { referenceAriaLabel, sourceLinkLabel } from '../../src/lib/sourceReferences';
 
 const ref = (over: Partial<SourceReference> = {}): SourceReference => ({
   label: 'Section 12.7',
@@ -455,6 +460,81 @@ describe('a question linked to the passage that raised it', () => {
     expect(document.querySelector('.src-line-cited')!.getAttribute('data-line')).toBe('10');
   });
 
+  test.each([
+    ['missing', 'Context for the missing information'],
+    ['ambiguous', 'Ambiguous statement'],
+    ['contradiction', 'Conflicting statement'],
+    ['undefined-rule', null],
+  ])('the viewer shows the complete question (%s) above the statement and the document', async (kind, purposeLabel) => {
+    api.getById.mockResolvedValue(source(null));
+    const question = `For the ${kind} case: which decline categories apply, and who may choose each one?`;
+    cardWith({ kind, question, sourceEvidence: [decline] });
+
+    openLink(/^Open “12\.7 Decline Categories”/);
+
+    const block = await screen.findByRole('region', { name: 'Clarification question' });
+    expect(block.querySelector('p')!.textContent).toBe(question);
+    const evidence = document.querySelector('.src-viewer-evidence')!;
+    if (purposeLabel) expect(evidence.textContent).toContain(purposeLabel);
+    // Order: question, then the statement, then the highlighted document.
+    expect(block.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(evidence.compareDocumentPosition(document.querySelector('.src-viewer-doc')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(document.querySelector('.src-line-cited')!.getAttribute('data-line')).toBe('10');
+  });
+
+  test('a conflict keeps the same question, below the passage tabs, while stepping between its statements', async () => {
+    api.getById.mockResolvedValue(source(null));
+    cardWith({ kind: 'contradiction', question: 'Are invoices or passwords the binding rule?', sourceEvidence: [invoices, passwords] });
+
+    openLink(/^Statement 2: Open “2 Security”/);
+
+    const tabs = await screen.findByRole('group', { name: 'Passages of this question' });
+    const block = screen.getByRole('region', { name: 'Clarification question' });
+    expect(tabs.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(block.textContent).toContain('Are invoices or passwords the binding rule?');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Passage 1 of 2 (1 Billing)' }));
+
+    expect(document.querySelector('.src-line-cited')!.getAttribute('data-line')).toBe('3');
+    expect(screen.getAllByRole('region', { name: 'Clarification question' })).toHaveLength(1);
+    expect(screen.getByRole('region', { name: 'Clarification question' }).textContent).toContain('Are invoices or passwords the binding rule?');
+  });
+
+  test('each card opens the viewer with its own question, never another one', async () => {
+    api.getById.mockResolvedValue(source(null));
+    const make = (id: string, question: string, evidence: SourceReference) =>
+      ({ id, code: id, requirementSourceId: SOURCE_ID, data: { question, clarificationStatus: 'Open', kind: 'ambiguous', sourceEvidence: [evidence] } }) as unknown as ArtifactSummary;
+    render(
+      <ul>
+        <ClarificationQuestionCard artifact={make('CQ-1', 'First question?', decline)} canAnswer={false} onAnswer={async () => {}} />
+        <ClarificationQuestionCard artifact={make('CQ-2', 'Second question?', invoices)} canAnswer={false} onAnswer={async () => {}} />
+      </ul>,
+    );
+
+    openLink(/^Open “1 Billing”/);
+    const block = await screen.findByRole('region', { name: 'Clarification question' });
+    expect(block.textContent).toContain('Second question?');
+    expect(block.textContent).not.toContain('First question?');
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    openLink(/^Open “12\.7 Decline Categories”/);
+    const again = await screen.findByRole('region', { name: 'Clarification question' });
+    expect(again.textContent).toContain('First question?');
+    expect(again.textContent).not.toContain('Second question?');
+  });
+
+  test('the viewer opened without a question (a plain section link) shows no question block', async () => {
+    api.getById.mockResolvedValue(source(null));
+    card(reason, [twelve]);
+
+    openLink(/^Section 12\.7: open/);
+
+    await screen.findByRole('dialog');
+    await waitFor(() => expect(document.querySelector('.src-viewer-doc')).toBeTruthy());
+    expect(screen.queryByRole('region', { name: 'Clarification question' })).toBeNull();
+  });
+
   test('a passage outside any section is linked without inventing a heading', () => {
     cardWith({ kind: 'ambiguous', sourceEvidence: [quoteAt(0, '', null, { heading: null })] });
 
@@ -505,5 +585,240 @@ describe('a question linked to the passage that raised it', () => {
     // The mocked API holds only the read endpoints: an analysis or regeneration call would have failed.
     expect(Object.keys(api).sort()).toEqual(['attachOriginal', 'getById', 'getOriginal']);
     expect(api.attachOriginal).not.toHaveBeenCalled();
+  });
+});
+
+// ---- several passages side by side (SourceDocumentViewer panels) ------------------------------------
+
+const roles = quoteAt(5, '3.2 User Roles', '3.2');
+const title = quoteAt(0, '', null, { heading: null });
+const FIVE = [invoices, passwords, decline, roles, title];
+const OTHER_ID = '0c3d9e21-4b8f-4a51-8d7e-5f1a2b3c4d5e';
+const OTHER_LINES = ['Careway Portal SRS', '4 Notifications', 'Reminders are sent by text message only.'];
+const otherSource = (): RequirementSource => ({ ...source(null), id: OTHER_ID, rawText: OTHER_LINES.join('\n'), originalFileName: 'Careway SRS.docx' }) as RequirementSource;
+const reminders = ref({ label: OTHER_LINES[2], sourceId: OTHER_ID, line: 2, endLine: 3, anchor: 'L2', excerpt: OTHER_LINES[2], excerptIsQuote: true, heading: '4 Notifications', sectionNumber: '4' });
+
+const panelList = () => screen.getByRole('list', { name: 'Passages side by side' });
+const panels = () => within(panelList()).getAllByRole('listitem');
+const citedLine = (panel: HTMLElement) => panel.querySelector('.src-line-cited')?.getAttribute('data-line');
+const addPassage = () => fireEvent.click(screen.getByRole('button', { name: 'Add a passage panel' }));
+
+describe('comparing several passages side by side', () => {
+  test('a question with one passage opens the single view, with nothing to add', async () => {
+    api.getById.mockResolvedValue(source(null));
+    cardWith({ kind: 'ambiguous', question: 'Which categories?', sourceEvidence: [decline] });
+
+    openLink(/^Open “12\.7 Decline Categories”/);
+
+    await waitFor(() => expect(citedLine(document.body)).toBe('10'));
+    expect(screen.queryByRole('button', { name: 'Add a passage panel' })).toBeNull();
+    expect(screen.queryByRole('list', { name: 'Passages side by side' })).toBeNull();
+  });
+
+  test.each([2, 3, 4, 5])('%i passages of one document can all be shown at once, each highlighted in its own panel, fetched once', async (count) => {
+    api.getById.mockResolvedValue(source(null));
+    const evidence = FIVE.slice(0, count);
+    cardWith({ kind: 'ambiguous', question: 'Which rule applies?', sourceEvidence: evidence });
+
+    openLink(/^Open “1 Billing”/);
+    await screen.findByRole('group', { name: 'Passages of this question' });
+    for (let n = 1; n < count; n++) addPassage();
+
+    expect(panels()).toHaveLength(count);
+    await waitFor(() => expect(panels().map(citedLine)).toEqual(evidence.map((e) => String(e.line))));
+    panels().forEach((panel, i) => {
+      expect(panel.getAttribute('aria-label')).toBe(`Panel ${i + 1}: Passage ${i + 1} of ${count}`);
+      expect(panel.querySelector('.src-line-cited mark')!.textContent).toBe(LINES[evidence[i].line]);
+      expect(panel.querySelector('.src-viewer-evidence')!.textContent).toContain(LINES[evidence[i].line]);
+      expect(panel.querySelectorAll('.src-viewer-doc')).toHaveLength(1);
+    });
+    // Every passage is shown: nothing more to add, and no passage twice.
+    expect((screen.getByRole('button', { name: 'Add a passage panel' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('group', { name: 'Passages of this question' })).toBeNull();
+    expect(api.getById).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('dialog', { name: 'Triage SRS.pdf' })).toBeTruthy();
+    // The dialog title names the one document, so the panels name only their section.
+    panels().forEach((panel, i) => {
+      expect(panel.querySelector('.src-panel-file')).toBeNull();
+      expect(panel.querySelector('.src-panel-ref')!.textContent).toBe(sourceLinkLabel(evidence[i]));
+      expect(panel.querySelector('.src-panel-title')!.getAttribute('title')).toBe(`Triage SRS.pdf · ${sourceLinkLabel(evidence[i])}`);
+    });
+  });
+
+  test('the question is shown once, above all the panels, and stays while panels are added, replaced and removed', async () => {
+    api.getById.mockResolvedValue(source(null));
+    const question = 'Are invoices, passwords or decline categories the binding rule?';
+    cardWith({ kind: 'contradiction', question, sourceEvidence: [invoices, passwords, decline] });
+
+    openLink(/^Statement 1: Open “1 Billing”/);
+    await screen.findByRole('group', { name: 'Passages of this question' });
+    addPassage();
+    addPassage();
+
+    const check = () => {
+      const blocks = screen.getAllByRole('region', { name: 'Clarification question' });
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].querySelector('p')!.textContent).toBe(question);
+      expect(blocks[0].compareDocumentPosition(panelList()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(panelList().contains(blocks[0])).toBe(false);
+    };
+    await waitFor(() => expect(panels().map(citedLine)).toEqual(['3', '8', '10']));
+    check();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove panel 3' }));
+    check();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Passage shown in panel 2' }), { target: { value: '2' } });
+    check();
+    expect(panels().map(citedLine)).toEqual(['3', '10']);
+    expect(panels()[0].querySelector('.src-viewer-evidence')!.textContent).toContain('Conflicting statement');
+  });
+
+  test('replacing the passage of one panel leaves the others - and their scroll position - as they were', async () => {
+    api.getById.mockResolvedValue(source(null));
+    cardWith({ kind: 'ambiguous', sourceEvidence: [invoices, passwords, decline, roles] });
+
+    openLink(/^Open “1 Billing”/);
+    await screen.findByRole('group', { name: 'Passages of this question' });
+    addPassage();
+    addPassage();
+    await waitFor(() => expect(panels().map(citedLine)).toEqual(['3', '8', '10']));
+
+    const [firstDoc, secondDoc, thirdDoc] = panels().map((p) => p.querySelector<HTMLElement>('.src-viewer-doc')!);
+    firstDoc.scrollTop = 40;
+    thirdDoc.scrollTop = 90;
+    secondDoc.scrollTop = 7; // scrolling one pane moves only that pane
+    expect([firstDoc.scrollTop, thirdDoc.scrollTop]).toEqual([40, 90]);
+
+    // Passages shown in another panel are offered but cannot be picked again.
+    const select = screen.getByRole('combobox', { name: 'Passage shown in panel 2' }) as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.disabled)).toEqual([true, false, true, false]);
+    expect(select.options[0].textContent).toContain('already shown');
+    fireEvent.change(select, { target: { value: '3' } });
+
+    expect(panels().map(citedLine)).toEqual(['3', '5', '10']);
+    expect(panels()[1].getAttribute('aria-label')).toBe('Panel 2: Passage 4 of 4');
+    expect(panels()[0].querySelector('.src-viewer-doc')).toBe(firstDoc);
+    expect(panels()[2].querySelector('.src-viewer-doc')).toBe(thirdDoc);
+    expect([firstDoc.scrollTop, thirdDoc.scrollTop]).toEqual([40, 90]);
+    expect(api.getById).toHaveBeenCalledTimes(1);
+  });
+
+  test('panels can be moved and removed; down to one, the passage tabs come back on the passage left', async () => {
+    api.getById.mockResolvedValue(source(null));
+    cardWith({ kind: 'ambiguous', sourceEvidence: [invoices, passwords, decline] });
+
+    openLink(/^Open “1 Billing”/);
+    await screen.findByRole('group', { name: 'Passages of this question' });
+    addPassage();
+    addPassage();
+    await waitFor(() => expect(panels().map(citedLine)).toEqual(['3', '8', '10']));
+
+    expect((screen.getByRole('button', { name: 'Move panel 1 left' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Move panel 3 right' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Move panel 3 left' }));
+    expect(panels().map(citedLine)).toEqual(['3', '10', '8']);
+    fireEvent.click(screen.getByRole('button', { name: 'Move panel 1 right' }));
+    expect(panels().map(citedLine)).toEqual(['10', '3', '8']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove panel 2' }));
+    expect(panels().map(citedLine)).toEqual(['10', '8']);
+    expect((screen.getByRole('button', { name: 'Add a passage panel' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove panel 2' }));
+
+    expect(screen.queryByRole('list', { name: 'Passages side by side' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Passage 3 of 3 (12.7 Decline Categories)' }).getAttribute('aria-pressed')).toBe('true');
+    expect(citedLine(document.body)).toBe('10');
+    // The tabs still step between passages as before.
+    fireEvent.click(screen.getByRole('button', { name: 'Passage 1 of 3 (1 Billing)' }));
+    expect(citedLine(document.body)).toBe('3');
+  });
+
+  test('passages from different documents: each panel loads and names its own document, each document once', async () => {
+    api.getById.mockImplementation(async (id: string) => (id === OTHER_ID ? otherSource() : source('pdf')));
+    cardWith({ kind: 'contradiction', question: 'Text message or invoice?', sourceEvidence: [invoices, reminders, passwords] });
+
+    openLink(/^Statement 1: Open “1 Billing”/);
+    await screen.findByRole('group', { name: 'Passages of this question' });
+    addPassage();
+    addPassage();
+
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Compare source passages' })).toBeTruthy());
+    const [first, second, third] = panels();
+    await waitFor(() => expect(first.querySelector('.src-pdf-page[data-page="1"] mark.src-hit[aria-current="location"]')?.textContent).toBe(LINES[3]));
+    await waitFor(() => expect(third.querySelector('.src-pdf-page[data-page="2"] mark.src-hit[aria-current="location"]')?.textContent).toBe(LINES[8]));
+    expect(first.querySelector('.src-panel-file')!.textContent).toBe('Triage SRS.pdf');
+    expect(second.querySelector('.src-panel-file')!.textContent).toBe('Careway SRS.docx');
+    expect(second.querySelector('.src-panel-ref')!.textContent).toBe('4 Notifications');
+    expect(citedLine(second)).toBe('2');
+    expect(second.querySelector('.src-line-cited mark')!.textContent).toBe(OTHER_LINES[2]);
+
+    expect(api.getById.mock.calls.map((c) => c[0]).sort()).toEqual([OTHER_ID, SOURCE_ID].sort());
+    expect(api.getOriginal).toHaveBeenCalledTimes(1);
+    expect(api.getOriginal).toHaveBeenCalledWith(SOURCE_ID, 'test-token', expect.any(AbortSignal));
+  });
+
+  test('a panel switches to the extracted text on its own, without changing the other panels', async () => {
+    api.getById.mockResolvedValue(source('pdf'));
+    cardWith({ kind: 'ambiguous', sourceEvidence: [invoices, passwords] });
+
+    openLink(/^Open “1 Billing”/);
+    await screen.findByRole('group', { name: 'Passages of this question' });
+    addPassage();
+    await waitFor(() => expect(panels().every((p) => p.querySelector('mark.src-hit[aria-current="location"]'))).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show the extracted text in panel 2' }));
+
+    const [first, second] = panels();
+    expect(first.querySelector('.src-original')).not.toBeNull();
+    expect(first.querySelector('.src-viewer-doc')).toBeNull();
+    expect(citedLine(second)).toBe('8');
+    expect(screen.getByRole('button', { name: 'Show the original PDF in panel 2' }).getAttribute('aria-pressed')).toBe('true');
+    expect(api.getOriginal).toHaveBeenCalledTimes(1);
+  });
+  test('the passage picker shows short, numbered labels with the full section name as a tooltip', async () => {
+    api.getById.mockResolvedValue(source(null));
+    const long = quoteAt(5, '3.2\tUser Roles and the permissions each of them is granted across every module', '3.2');
+    cardWith({ kind: 'ambiguous', sourceEvidence: [invoices, long, decline] });
+
+    openLink(/^Open “1 Billing”/);
+    await screen.findByRole('group', { name: 'Passages of this question' });
+    addPassage();
+
+    const select = screen.getByRole('combobox', { name: 'Passage shown in panel 2' }) as HTMLSelectElement;
+    const options = Array.from(select.options);
+    expect(options[0].textContent).toBe('1 of 3 · 1 Billing – already shown');
+    expect(options[1].textContent).toMatch(/^2 of 3 · 3\.2 User Roles and the permissions each…$/);
+    expect(options[1].textContent!.length).toBeLessThan(50);
+    expect(options[1].title).toBe('Passage 2 of 3: 3.2 User Roles and the permissions each of them is granted across every module');
+    expect(options[2].textContent).toBe('3 of 3 · 12.7 Decline Categories');
+    expect(select.title).toBe(options[1].title);
+    // The short label changes nothing about which passage is shown.
+    expect(options.map((o) => o.value)).toEqual(['0', '1', '2']);
+    await waitFor(() => expect(panels().map(citedLine)).toEqual(['3', '5']));
+  });
+
+  test('a panel names its file once, in one compact line with the section and the text toggle', async () => {
+    api.getById.mockImplementation(async (id: string) => (id === OTHER_ID ? otherSource() : source('pdf')));
+    cardWith({ kind: 'contradiction', sourceEvidence: [invoices, reminders] });
+
+    openLink(/^Statement 1: Open “1 Billing”/);
+    await screen.findByRole('group', { name: 'Passages of this question' });
+    addPassage();
+
+    const [first, second] = panels();
+    await waitFor(() => expect(first.querySelector('mark.src-hit[aria-current="location"]')).not.toBeNull());
+    await waitFor(() => expect(citedLine(second)).toBe('2'));
+    // The original PDF: no note repeating the file name; the header line names it, with a tooltip.
+    expect(first.textContent!.split('Triage SRS.pdf').length - 1).toBe(1);
+    expect(first.querySelector('.src-viewer-note')).toBeNull();
+    expect(first.querySelector('.src-panel-title')!.getAttribute('title')).toBe('Triage SRS.pdf · 1 Billing');
+    expect(within(first).getByRole('button', { name: 'Show the extracted text in panel 1' })).toBeTruthy();
+    // Extracted text only: the note says so, without naming the file again.
+    expect(second.textContent!.split('Careway SRS.docx').length - 1).toBe(1);
+    expect(second.querySelector('.src-viewer-note')!.textContent).toBe('Extracted paragraph text only: tables, headers, footers and images are not kept.');
+
+    // Back in the original's extracted text, the reason is still given.
+    fireEvent.click(screen.getByRole('button', { name: 'Show the extracted text in panel 1' }));
+    expect(first.querySelector('.src-viewer-note')!.textContent).toContain('You are viewing the text extracted from it.');
+    expect(first.querySelector('.src-viewer-note')!.textContent).not.toContain('Triage SRS.pdf');
   });
 });

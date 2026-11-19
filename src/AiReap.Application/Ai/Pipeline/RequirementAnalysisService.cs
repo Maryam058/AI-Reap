@@ -21,7 +21,7 @@ namespace AiReap.Application.Ai.Pipeline;
 //     and no saved question, answer or review is changed or removed.
 public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRunOperation
 {
-    internal const string PromptTemplateVersion = "RequirementAnalysis-v3";
+    internal const string PromptTemplateVersion = "RequirementAnalysis-v4";
 
     // Project-document retrieval per accepted question (KnowledgeRetriever): at most this many queries per
     // run, and only passages at or above the score are attached - as material a reviewer may want to see,
@@ -36,31 +36,65 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
         text - every section, table, glossary, appendix, constraint and summary - and decompose it into
         actors, capabilities, data elements the system must track, and informal notes/rules you observed.
 
+        Work like an experienced business analyst who has read the WHOLE document before asking anything:
+          1. Extract every functional requirement, business rule, condition, exception, restriction and
+             dependency, and the entities, fields, values, statuses, roles and workflows they concern -
+             including those written in tables, lists, examples and notes.
+          2. Connect related information across sections, also when it uses different words for the
+             same thing.
+          3. For every rule, find every other passage that mentions the same entity or process.
+          4. Compare those passages by their actual scope: the same entity or field, workflow, role,
+             status, input values, scenario, processing stage, conditions and exceptions?
+          5. Decide what each potential issue really is:
+             - already answered: another passage gives the information -> NO question;
+             - compatible rules: the passages describe different behaviours, stages or scenarios that
+               can all apply (for example one rule rejects an input at validation and another describes
+               an API call made only for inputs that pass) and the text says or shows how they fit
+               -> NO question;
+             - resolved: an explicit exception, precedence or scope statement settles it -> NO question;
+             - genuine contradiction: incompatible outcomes for the same entity under the same
+               conditions, not settled anywhere -> kind "contradiction";
+             - unresolved interaction: the rules overlap (one refuses an entity that another processes
+               under an extra condition) and nothing says which applies or in what order -> ONE focused
+               question about how the rules relate, quoting both passages; do not assume either rule
+               wins;
+             - missing / ambiguous / undefined rule: as defined below.
+          6. Check that the same issue is not already asked by another of your questions.
+          7. Ask only when the answer is needed to implement or test the system correctly.
+        Mentioning the same word in two places is never a reason to ask by itself.
+
         Then list in missingInformation ONLY the clarification questions that are genuinely needed. A
         question is justified only by a material, unresolved issue in the text, of one of these kinds:
           "missing"        information a requirement or an implementation decision cannot proceed
                            without (an amount, a limit, a responsible role, a time period) is absent;
-          "ambiguous"      a statement can reasonably be read in materially different ways, or relies
-                           on a term the text never defines;
-          "contradiction"  two statements in the text conflict with each other;
-          "undefined-rule" a business rule or acceptance condition that materially affects expected
-                           behaviour is referred to but not defined.
+          "ambiguous"      a statement can reasonably be read in materially different ways, relies on
+                           a term the text never defines, or two overlapping rules do not say how
+                           they interact;
+          "contradiction"  two statements specify incompatible outcomes for the same entity, scenario
+                           and conditions;
+          "undefined-rule" a business rule, calculation, exception or acceptance condition that
+                           materially affects expected behaviour is referred to but not defined.
         Do NOT ask:
           - anything the text answers anywhere - check every other section before asking;
+          - about two rules that apply under different conditions, stages or scenarios and can coexist;
           - generic best-practice or open-ended questions ("any other requirements?");
           - questions whose answer would not change a requirement, design, implementation or acceptance;
-          - two questions about the same issue, or several questions in one.
+          - questions that restate a requirement, or ask for information the text already gives;
+          - two questions about the same issue (even worded differently), or several questions in one.
         An empty missingInformation list is the correct answer when nothing material is unresolved.
-        Never invent a confirmed detail (a number, a rule, a permission) that was not stated.
+        Never invent a confirmed detail (a number, a rule, a permission) that was not stated, and never
+        build a question on an assumption the text does not support.
 
         For each question give:
           "kind"     - one of the four kinds above;
           "question" - one neutral, answerable question ending with "?";
-          "reason"   - what exactly is missing, ambiguous or conflicting;
+          "reason"   - what exactly is missing, ambiguous or conflicting, which other passages you
+                       checked, and why they do not settle it;
           "impact"   - why the answer matters to requirements, design, implementation or acceptance;
-          "evidence" - one to three passages copied word for word from the text that show the issue,
-                       each at least four words and without ellipses. A contradiction must quote BOTH
-                       conflicting statements.
+          "evidence" - one to four passages copied word for word from the text that show the issue,
+                       each at least four words and without ellipses, the primary passage first. A
+                       contradiction or an unresolved interaction must quote EVERY passage involved,
+                       each passage's condition included.
 
         When a reason refers to a place in the requirement text, list it in that item's
         sourceRefs: "label" is the exact words of the reason that refer to it (e.g. "Section 3.2"),
@@ -256,7 +290,8 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
                     Impact = verdict.Candidate.Impact,
                     SourceEvidence = verdict.Evidence.ToList(),
                     RequirementRefs = verdict.RequirementRefs.ToList(),
-                    RelatedDocuments = related.TryGetValue(AiResultMerge.Key(verdict.Candidate.Question), out var passages) ? passages : null
+                    RelatedDocuments = related.TryGetValue(AiResultMerge.Key(verdict.Candidate.Question), out var passages) ? passages : null,
+                    RuleComparison = Comparison(verdict.Relation)
                 };
 
                 var artifact = new Artifact
@@ -445,6 +480,21 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
 
         return (related, new AnalysisRetrievalReport("lexical", status, queries, attached));
     }
+
+    // How the validator compared the rules a cross-referenced question cites, kept for traceability.
+    internal static RuleComparisonPayload? Comparison(RuleRelation? relation) => relation is null ? null : new RuleComparisonPayload
+    {
+        SharedSubject = relation.SharedSubject.ToList(),
+        Conflict = relation.Conflict,
+        Rules = new[] { relation.First, relation.Second }.Select(r => new RuleComparisonRulePayload
+        {
+            Line = r.Line,
+            Text = r.Text,
+            Condition = r.Condition.Trim(),
+            Outcome = r.Outcome.Trim(),
+            Inherited = r.Context.Select(c => new InheritedContextPayload { Kind = c.Kind, Text = c.Text, Line = c.Line }).ToList()
+        }).ToList()
+    };
 
     private static ClarificationCandidate ToCandidate(MissingInformationItem item) =>
         new(item.Topic, item.Question, item.Reason, item.Kind, item.Impact, EvidenceQuotes(item.Evidence), item.SourceRefs);

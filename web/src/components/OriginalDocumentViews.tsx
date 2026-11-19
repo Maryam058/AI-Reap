@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { SourceReference } from '../api/types';
 import { markOccurrence } from '../lib/documentHighlight';
-import { openPdf, renderDocx } from '../lib/documentRenderers';
+import { fitDocxToWidth, markTableOverflow, measureDocxLayout, openPdf, renderDocx, revealInTable } from '../lib/documentRenderers';
 import { alignParagraphs, matchesBefore, normalize, pageForLine, type ReferenceLocation } from '../lib/sourceReferences';
 
 // How far the view got to the cited place - shown to the user as is (SourceDocumentViewer).
@@ -131,6 +131,60 @@ const DOCX_FRAME_STYLE = `
   .src-docx-cited { background: rgba(255, 213, 79, 0.28); box-shadow: -4px 0 0 #f5b400; }
   .src-docx-heading { box-shadow: -4px 0 0 #c98a00; }
   mark.src-hit { background: #ffd54f; color: inherit; padding: 0 1px; border-radius: 2px; }
+
+  /* A pane narrower than the page (fitDocxToWidth): the page reflows to the pane - no fixed page width,
+     Word margins or page height, and left-aligned, so nothing is cut off on either side. */
+  html.src-docx-reflow .docx-wrapper { display: block !important; padding: 8px !important; }
+  html.src-docx-reflow .docx-wrapper > section.docx {
+    width: auto !important; min-height: 0 !important; padding: 20px 16px !important; margin: 0 0 12px !important;
+  }
+  html.src-docx-reflow .docx-wrapper > section.docx > header { margin-top: 0 !important; min-height: 0 !important; }
+  html.src-docx-reflow .docx-wrapper > section.docx > footer { margin-bottom: 0 !important; min-height: 0 !important; }
+  html.src-docx-reflow .docx-wrapper table { max-width: 100%; }
+  /* A word longer than its column breaks rather than widening the table past the pane - but a column
+     keeps a readable width, so most words stay whole. */
+  html.src-docx-reflow .docx-wrapper :is(td, th, td *, th *) { overflow-wrap: anywhere; }
+  html.src-docx-reflow .docx-wrapper :is(td, th) { min-width: 5em; }
+  /* A table that still cannot fit (an image in a cell, many columns) scrolls sideways on its own -
+     the page hides what overflows it. */
+  html.src-docx-reflow .docx-wrapper table.src-docx-wide {
+    display: block; overflow-x: auto; overscroll-behavior-x: contain; position: relative;
+  }
+  /* The side with more columns out of view fades softly (documentRenderers: markTableOverflow). */
+  html.src-docx-reflow table.src-docx-wide.src-docx-more-right {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), rgba(0, 0, 0, 0.3));
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), rgba(0, 0, 0, 0.3));
+  }
+  html.src-docx-reflow table.src-docx-wide.src-docx-more-left:not(.src-docx-pinned) {
+    -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 28px), rgba(0, 0, 0, 0.3));
+    mask-image: linear-gradient(to left, #000 calc(100% - 28px), rgba(0, 0, 0, 0.3));
+  }
+  html.src-docx-reflow table.src-docx-wide.src-docx-more-left.src-docx-more-right:not(.src-docx-pinned) {
+    -webkit-mask-image: linear-gradient(to right, rgba(0, 0, 0, 0.3), #000 28px, #000 calc(100% - 28px), rgba(0, 0, 0, 0.3));
+    mask-image: linear-gradient(to right, rgba(0, 0, 0, 0.3), #000 28px, #000 calc(100% - 28px), rgba(0, 0, 0, 0.3));
+  }
+  /* The first column stays put while the rest scrolls under it, on the page's own background. */
+  html.src-docx-reflow table.src-docx-wide .src-docx-sticky {
+    position: sticky; left: 0; z-index: 1; background-color: var(--src-sticky-bg, #fff);
+  }
+  /* Scrolled: a clear edge, so the columns sliding under it do not read as part of the pinned one. */
+  html.src-docx-reflow table.src-docx-wide.src-docx-more-left .src-docx-sticky {
+    box-shadow: inset -2px 0 0 rgba(0, 0, 0, 0.28), 5px 0 6px -2px rgba(0, 0, 0, 0.22);
+  }
+  html.src-docx-reflow tr.src-docx-cited > .src-docx-sticky {
+    background-image: linear-gradient(rgba(255, 213, 79, 0.28), rgba(255, 213, 79, 0.28));
+  }
+  /* Touch screens show no scrollbar until the table moves: say that it does. Drawn by CSS, so it is
+     not part of the document's text. */
+  @media (hover: none) and (pointer: coarse) {
+    html.src-docx-reflow table.src-docx-wide::before {
+      content: "\\2194\\FE0E  Swipe horizontally to view all columns";
+      content: "\\2194\\FE0E  Swipe horizontally to view all columns" / "";
+      display: block; position: sticky; left: 0; width: max-content; max-width: calc(100% - 32px); box-sizing: border-box;
+      margin: 0 0 4px; padding: 2px 8px; border-radius: 10px; background: #eef1f4; color: #4a5361;
+      font: 500 11px/16px system-ui, -apple-system, "Segoe UI", sans-serif; letter-spacing: 0; white-space: normal;
+    }
+  }
 `;
 
 // The DOCX itself, rendered from its own structure (headings, paragraphs, tables, styles) inside a
@@ -142,6 +196,9 @@ export function DocxOriginalView({ data, lines, reference, location, title, onNa
   useEffect(() => {
     const frame = frameRef.current!;
     let cancelled = false;
+    let resizes: ResizeObserver | undefined;
+    let stopTracking: (() => void) | undefined;
+    let stopSideways: (() => void) | undefined;
 
     (async () => {
       try {
@@ -157,6 +214,12 @@ export function DocxOriginalView({ data, lines, reference, location, title, onNa
 
         const rendered = await renderDocx(data, doc.body, styles);
         if (cancelled) return;
+
+        // Narrower than the page: reflow it to the pane before finding the cited place.
+        const layout = measureDocxLayout(doc.body);
+        const fit = () => layout && fitDocxToWidth(layout, doc.documentElement, doc.documentElement.clientWidth);
+        fit();
+        let cited: HTMLElement | null = null;
 
         let result: NavigationResult = { status: 'not-found' };
         if (location.status === 'located') {
@@ -188,12 +251,52 @@ export function DocxOriginalView({ data, lines, reference, location, title, onNa
               if (marks[0]) target = marks[0];
             }
             target.setAttribute('aria-current', 'location');
+            cited = target;
             const win = frame.contentWindow!;
             win.scrollTo(0, Math.max(0, target.getBoundingClientRect().top + win.scrollY - 24));
+            // In a table that scrolls sideways, bring the cited cell into view too.
+            revealInTable(target);
             result = { status: 'highlighted' };
           }
         }
         onNavigated(result);
+
+        // A table that scrolls sideways (mouse, trackpad or touch): keep its faded edges current.
+        const sideways = (event: Event) => {
+          const el = event.target as Element | null;
+          if (el?.matches?.('table.src-docx-wide')) markTableOverflow(el as HTMLElement);
+        };
+        doc.addEventListener('scroll', sideways, { capture: true, passive: true });
+        stopSideways = () => doc.removeEventListener('scroll', sideways, { capture: true });
+
+        // The pane resized (the window, or panels added beside it): fit the page again and keep the
+        // same place in view - the cited passage when it was in view, else what was at the top.
+        const win = frame.contentWindow;
+        if (layout && win && typeof ResizeObserver !== 'undefined') {
+          let anchor: { el: Element; top: number } | null = null;
+          const remember = () => {
+            const height = doc.documentElement.clientHeight;
+            const box = cited?.getBoundingClientRect();
+            if (cited && box && box.bottom > 0 && box.top < height) return void (anchor = { el: cited, top: box.top });
+            for (let y = 8; y < Math.min(height, 240); y += 24) {
+              const el = doc.elementFromPoint(doc.documentElement.clientWidth / 2, y);
+              if (el && el.closest('section.docx > *')) return void (anchor = { el, top: el.getBoundingClientRect().top });
+            }
+          };
+          remember();
+          win.addEventListener('scroll', remember, { passive: true });
+          stopTracking = () => win.removeEventListener('scroll', remember);
+          let width = doc.documentElement.clientWidth;
+          resizes = new ResizeObserver(() => {
+            if (doc.documentElement.clientWidth === width) return;
+            width = doc.documentElement.clientWidth;
+            const keep = anchor;
+            fit();
+            if (keep?.el.isConnected) win.scrollTo(0, Math.max(0, win.scrollY + keep.el.getBoundingClientRect().top - keep.top));
+            if (cited && keep?.el === cited) revealInTable(cited);
+          });
+          resizes.observe(frame);
+        }
       } catch {
         if (!cancelled) onFailed();
       }
@@ -201,6 +304,9 @@ export function DocxOriginalView({ data, lines, reference, location, title, onNa
 
     return () => {
       cancelled = true;
+      resizes?.disconnect();
+      stopTracking?.();
+      stopSideways?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);

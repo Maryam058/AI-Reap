@@ -1370,6 +1370,7 @@ pre {
   margin: 0;
   font-size: 0.82rem;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .src-viewer-attach {
@@ -1399,6 +1400,26 @@ pre {
   background: var(--warning-soft);
   color: var(--warning-strong);
   font-size: 0.85rem;
+}
+
+/* The clarification question shown in the source viewer, above the statement it cites. */
+.src-viewer-question {
+  padding: 0.6rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-sunken);
+}
+
+.src-viewer-question .detail-label {
+  display: block;
+  margin-bottom: 0.2rem;
+}
+
+.src-viewer-question p {
+  margin: 0;
+  font-weight: 500;
+  color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 .src-viewer-evidence {
@@ -1476,6 +1497,124 @@ pre {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
+}
+
+/* Passages side by side (SourceDocumentViewer): one column per panel, as many as fit, then the row
+   scrolls sideways - on a phone one panel per view, snapping. Each panel's document scrolls on its own. */
+.src-viewer-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+}
+
+.src-viewer-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+}
+
+.src-viewer-panels {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(min(100%, 26rem), 1fr);
+  gap: 0.75rem;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  padding-bottom: 0.25rem;
+}
+
+/* Tablet: narrower panels so two fit side by side (a 768px window); a phone still shows one. */
+@media (max-width: 1100px) {
+  .src-viewer-panels {
+    grid-auto-columns: minmax(min(100%, 20rem), 1fr);
+  }
+}
+
+.src-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  scroll-snap-align: start;
+}
+
+.src-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.src-panel-head .select-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.src-panel-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.15rem;
+}
+
+.src-panel-actions .icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* One compact line under the picker: file · section (at most two lines, the full text as a tooltip),
+   with the original/extracted-text toggle beside it. */
+.src-panel-where {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+}
+
+.src-panel-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.src-panel-file {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.src-panel-ref {
+  color: var(--muted);
+}
+
+.src-panel-file + .src-panel-ref::before {
+  content: ' · ';
+}
+
+.src-panel-where .btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.src-panel .src-viewer-doc {
+  max-height: min(56vh, 520px);
+}
+
+.src-panel .src-original {
+  height: min(58vh, 600px);
 }
 
 .src-line mark {
@@ -2993,6 +3132,21 @@ main [id] {
   margin: 0;
   font-size: 1rem;
   font-weight: 700;
+}
+
+/* A long unbroken title (a file name) wraps instead of pushing the Close button out of the dialog. */
+.dialog-header > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dialog-header h2,
+.dialog-header .dialog-description {
+  overflow-wrap: anywhere;
+}
+
+.dialog-header > .icon-btn {
+  flex: 0 0 auto;
 }
 
 .dialog-body {

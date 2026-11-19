@@ -81,6 +81,7 @@ export function ClarificationQuestionCard({ artifact, canAnswer, onAnswer }: Pro
           reference={opened}
           passages={passages.length > 1 ? passages : undefined}
           purpose={evidencePurpose(data.kind)}
+          question={data.question}
           onClose={() => setOpened(null)}
         />
       )}

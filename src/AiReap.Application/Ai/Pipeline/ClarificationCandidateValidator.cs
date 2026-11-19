@@ -27,7 +27,8 @@ public sealed record CandidateVerdict(
     string? Kind,
     IReadOnlyList<SourceReferencePayload> Evidence,
     IReadOnlyList<string> RequirementRefs,
-    IReadOnlyList<CandidateRejection> Rejections)
+    IReadOnlyList<CandidateRejection> Rejections,
+    RuleRelation? Relation = null)
 {
     public bool Accepted => Rejections.Count == 0;
 }
@@ -50,6 +51,31 @@ public sealed record CandidateVerdict(
 //                        question cites nor its other evidence tell which one raised it
 //                        (ClarificationEvidenceLocator) - no occurrence is guessed;
 //   contradiction-needs-both-statements  a contradiction needs two verified quotes at different places;
+//   cross-reference      a question that sets two passages against each other (a contradiction, or an
+//                        ambiguity quoting two places) is checked as a business analyst would before
+//                        raising it (RuleRelations, comparing the first two places):
+//                          no-shared-subject    (contradiction) the two passages share no subject term;
+//                          one-sided            (contradiction) the question concerns only one of them;
+//                          different-conditions (contradiction) no case can meet both rules' conditions
+//                                               ("Body Side = Left" / "Body Side = Bilateral"), or one
+//                                               is the general rule and the other an exception to it
+//                                               for a narrower case, stated as one in words or set by an
+//                                               on/off setting ("If 'Is Careway' is disabled, ..."). The
+//                                               conditions include what each rule inherits from the
+//                                               document (RuleContextIndex: headings, list lead-ins,
+//                                               scope sentences, table captions and headers), so rules
+//                                               under "New referrals" and "Amendments" are different
+//                                               workflows; a scope only one rule states is unknown;
+//                          different-subjects   (contradiction) the shared words name different things
+//                                               ("Referral notifications" / "Invoice notifications");
+//                          compatible-rules     (contradiction) both outcomes can hold together: neither
+//                                               refuses or restricts anything and no number or value
+//                                               differs - different behaviours are not a conflict;
+//                          resolved-in-source   another passage states how the two relate (an exception,
+//                                               a precedence or a scope naming something from each rule).
+//                        Two rules that overlap without anything saying how they interact (one refuses
+//                        an entity the other processes under an extra condition) are kept: that is the
+//                        unresolved relationship the question must ask about;
 //   unrelated            the question shares no content term with its own evidence or the headings of
 //                        the sections that evidence sits in. Requirement IDs and numbers do not count: a
 //                        shared "FR-012" or "3.2" does not show the question is about the passage;
@@ -79,7 +105,11 @@ public sealed record CandidateVerdict(
 //                        and in different sections; a missing location is not taken as a difference. A
 //                        closed question with an answer matches when its question, topic and answer hold
 //                        AnsweredCoverage of the candidate's terms. Never a match when the two ask for
-//                        different things (QuestionFocus: "who" against "when").
+//                        different things (QuestionFocus: "who" against "when"). Two questions that
+//                        both set the same two (or more) passages against each other are one issue,
+//                        whatever their wording. When both ask "who", role filler words ("responsible",
+//                        "role", "person") are left out of the comparison, so "Who approves X?" and
+//                        "Which role is responsible for authorising X?" are one question.
 // Limits: all similarity is lexical (light stemming and a short list of synonyms - approve/authorise,
 // remove/delete, ...), so a paraphrase with other vocabulary can still pass the duplicate and
 // answered-in-source checks, and a passage that matches the words and the kind of answer without really
@@ -87,7 +117,7 @@ public sealed record CandidateVerdict(
 // questions are only compared against, never changed.
 public static partial class ClarificationCandidateValidator
 {
-    public const string Version = "CqValidation-v1";
+    public const string Version = "CqValidation-v3";
 
     public const double DuplicateSimilarity = 0.6;
     public const double TopicDuplicateSimilarity = 0.4;
@@ -111,6 +141,8 @@ public static partial class ClarificationCandidateValidator
             Evidence = SourceEvidenceIndex.Build(SourceText);
             Locator = new ClarificationEvidenceLocator(References, Evidence, SourceText);
             Sentences = SplitSentences(SourceText);
+            Lines = SourceReferenceIndex.Lines(SourceText);
+            _document = new Lazy<RuleContextIndex>(() => RuleContextIndex.Build(SourceText));
             NormalizedSource = SourceEvidence.Normalize(SourceText);
             foreach (var e in existing)
             {
@@ -139,7 +171,7 @@ public static partial class ClarificationCandidateValidator
                 }
 
                 _known.Add(new Known(AiResultMerge.Key(e.Question), terms, TopicKey(e.Topic), e.EvidenceLines.ToHashSet(),
-                    kind, e.Code, e.Status, context, answered, places, QuestionFocus(e.Question), legacy));
+                    kind, e.Code, e.Status, context, answered, places, QuestionFocus(e.Question), legacy, Runs(e.EvidenceLines)));
             }
         }
 
@@ -148,7 +180,12 @@ public static partial class ClarificationCandidateValidator
         public SourceEvidenceIndex Evidence { get; }
         public ClarificationEvidenceLocator Locator { get; }
         internal IReadOnlyList<Sentence> Sentences { get; }
+        internal string[] Lines { get; }
         internal string NormalizedSource { get; }
+
+        // The document structure rules inherit context from; built only when a question is cross-referenced.
+        private readonly Lazy<RuleContextIndex> _document;
+        public RuleContextIndex Document => _document.Value;
 
         internal IEnumerable<Known> KnownQuestions => _known;
 
@@ -158,7 +195,7 @@ public static partial class ClarificationCandidateValidator
             var context = Terms(candidate.Question);
             context.UnionWith(Terms(candidate.Topic));
             _known.Add(new Known(AiResultMerge.Key(candidate.Question), Terms(candidate.Question), TopicKey(candidate.Topic),
-                lines, kind, null, "Accepted in this run", context, null, SectionsOfLines(lines), QuestionFocus(candidate.Question), false));
+                lines, kind, null, "Accepted in this run", context, null, SectionsOfLines(lines), QuestionFocus(candidate.Question), false, Runs(lines)));
         }
 
         // The innermost sections (table of contents left out) the lines sit in.
@@ -171,11 +208,31 @@ public static partial class ClarificationCandidateValidator
 
     // A question already saved for the source, or accepted earlier in this run (Code null). ContextTerms:
     // its question and topic; AnsweredTerms: those and its answer, when it is closed with one; Places: the
-    // sections it is located in (empty when not known); Legacy: saved before v3, without kind or evidence.
+    // sections it is located in (empty when not known); Legacy: saved before v3, without kind or evidence;
+    // Passages: its evidence lines as separate passages (runs of consecutive lines).
     internal sealed record Known(
         string Key, HashSet<string> Terms, string? TopicKey, HashSet<int> Lines, string? Kind, string? Code, string Status,
         HashSet<string> ContextTerms, HashSet<string>? AnsweredTerms, IReadOnlyList<SourceSection> Places,
-        IReadOnlySet<string> Focus, bool Legacy);
+        IReadOnlySet<string> Focus, bool Legacy, IReadOnlyList<HashSet<int>> Passages);
+
+    // Lines grouped into passages: each run of consecutive line numbers is one.
+    internal static List<HashSet<int>> Runs(IEnumerable<int> lines)
+    {
+        var runs = new List<HashSet<int>>();
+        var previous = int.MinValue;
+        foreach (var line in lines.Where(l => l >= 0).Distinct().Order())
+        {
+            if (runs.Count == 0 || line != previous + 1)
+            {
+                runs.Add([]);
+            }
+
+            runs[^1].Add(line);
+            previous = line;
+        }
+
+        return runs;
+    }
 
     // Validates candidates in order; an accepted one counts for the duplicate check of later ones.
     public static List<CandidateVerdict> Validate(Context context, IEnumerable<ClarificationCandidate> candidates)
@@ -256,6 +313,12 @@ public static partial class ClarificationCandidateValidator
             rejections.Add(new("unrelated", "The question shares no content with the evidence it cites."));
         }
 
+        RuleRelation? relation = null;
+        if (kind is "contradiction" or "ambiguous" && DistinctPlaces(evidence) >= 2)
+        {
+            relation = CrossReference(context, candidate, kind, questionTerms, evidence, rejections);
+        }
+
         if (evidence.Count > 0 && kind is not "contradiction" && AnsweredElsewhere(context, candidate, questionTerms, evidence) is { } answer)
         {
             rejections.Add(new("answered-in-source",
@@ -271,8 +334,84 @@ public static partial class ClarificationCandidateValidator
                 : new("duplicate", $"Duplicate of {name}.", duplicate.Code));
         }
 
-        return new CandidateVerdict(candidate, kind, evidence, RequirementRefsOf(evidence), rejections);
+        return new CandidateVerdict(candidate, kind, evidence, RequirementRefsOf(evidence), rejections, relation);
     }
+
+    // ---- cross-reference -------------------------------------------------------------------------
+
+    // The first two passages at different places, compared as rules (see the class comment). The
+    // passages are read from the source's own lines, so a condition written earlier in the line than the
+    // quote is seen; every other sentence of the source may resolve them.
+    private static RuleRelation CrossReference(
+        Context context, ClarificationCandidate candidate, string kind, HashSet<string> questionTerms,
+        IReadOnlyList<SourceReferencePayload> evidence, List<CandidateRejection> rejections)
+    {
+        var first = evidence.First(e => e.Line >= 0);
+        var second = evidence.First(e => e.Line >= 0 && !(e.Line < first.EndLine && first.Line < e.EndLine));
+        var a = RuleRelations.Read(PassageText(context, first), first.Line, first.Excerpt, context.Document);
+        var b = RuleRelations.Read(PassageText(context, second), second.Line, second.Excerpt, context.Document);
+        var cited = LinesOf(evidence);
+        var relation = RuleRelations.Compare(a, b, context.Sentences
+            .Where(s => !s.Heading && s.Table < 0 && !cited.Contains(s.Line))
+            .Select(s => (s.Line, s.Text)));
+
+        var sameSection = first.Heading is { Length: > 0 } && first.Heading == second.Heading;
+        string Place(SourceReferencePayload e) => e.Heading is { Length: > 0 } h
+            ? sameSection ? $"\"{h.TrimStart('#', ' ')}\" line {e.Line + 1}" : $"\"{h.TrimStart('#', ' ')}\""
+            : $"line {e.Line + 1}";
+
+        if (kind == "contradiction")
+        {
+            if (relation.SharedSubject.Count == 0)
+            {
+                rejections.Add(new("no-shared-subject",
+                    $"The passages at {Place(first)} and {Place(second)} share no subject, so they cannot contradict each other."));
+            }
+            else
+            {
+                var aTerms = Terms(a.Text);
+                var bTerms = Terms(b.Text);
+                var shared = aTerms.Where(bTerms.Contains).ToHashSet(StringComparer.Ordinal);
+                if (!questionTerms.Overlaps(shared) && !(questionTerms.Overlaps(aTerms) && questionTerms.Overlaps(bTerms)))
+                {
+                    rejections.Add(new("one-sided",
+                        "The question concerns only one of the two passages it cites as conflicting; it must ask how they relate."));
+                }
+            }
+
+            if (relation.SharedSubject.Count > 0 && relation.DifferentSubjects is { } subjects)
+            {
+                rejections.Add(new("different-subjects",
+                    $"The passages use the same words for different things ({subjects}), so they do not contradict each other."));
+            }
+
+            if (relation.ExclusiveConditions is { } exclusive)
+            {
+                rejections.Add(new("different-conditions",
+                    $"Both rules can hold: they apply under different conditions ({exclusive})."));
+            }
+
+            if (relation.SharedSubject.Count > 0 && relation.Conflict is null)
+            {
+                rejections.Add(new("compatible-rules",
+                    $"The passages at {Place(first)} and {Place(second)} describe different behaviours that can both apply " +
+                    $"(about {string.Join(", ", relation.SharedSubject.Take(4))}); neither refuses or restricts what the other does."));
+            }
+        }
+
+        if (relation.Resolution is { } resolution)
+        {
+            var section = context.SectionsOfLines([resolution.Line]).FirstOrDefault();
+            var location = section is not null ? $"{section.HeadingLine.TrimStart('#', ' ')} (line {resolution.Line + 1})" : $"line {resolution.Line + 1}";
+            rejections.Add(new("resolved-in-source",
+                $"The source states how the two rules relate at {location}: \"{Shorten(resolution.Text)}\"", Location: location));
+        }
+
+        return relation;
+    }
+
+    private static string PassageText(Context context, SourceReferencePayload e) =>
+        string.Join(" ", context.Lines.Skip(e.Line).Take(Math.Max(e.EndLine - e.Line, 1)).Select(l => l.Trim()));
 
     public static string? NormalizeKind(string? kind)
     {
@@ -604,6 +743,7 @@ public static partial class ClarificationCandidateValidator
         var topic = TopicKey(candidate.Topic);
         var lines = LinesOf(evidence);
         var places = context.SectionsOfLines(lines);
+        var passages = Runs(lines);
         var focus = QuestionFocus(candidate.Question);
         foreach (var known in context.KnownQuestions)
         {
@@ -618,7 +758,17 @@ public static partial class ClarificationCandidateValidator
                 continue;
             }
 
-            var similarity = Jaccard(terms, known.Terms);
+            // The same two (or more) passages set against each other: one issue, however it is worded.
+            if (passages.Count >= 2 && known.Passages.Count >= 2
+                && passages.All(p => p.Overlaps(known.Lines)) && known.Passages.All(p => p.Overlaps(lines)))
+            {
+                return (known.Code, known.Status);
+            }
+
+            // Both ask "who": "responsible", "role", "person" add nothing to tell them apart.
+            var similarity = focus.Contains("person") && known.Focus.Contains("person")
+                ? Jaccard(WithoutRoleFillers(terms), WithoutRoleFillers(known.Terms))
+                : Jaccard(terms, known.Terms);
             if (similarity >= DuplicateSimilarity
                 || (topic is not null && topic == known.TopicKey && similarity >= TopicDuplicateSimilarity)
                 || (lines.Count > 0 && lines.SetEquals(known.Lines) && kind is not null && kind == known.Kind && similarity >= SameEvidenceSimilarity)
@@ -630,6 +780,17 @@ public static partial class ClarificationCandidateValidator
         }
 
         return null;
+    }
+
+    // Words a "who" question uses only to ask for a person (stemmed as Terms stems them).
+    // Lazy: the term tables it is stemmed with are initialised further down the file.
+    private static readonly Lazy<HashSet<string>> RoleFillers = new(() => Terms(
+        "responsible responsibility accountable role roles person people party parties owner owns actor authority"));
+
+    private static HashSet<string> WithoutRoleFillers(HashSet<string> terms)
+    {
+        var core = terms.Where(t => !RoleFillers.Value.Contains(t) || t == "approv").ToHashSet(StringComparer.Ordinal);
+        return core.Count > 0 ? core : terms;
     }
 
     // At least two of the terms, and AnsweredCoverage of them, are in the other set.

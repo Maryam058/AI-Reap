@@ -38,6 +38,34 @@ public class ClarificationQuestionPayload
     // Server-owned: project document passages retrieved for the question (KnowledgeRetriever). Shown to
     // reviewers as material that may bear on it; never used to accept or reject the question.
     public List<RelatedDocumentPassagePayload>? RelatedDocuments { get; set; }
+
+    // Server-owned, set when the question sets passages against each other (RuleRelations): how the
+    // rules were compared - each rule's passage, condition, outcome and the context it inherits, every
+    // item with its source line. Null on other questions and on questions made before it was recorded.
+    public RuleComparisonPayload? RuleComparison { get; set; }
+}
+
+public class RuleComparisonPayload
+{
+    public List<string> SharedSubject { get; set; } = new();
+    public string? Conflict { get; set; }
+    public List<RuleComparisonRulePayload> Rules { get; set; } = new();
+}
+
+public class RuleComparisonRulePayload
+{
+    public int Line { get; set; }           // 0-based source line of the rule passage
+    public string Text { get; set; } = string.Empty;
+    public string Condition { get; set; } = string.Empty;
+    public string Outcome { get; set; } = string.Empty;
+    public List<InheritedContextPayload> Inherited { get; set; } = new();
+}
+
+public class InheritedContextPayload
+{
+    public string Kind { get; set; } = string.Empty; // heading | lead-in | scope | table-title | table-header | definition
+    public string Text { get; set; } = string.Empty; // copied verbatim from the source
+    public int Line { get; set; }                    // 0-based source line
 }
 
 public class RelatedDocumentPassagePayload
