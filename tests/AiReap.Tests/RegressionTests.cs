@@ -85,10 +85,15 @@ public class RegressionTests : IAsyncLifetime
         Assert.Equal("Alpha2", updated!["name"]!.GetValue<string>());
         Assert.Equal(403, (await _dev.SendAsync(HttpMethod.Put, $"/api/projects/{id}", new { name = "hack" })).Status);
 
-        // status may only advance one step; skipping ahead and going back are rejected
+        // The legacy status PATCH goes through the lifecycle: Draft's exit checks (business problem,
+        // objectives, scope) must pass first, then it may only advance one step; skipping ahead and
+        // going back are state conflicts (409).
+        Assert.Equal(409, (await _ba.SendAsync(HttpMethod.Patch, $"/api/projects/{id}/status", new { status = 1 })).Status);
+        Assert.Equal(200, (await _ba.SendAsync(HttpMethod.Put, $"/api/projects/{id}",
+            new { name = "Alpha2", description = "changed", businessProblem = "p", objectives = "o", scope = "s" })).Status);
         Assert.Equal(200, (await _ba.SendAsync(HttpMethod.Patch, $"/api/projects/{id}/status", new { status = 1 })).Status);
-        Assert.Equal(400, (await _ba.SendAsync(HttpMethod.Patch, $"/api/projects/{id}/status", new { status = 4 })).Status);
-        Assert.Equal(400, (await _ba.SendAsync(HttpMethod.Patch, $"/api/projects/{id}/status", new { status = 0 })).Status);
+        Assert.Equal(409, (await _ba.SendAsync(HttpMethod.Patch, $"/api/projects/{id}/status", new { status = 4 })).Status);
+        Assert.Equal(409, (await _ba.SendAsync(HttpMethod.Patch, $"/api/projects/{id}/status", new { status = 0 })).Status);
 
         // stakeholders
         var (ss, sh) = await _ba.PostAsync($"/api/projects/{id}/stakeholders", new { name = "Sam", roleInProject = "Sponsor" });
@@ -155,8 +160,9 @@ public class RegressionTests : IAsyncLifetime
         Assert.Equal(200, (await _ba.PostAsync($"/api/requirement-sources/{sourceId}/analyze-quality")).Status);
         Assert.Equal(200, (await _ba.PostAsync($"/api/projects/{projectId}/detect-conflicts")).Status);
 
-        // traceability: one FR rolls up everything derived from it
-        var (trs, matrix) = await _dev.GetAsync($"/api/projects/{projectId}/traceability-matrix");
+        // traceability: one FR rolls up everything derived from it (read as the BA: nothing is approved
+        // yet, and a Developer only sees approved requirements - DeveloperArtifactVisibilityTests)
+        var (trs, matrix) = await _ba.GetAsync($"/api/projects/{projectId}/traceability-matrix");
         Assert.Equal(200, trs);
         var row = matrix!.AsArray().Single()!;
         Assert.NotEmpty(row["userStories"]!.AsArray());
@@ -168,14 +174,12 @@ public class RegressionTests : IAsyncLifetime
         Assert.Equal(200, (await _reviewer.SendAsync(HttpMethod.Patch, $"/api/artifacts/{frId}/status", new { status = 3, comment = "ok" })).Status);
         Assert.Equal(1, await _host.ScalarAsync("SELECT COUNT(*) FROM ArtifactReviews"));
 
-        // completion signals: approving the sole task promotes the FR to Implemented (5);
-        // approving all its test cases promotes it to Verified (6)
+        // approving the task and test cases accepts the plan but is not completion evidence: the FR
+        // stays Approved (3). Implemented/Verified follow recorded work - see ArtifactWorkRecordTests.
         await _reviewer.SendAsync(HttpMethod.Patch, $"/api/artifacts/{taskId}/status", new { status = 3 });
-        Assert.Equal(5, (await _dev.GetAsync($"/api/artifacts/{frId}")).Body!["status"]!.GetValue<int>());
         await _reviewer.SendAsync(HttpMethod.Patch, $"/api/artifacts/{caseIds[0]}/status", new { status = 3 });
-        Assert.Equal(5, (await _dev.GetAsync($"/api/artifacts/{frId}")).Body!["status"]!.GetValue<int>());
         await _reviewer.SendAsync(HttpMethod.Patch, $"/api/artifacts/{caseIds[1]}/status", new { status = 3 });
-        Assert.Equal(6, (await _dev.GetAsync($"/api/artifacts/{frId}")).Body!["status"]!.GetValue<int>());
+        Assert.Equal(3, (await _dev.GetAsync($"/api/artifacts/{frId}")).Body!["status"]!.GetValue<int>());
 
         // impact analysis is advisory and never mutates
         var before = await _host.ScalarAsync("SELECT COUNT(*) FROM ArtifactVersions");
@@ -188,7 +192,7 @@ public class RegressionTests : IAsyncLifetime
         Assert.Equal(200, ds);
         Assert.Equal(1, dash!["functionalRequirementCount"]!.GetValue<int>());
         Assert.True(dash["approvedCount"]!.GetValue<int>() >= 1);
-        var (au, audit) = await _dev.GetAsync($"/api/projects/{projectId}/ai-executions");
+        var (au, audit) = await _ba.GetAsync($"/api/projects/{projectId}/ai-executions"); // full trail; a Developer's is filtered
         Assert.Equal(200, au);
         Assert.True(audit!.AsArray().Count >= 8);
         Assert.DoesNotContain("reasoning", audit.ToJsonString(), StringComparison.OrdinalIgnoreCase);

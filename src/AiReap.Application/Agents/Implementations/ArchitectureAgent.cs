@@ -2,6 +2,7 @@ using AiReap.Application.Ai.Pipeline;
 using AiReap.Application.Persistence;
 using AiReap.Domain.Common;
 using AiReap.Domain.Enums;
+using Microsoft.EntityFrameworkCore;
 
 namespace AiReap.Application.Agents.Implementations;
 
@@ -27,6 +28,8 @@ public class ArchitectureAgent : IAgent
     public string Inputs => "Functional requirements and clarifications from the Analysis stage.";
     public string Outputs => "DesignArtifact, DataEntity and ApiSpecification artifacts.";
     public IReadOnlyList<string> ApproverRoles => AgentSupport.AdminAnd(Roles.Developer);
+    public IReadOnlyList<ProjectStatus> LifecycleStages => [ProjectStatus.Design];
+    public string LifecycleContribution => "Drafts the Design work: architecture, data entities and API contracts, for Developer review and approval.";
 
     public async Task<AgentOutput> RunAsync(AgentContext context, CancellationToken cancellationToken)
     {
@@ -35,6 +38,13 @@ public class ArchitectureAgent : IAgent
         if (!await AgentSupport.ExistsAsync(_db, sourceId, ArtifactType.FunctionalRequirement, cancellationToken))
         {
             throw new InvalidOperationException("There are no functional requirements to design against. Complete the Analysis stage first.");
+        }
+
+        // The design services build only on requirements that are not rejected (GenerationInputs); with
+        // none left they would design from the raw source alone, so the stage stops instead.
+        if (!await GenerationInputs.For(_db.Artifacts, sourceId, ArtifactType.FunctionalRequirement).AnyAsync(cancellationToken))
+        {
+            throw new InvalidOperationException(GenerationInputs.AllRejectedMessage("design against"));
         }
 
         var produced = new List<AgentArtifactRef>();

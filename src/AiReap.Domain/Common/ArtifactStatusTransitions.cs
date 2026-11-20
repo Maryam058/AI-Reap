@@ -36,8 +36,11 @@ public static class ArtifactStatusTransitions
         (from, to) is (ArtifactStatus.Approved, ArtifactStatus.Implemented) or (ArtifactStatus.Implemented, ArtifactStatus.Verified);
 
     // Content in one of these states has been signed off; editing it must not keep the sign-off.
-    public static bool IsApprovedOrLater(ArtifactStatus status) =>
-        status is ArtifactStatus.Approved or ArtifactStatus.Implemented or ArtifactStatus.Verified;
+    // Exposed as a collection too so EF queries can filter on it (Contains translates to IN).
+    public static readonly IReadOnlyList<ArtifactStatus> ApprovedOrLaterStatuses =
+        [ArtifactStatus.Approved, ArtifactStatus.Implemented, ArtifactStatus.Verified];
+
+    public static bool IsApprovedOrLater(ArtifactStatus status) => ApprovedOrLaterStatuses.Contains(status);
 
     public static void EnsureHumanTransition(ArtifactStatus from, ArtifactStatus to)
     {

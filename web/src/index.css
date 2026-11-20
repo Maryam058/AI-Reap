@@ -1,78 +1,130 @@
 /* ===========================================================================
-   Design tokens — MMC / OctansCare system.
-   Light values on :root; dark overrides under [data-theme="dark"].
-   Everything downstream consumes these variables, so this block is the
-   single source of truth for the whole app's visual language.
+   Design tokens — AI-REAP natural palette.
+   Warm-white surfaces, muted teal as the primary action colour, soft sage as the
+   secondary, slate blue as a quiet accent. Light values on :root; dark overrides
+   under [data-theme="dark"]. Everything downstream consumes these variables, so
+   this block is the single source of truth for the whole app's visual language.
+
+   Workflow states — one colour family each, always shown with a text label:
+     pending / not started  neutral stone      (--neutral-*)
+     in progress            muted teal         (--primary / --progress-*)
+     awaiting approval      honey amber        (--warning-*)
+     completed              sage green         (--success-*)
+     approved               slate blue         (--approved-*)
+     blocked / attention    burnt clay         (--blocked-*)
+     rejected / failed      brick red          (--danger-*)
    ========================================================================= */
 
 :root {
   color-scheme: light;
   font-family: 'Inter', 'Aptos', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --font-display: 'Inter', 'Aptos', 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Inter', 'Aptos', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 
-  --bg: #f5f9fc;
-  --bg-gradient: linear-gradient(180deg, #f7fbfe 0%, #eef6fb 100%);
+  --bg: #f6f5f1;
+  --bg-gradient: linear-gradient(180deg, #f9f8f5 0%, #f2f1ec 100%);
   --surface: #ffffff;
-  --surface-hover: #f7fbff;
-  --surface-sunken: #f7faff;
+  --surface-hover: #f7f7f3;
+  --surface-sunken: #f5f4ef;
   --input-surface: #ffffff;
-  --border: #dbe6f2;
-  --border-strong: #c3d6ea;
-  --text: #071b3a;
-  --text-secondary: #51657d;
-  --muted: #51657d;
-  --muted-subtle: #94a5b8;
-  --placeholder: #94a5b8;
+  --border: #e3e1d9;
+  --border-strong: #d1cec3;
+  --text: #1e2b28;
+  --text-secondary: #56635e;
+  --muted: #56635e;
+  --muted-subtle: #8b958f;
+  --placeholder: #98a19c;
 
-  --primary: #2452c7;
-  --primary-hover: #173b98;
-  --primary-active: #123078;
-  --primary-light: #4c77dd;
-  --primary-soft: #eef5ff;
-  --primary-soft-border: #cdddf7;
+  --primary: #2e6b66;
+  --primary-hover: #245853;
+  --primary-active: #1c4744;
+  --primary-light: #4f8c85;
+  --primary-soft: #eaf2f0;
+  --primary-soft-border: #c9ddd8;
+  /* Solid teal fill for primary buttons and the active nav item. --primary (text/links)
+     lightens in dark mode for contrast; this stays deep enough for white text in both themes. */
+  --primary-solid: #2e6b66;
+  --primary-solid-hover: #245853;
+  --nav-active-shadow: 0 6px 16px rgba(46, 107, 102, 0.18);
+  --nav-hover: #eff3f1;
+  --nav-group-label: #87918b;
+  --input-border-hover: #b3bbb6;
+  --tooltip-bg: #1e2b28;
+  --page-header-bg: linear-gradient(105deg, #f1f6f3 0%, #f4f6f1 58%, #eef4ee 100%);
+  --page-header-border: #e0e7e1;
+  --page-header-shadow: 0 10px 24px rgba(40, 56, 50, 0.05);
+  --avatar-bg: #2f4b46;
+  --auth-bg: linear-gradient(135deg, #f9f8f5 0%, #f1f5f1 48%, #eaf2ee 100%);
+  --secondary: #6b8f72;
+  --secondary-hover: #52765a;
+  --secondary-soft: #eef3ec;
 
-  --secondary: #16bfa5;
-  --secondary-hover: #0c8b7a;
-  --secondary-soft: #e6f9f6;
+  --ai: #4b8a7f;
+  --ai-soft: #eaf3f0;
 
-  --ai: #16bfa5;
-  --ai-soft: #e6f9f6;
+  --progress: #2e6b66;
+  --progress-soft: #eaf2f0;
+  --progress-strong: #245853;
 
-  --success: #18b987;
-  --success-soft: #e9f8f4;
-  --success-strong: #0e865f;
-  --warning: #f5a416;
-  --warning-soft: #fff7e8;
-  --warning-strong: #b87504;
-  --danger: #f2545b;
-  --danger-soft: #fff0f1;
-  --danger-strong: #bf3038;
-  --info: #25aee4;
-  --info-soft: #eef5ff;
-  --violet-soft: #eef5ff;
+  --success: #5e8f63;
+  --success-soft: #edf4eb;
+  --success-strong: #3e6a44;
+  --approved: #4a6d96;
+  --approved-soft: #edf2f8;
+  --approved-strong: #35547a;
+  --warning: #c28b2c;
+  --warning-soft: #fbf4e3;
+  --warning-strong: #86600f;
+  /* The source viewer's highlight of a CQ's cited text (SourceDocumentViewer): one clear yellow, the
+     same as in the original PDF and Word views; the question's other passages more lightly. */
+  --evidence-hit: #ffe45c;
+  --evidence-hit-edge: #e0b400;
+  --evidence-hit-text: #1f1b00;
+  --evidence-related: #fff3b0;
+  --evidence-related-edge: #ecd36a;
+  --blocked: #b8693a;
+  --blocked-soft: #fbefe6;
+  --blocked-strong: #8c4820;
+  --danger: #b5514a;
+  --danger-soft: #f9ecea;
+  --danger-strong: #8f3730;
+  --info: #4f7896;
+  --info-soft: #edf3f7;
+  --violet-soft: #f0eff6;
 
-  --neutral-soft: #f5f7fa;
-  --neutral-strong: #51657d;
+  --neutral-soft: #f1f0eb;
+  --neutral-strong: #56635e;
 
-  --table-header-bg: #f7faff;
-  --table-header-text: #66758c;
+  --table-header-bg: #f7f6f2;
+  --table-header-text: #67716c;
   --table-row-bg: #ffffff;
-  --table-row-hover: #f7fbff;
-  --table-border: #edf3f8;
+  --table-row-hover: #f8f8f4;
+  --table-border: #eceae3;
 
+  /* Radius scale: 7px controls, 8px cards/panels/dialogs, 12px for rare large surfaces,
+     16px for nav-item highlights. */
   --radius-sm: 7px;
-  --radius-md: 7px;
-  --radius-lg: 8px;
-  --radius-xl: 16px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-nav: 10px;
   --radius-full: 999px;
 
-  --shadow-xs: 0 1px 2px rgba(18, 38, 63, 0.04);
-  --shadow-sm: 0 8px 22px rgba(18, 38, 63, 0.04);
-  --shadow-md: 0 12px 28px rgba(18, 38, 63, 0.09);
-  --shadow-lg: 0 20px 48px rgba(18, 38, 63, 0.16);
+  /* Elevation: near-invisible resting cards, popover lift for menus, deep for dialogs.
+     Shadows are tinted with the green-charcoal text colour rather than blue. */
+  --shadow-xs: 0 1px 2px rgba(34, 44, 40, 0.04);
+  --shadow-sm: 0 1px 2px rgba(34, 44, 40, 0.03), 0 6px 18px rgba(34, 44, 40, 0.04);
+  --shadow-md: 0 14px 32px rgba(34, 44, 40, 0.11);
+  --shadow-lg: 0 24px 56px rgba(34, 44, 40, 0.16);
+  --focus-ring: 0 0 0 3px rgba(46, 107, 102, 0.24);
+  --overlay: rgba(24, 32, 29, 0.42);
 
-  --brand-gradient: linear-gradient(135deg, #2452c7 0%, #16bfa5 100%);
-  --brand-gradient-soft: linear-gradient(135deg, rgba(36, 82, 199, 0.1) 0%, rgba(22, 191, 165, 0.1) 100%);
+  --brand-gradient: linear-gradient(135deg, #2e6b66 0%, #7d9f80 100%);
+  --brand-gradient-soft: linear-gradient(135deg, rgba(46, 107, 102, 0.08) 0%, rgba(125, 159, 128, 0.1) 100%);
+
+  --scrollbar-track: #f1f0eb;
+  --scrollbar-thumb: #c4c8c2;
+  --scrollbar-thumb-hover: #9ea69f;
+  --topbar-bg: rgba(250, 249, 246, 0.86);
 
   --sidebar-width: 248px;
   --sidebar-width-collapsed: 60px;
@@ -84,62 +136,96 @@
 :root[data-theme='dark'] {
   color-scheme: dark;
 
-  --bg: #07111f;
-  --bg-gradient: linear-gradient(180deg, #081525 0%, #07111f 100%);
-  --surface: #0d1a2c;
-  --surface-hover: #13243a;
-  --surface-sunken: #0a1626;
-  --input-surface: #0a1626;
-  --border: #1f3148;
-  --border-strong: #2a4159;
-  --text: #e7eef8;
-  --text-secondary: #9fb0c7;
-  --muted: #9fb0c7;
-  --muted-subtle: #6d7f99;
-  --placeholder: #7e90aa;
+  --bg: #121614;
+  --bg-gradient: linear-gradient(180deg, #141917 0%, #111412 100%);
+  --surface: #1a1f1d;
+  --surface-hover: #212826;
+  --surface-sunken: #161b19;
+  --input-surface: #161b19;
+  --border: #2b3330;
+  --border-strong: #3b4642;
+  --text: #e5ebe7;
+  --text-secondary: #a6b1ab;
+  --muted: #a6b1ab;
+  --muted-subtle: #75817b;
+  --placeholder: #7d8983;
 
-  --primary: #4c77dd;
-  --primary-hover: #6c92e6;
-  --primary-active: #2452c7;
-  --primary-light: #6c92e6;
-  --primary-soft: #17294a;
-  --primary-soft-border: #2a4470;
+  --primary: #74b6ac;
+  --primary-hover: #91c8bf;
+  --primary-active: #57998f;
+  --primary-light: #91c8bf;
+  --primary-soft: #1b2d2a;
+  --primary-soft-border: #2f4a45;
+  --primary-solid: #2f766f;
+  --primary-solid-hover: #3a8880;
+  --nav-active-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+  --nav-hover: #212826;
+  --nav-group-label: #75817b;
+  --input-border-hover: #4d5a55;
+  --tooltip-bg: #2a3330;
+  --page-header-bg: linear-gradient(105deg, #18211f 0%, #19221e 58%, #1b241d 100%);
+  --page-header-border: #2a3833;
+  --page-header-shadow: 0 16px 36px rgba(0, 0, 0, 0.28);
+  --avatar-bg: #2f766f;
+  --auth-bg: linear-gradient(135deg, #121614 0%, #151d1a 48%, #17221d 100%);
+  --secondary: #8fb595;
+  --secondary-hover: #a9c9ae;
+  --secondary-soft: #1e2a20;
 
-  --secondary: #16bfa5;
-  --secondary-hover: #33d6bc;
-  --secondary-soft: #0f2b28;
+  --ai: #7cbcaf;
+  --ai-soft: #1a2d29;
 
-  --ai: #16bfa5;
-  --ai-soft: #0f2b28;
+  --progress: #74b6ac;
+  --progress-soft: #1b2d2a;
+  --progress-strong: #91c8bf;
 
-  --success: #2fd6a3;
-  --success-soft: #0d2a22;
-  --success-strong: #6fe8c4;
-  --warning: #f7b73f;
-  --warning-soft: #2c220c;
-  --warning-strong: #ffcc66;
-  --danger: #f2545b;
-  --danger-soft: #2c1315;
-  --danger-strong: #ff8087;
-  --info: #4fc3f2;
-  --info-soft: #142a3a;
-  --violet-soft: #17294a;
+  --success: #88ba8c;
+  --success-soft: #1d2a1e;
+  --success-strong: #a9d2ac;
+  --approved: #8dafd6;
+  --approved-soft: #1b2431;
+  --approved-strong: #b1cae7;
+  --warning: #d9aa52;
+  --warning-soft: #2d2616;
+  --warning-strong: #ebc67e;
+  --evidence-hit: #ffe45c;
+  --evidence-hit-edge: #f2cc2c;
+  --evidence-hit-text: #1f1b00;
+  --evidence-related: rgb(255 228 92 / 0.26);
+  --evidence-related-edge: #8a7a3a;
+  --blocked: #db8d5f;
+  --blocked-soft: #2f221a;
+  --blocked-strong: #efae87;
+  --danger: #e08078;
+  --danger-soft: #2f1c1a;
+  --danger-strong: #f0a49c;
+  --info: #84abc9;
+  --info-soft: #1b2630;
+  --violet-soft: #232331;
 
-  --neutral-soft: #142235;
-  --neutral-strong: #9fb0c7;
+  --neutral-soft: #202724;
+  --neutral-strong: #a6b1ab;
 
-  --table-header-bg: #0a1626;
-  --table-header-text: #9fb0c7;
-  --table-row-bg: #0d1a2c;
-  --table-row-hover: #13243a;
-  --table-border: #1f3148;
+  --table-header-bg: #161b19;
+  --table-header-text: #a6b1ab;
+  --table-row-bg: #1a1f1d;
+  --table-row-hover: #212826;
+  --table-border: #2b3330;
 
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-sm: 0 8px 22px rgba(0, 0, 0, 0.28);
+  --shadow-sm: 0 6px 18px rgba(0, 0, 0, 0.26);
   --shadow-md: 0 12px 28px rgba(0, 0, 0, 0.36);
   --shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.5);
+  --focus-ring: 0 0 0 3px rgba(116, 182, 172, 0.32);
+  --overlay: rgba(6, 9, 8, 0.6);
 
-  --brand-gradient: linear-gradient(135deg, #4c77dd 0%, #16bfa5 100%);
+  --brand-gradient: linear-gradient(135deg, #2f766f 0%, #6f9474 100%);
+  --brand-gradient-soft: linear-gradient(135deg, rgba(116, 182, 172, 0.1) 0%, rgba(143, 181, 149, 0.1) 100%);
+
+  --scrollbar-track: #161b19;
+  --scrollbar-thumb: #3b4642;
+  --scrollbar-thumb-hover: #4d5a55;
+  --topbar-bg: rgba(20, 25, 23, 0.9);
 }
 
 * {
@@ -162,9 +248,25 @@ body {
   transition: background var(--motion-base), color var(--motion-base);
 }
 
+/* Scrollbars: slim, rounded, theme-aware. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
 h1, h2, h3, h4 {
   font-family: var(--font-display);
-  letter-spacing: normal;
+  letter-spacing: 0;
   color: var(--text);
 }
 
@@ -199,19 +301,15 @@ a {
   align-items: center;
   gap: 0.9rem;
   height: var(--header-height);
-  padding: 0 1.5rem;
-  background: rgba(255, 255, 255, 0.82);
-  backdrop-filter: saturate(180%) blur(12px);
-  -webkit-backdrop-filter: saturate(180%) blur(12px);
+  padding: 0 1rem;
+  background: var(--topbar-bg);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
   z-index: 20;
   transition: background var(--motion-base), border-color var(--motion-base);
-}
-
-:root[data-theme='dark'] .topbar {
-  background: rgba(13, 26, 44, 0.78);
 }
 
 .topbar-spacer {
@@ -250,7 +348,7 @@ a {
 .icon-btn:focus-visible {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-soft);
+  box-shadow: var(--focus-ring);
 }
 
 .sidebar-open-btn {
@@ -333,7 +431,7 @@ main {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
   padding: 1.25rem;
-  margin: 1.25rem 0;
+  margin: 1rem 0;
   text-align: left;
 }
 
@@ -351,8 +449,9 @@ form select {
   display: block;
   width: 100%;
   margin-top: 0.35rem;
-  padding: 0.55rem 0.7rem;
-  border: 1.5px solid var(--border);
+  min-height: 36px;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--input-surface);
   color: var(--text);
@@ -364,7 +463,7 @@ form select {
 form input:hover,
 form textarea:hover,
 form select:hover {
-  border-color: var(--border-strong);
+  border-color: var(--input-border-hover);
 }
 
 form input:focus,
@@ -372,7 +471,7 @@ form textarea:focus,
 form select:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-soft);
+  box-shadow: var(--focus-ring);
 }
 
 button[type='submit'] {
@@ -380,19 +479,19 @@ button[type='submit'] {
   align-items: center;
   gap: 0.4rem;
   height: 36px;
-  background: var(--primary);
+  background: var(--primary-solid);
   color: #fff;
   border: none;
   border-radius: var(--radius-sm);
-  padding: 0 1rem;
+  padding: 0 0.875rem;
   font-size: 0.8125rem;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
   transition: background var(--motion-fast);
 }
 
 button[type='submit']:hover {
-  background: var(--primary-hover);
+  background: var(--primary-solid-hover);
 }
 
 button[type='submit']:disabled {
@@ -439,8 +538,8 @@ button[type='submit']:disabled {
   color: var(--primary);
   font-size: 0.6875rem;
   font-weight: 800;
-  letter-spacing: 0.02em;
-  padding: 0 0.55rem;
+  letter-spacing: 0;
+  padding: 0 0.5625rem;
   border-radius: var(--radius-full);
   white-space: nowrap;
 }
@@ -548,7 +647,7 @@ pre {
 .req-textarea:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 4px var(--primary-soft);
+  box-shadow: var(--focus-ring);
 }
 
 .req-intake-actions {
@@ -755,6 +854,142 @@ pre {
   gap: 0.5rem;
 }
 
+/* Dry-run AI plan under the Analyze / Generate buttons (AiPlanSummary). */
+.ai-plan {
+  flex-basis: 100%;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  border-left: 3px solid var(--border-strong);
+  padding: 0.35rem 0.6rem;
+  border-radius: var(--radius-sm);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ai-plan-muted {
+  margin: 0;
+  border-left-color: var(--border);
+}
+
+.ai-plan-ok {
+  border-left-color: var(--success);
+}
+
+.ai-plan-warn {
+  border-left-color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.ai-plan-block {
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.ai-plan-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.ai-plan-chip {
+  font-weight: 600;
+  font-size: 0.72rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+}
+
+.ai-plan-chip-ok {
+  color: var(--success-strong);
+  background: var(--success-soft);
+}
+
+.ai-plan-chip-warn {
+  color: var(--warning-strong);
+  background: var(--surface);
+}
+
+.ai-plan-chip-block {
+  color: var(--danger-strong);
+  background: var(--surface);
+}
+
+.ai-plan-label {
+  color: var(--muted);
+}
+
+.ai-plan-providers,
+.ai-plan-details ul {
+  margin: 0.3rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.ai-plan-summary {
+  margin: 0.3rem 0 0;
+  color: var(--text);
+}
+
+.ai-plan-details {
+  margin-top: 0.25rem;
+}
+
+.ai-plan-details summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.ai-plan-caveats {
+  color: var(--muted);
+}
+
+/* Batched AI run under the AI plan (AiRunPanel). */
+.ai-run {
+  flex-basis: 100%;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ai-run-head,
+.ai-run-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.ai-run-text {
+  margin: 0;
+}
+
+.ai-run progress {
+  width: 100%;
+  height: 0.4rem;
+}
+
+.ai-run-error {
+  margin: 0;
+  color: var(--danger-strong);
+}
+
+.ai-run-failed,
+.ai-run-superseded {
+  border-color: var(--danger);
+}
+
+.ai-run-committed {
+  border-color: var(--success);
+}
+
 /* ---- AI result panels ---- */
 
 .req-ai-panel {
@@ -876,6 +1111,39 @@ pre {
   border-top: 1px dashed var(--border);
 }
 
+.req-notes .req-notes-toggle .detail-label {
+  margin-bottom: 0;
+}
+
+.req-notes-text {
+  margin: 0.35rem 0 0;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.req-show-more {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.4rem;
+  border: none;
+  background: none;
+  color: var(--primary);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.req-show-more:hover {
+  text-decoration: underline;
+}
+
+.req-show-more:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm, 4px);
+}
+
 /* ---- Sections & cards ---- */
 
 .req-section {
@@ -950,6 +1218,10 @@ pre {
   border-left-color: var(--primary-light);
 }
 
+.artifact-card.tone-approved {
+  border-left-color: var(--approved);
+}
+
 .artifact-card.tone-danger {
   border-left-color: var(--danger);
 }
@@ -995,25 +1267,619 @@ pre {
   color: var(--text);
 }
 
-.cq-reason {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.4rem;
+/* Kind chip and requirement references next to a clarification question's code. */
+.cq-kind {
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.cq-related {
   margin: 0 0 0.75rem;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
-.cq-reason svg {
-  flex-shrink: 0;
-  margin-top: 0.15rem;
-  color: var(--muted-subtle);
-}
-
-.cq-reason .detail-label {
+.cq-related .detail-label {
   font-size: 0.8rem;
   letter-spacing: 0;
   text-transform: none;
+}
+
+/* The verified passage a question comes from: one chip per passage (both statements of a conflict),
+   named by its section heading, opening the source at that passage highlighted (SourceDocumentViewer). */
+.cq-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0 0 0.75rem;
+}
+
+.cq-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  min-height: 1.9rem;
+  padding: 0.2rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface, transparent);
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--primary);
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.cq-source svg {
+  flex-shrink: 0;
+}
+
+.cq-source:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.cq-source:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.cq-source-statement {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cq-source-statement::after {
+  content: '·';
+  margin-left: 0.35rem;
+  color: var(--muted);
+}
+
+.cq-source-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.req-rejected-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.82rem;
+}
+
+.req-rejected-question {
+  display: block;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.req-rejected-reasons {
+  display: block;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* ---- Held for review (HeldForReviewSection) ----
+   Proposed questions held back for a person: read-only, and drawn apart from accepted clarification
+   questions by a dashed edge, a "Not a clarification question" tag and side-by-side passages. */
+.held-card {
+  border-left: 3px dashed var(--warning-strong);
+  background: linear-gradient(var(--warning-soft), var(--warning-soft)) top / 100% 2.6rem no-repeat, var(--surface);
+}
+
+.held-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.held-tag {
+  padding: 0.05rem 0.45rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.held-topic {
+  margin: 0.25rem 0 0.4rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.held-question .cq-question {
+  margin-top: 0.15rem;
+  overflow-wrap: anywhere;
+}
+
+.held-passages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+  gap: 0.75rem;
+  margin: 0.25rem 0 0.75rem;
+}
+
+.held-passage {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.held-quote-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.held-quote {
+  margin: 0;
+  padding: 0.55rem 0.75rem;
+  border-left: 3px solid var(--primary-light, var(--primary));
+  border-radius: 0 var(--radius-md, 6px) var(--radius-md, 6px) 0;
+  background: var(--surface-sunken);
+  color: var(--text);
+  font-size: 0.84rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.held-passage-contradicts .held-quote {
+  border-left-color: var(--danger);
+}
+
+.held-quote-missing,
+.held-where-text {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.held-reason {
+  margin: 0;
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.held-reason .detail-label {
+  display: block;
+  margin-bottom: 0.15rem;
+}
+
+.src-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.src-viewer-status,
+.src-viewer-note {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.src-viewer-attach {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm, 6px);
+  font-size: 0.85rem;
+}
+
+.src-viewer-attach p {
+  margin: 0;
+  flex: 1 1 22rem;
+}
+
+.src-viewer-attach .src-viewer-warning {
+  flex-basis: 100%;
+}
+
+.src-viewer-warning {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--warning-soft);
+  color: var(--warning-strong);
+  font-size: 0.85rem;
+}
+
+/* The clarification question shown in the source viewer, above the statement it cites. */
+.src-viewer-question {
+  padding: 0.6rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-sunken);
+}
+
+.src-viewer-question .detail-label {
+  display: block;
+  margin-bottom: 0.2rem;
+}
+
+.src-viewer-question p {
+  margin: 0;
+  font-weight: 500;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.src-viewer-evidence {
+  margin: 0;
+  padding: 0.6rem 0.85rem;
+  border-left: 3px solid var(--primary);
+  background: var(--primary-soft);
+  border-radius: 0 6px 6px 0;
+  font-size: 0.88rem;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.src-viewer-evidence .detail-label {
+  display: block;
+  margin-bottom: 0.2rem;
+}
+
+.src-viewer-doc {
+  position: relative;
+  max-height: min(60vh, 560px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+.src-viewer-doc:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.src-line {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0 0.75rem 0 0;
+  border-left: 3px solid transparent;
+}
+
+.src-line-no {
+  flex: 0 0 3.25rem;
+  text-align: right;
+  color: var(--muted-subtle);
+  user-select: none;
+}
+
+.src-line-text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+/* The cited range has a bar beside it, not a fill: only the passage's exact text is yellow. */
+.src-line-cited {
+  border-left-color: var(--evidence-hit-edge);
+}
+
+.src-line-heading {
+  border-left-color: var(--primary);
+  font-weight: 700;
+}
+
+/* The question's other passages (the other side of a conflict), marked more lightly. */
+.src-line-related {
+  border-left-color: var(--evidence-related-edge);
+}
+
+.src-viewer-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+/* Passages side by side (SourceDocumentViewer): one column per panel, as many as fit, then the row
+   scrolls sideways - on a phone one panel per view, snapping. Each panel's document scrolls on its own. */
+.src-viewer-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+}
+
+.src-viewer-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+}
+
+.src-viewer-panels {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(min(100%, 26rem), 1fr);
+  gap: 0.75rem;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  padding-bottom: 0.25rem;
+}
+
+/* Tablet: narrower panels so two fit side by side (a 768px window); a phone still shows one. */
+@media (max-width: 1100px) {
+  .src-viewer-panels {
+    grid-auto-columns: minmax(min(100%, 20rem), 1fr);
+  }
+}
+
+.src-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  scroll-snap-align: start;
+}
+
+.src-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.src-panel-head .select-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.src-panel-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.15rem;
+}
+
+.src-panel-actions .icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* One compact line under the picker: file · section (at most two lines, the full text as a tooltip),
+   with the original/extracted-text toggle beside it. */
+.src-panel-where {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+}
+
+.src-panel-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.src-panel-file {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.src-panel-ref {
+  color: var(--muted);
+}
+
+.src-panel-file + .src-panel-ref::before {
+  content: ' · ';
+}
+
+.src-panel-where .btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.src-panel .src-viewer-doc {
+  max-height: min(56vh, 520px);
+}
+
+.src-panel .src-original {
+  height: min(58vh, 600px);
+}
+
+.src-line mark.src-hit {
+  background: var(--evidence-hit);
+  color: var(--evidence-hit-text);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px var(--evidence-hit-edge);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.src-line mark.src-hit-related {
+  background: var(--evidence-related);
+  color: inherit;
+  box-shadow: none;
+}
+
+/* The original document with its bar above it: zoom, and for a PDF the page in view. */
+.src-original-frame {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.src-original-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem 0.75rem;
+}
+
+.src-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.src-zoom-level {
+  min-width: 3.25rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.src-original-page {
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+/* A kept original that could not be shown: said plainly, with Retry and the text as a choice. */
+.src-viewer-failed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--evidence-hit-edge);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+}
+
+.src-viewer-failed p {
+  margin: 0;
+}
+
+.src-viewer-failed-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* The original PDF/DOCX (OriginalDocumentViews): the pane scrolls, the page behind does not. */
+.src-original {
+  display: block;
+  width: 100%;
+  height: min(64vh, 680px);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+}
+
+.src-original:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.src-pdf {
+  overflow: auto;
+  padding: 16px;
+  /* Room for the scrollbar from the start, so a page fitted to the width never scrolls sideways. */
+  scrollbar-gutter: stable;
+}
+
+.src-pdf-page {
+  position: relative;
+  margin: 0 auto 16px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
+}
+
+.src-pdf-page canvas {
+  display: block;
+}
+
+/* pdf.js text layer: transparent text over the canvas, kept only so the cited text can be marked
+   (the rules pdf.js's own viewer applies; its full stylesheet is not loaded). */
+.src-pdf-page .textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  transform-origin: 0 0;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+
+.src-pdf-page .textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  transform-origin: 0% 0%;
+}
+
+.src-pdf-page .textLayer > :not(.markedContent),
+.src-pdf-page .textLayer .markedContent span:not(.markedContent) {
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.src-pdf-page .textLayer .markedContent {
+  display: contents;
+}
+
+/* The marks lie over the drawn page (the text layer's text is transparent), so the yellow is
+   translucent: the page's own glyphs, fonts and layout show through unchanged. */
+.src-pdf-page mark.src-hit {
+  background: rgb(255 221 0 / 0.5);
+  color: transparent;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgb(214 170 0 / 0.9);
+}
+
+.src-pdf-page mark.src-hit-related {
+  background: rgb(255 221 0 / 0.22);
+  box-shadow: none;
+}
+
+/* A quote's section heading, for context: underlined, not highlighted - it is not the passage. */
+.src-pdf-page mark.src-heading-mark {
+  background: transparent;
+  color: transparent;
+  box-shadow: inset 0 -2px 0 rgb(90 100 115 / 0.55);
 }
 
 .cq-answer-form .req-textarea {
@@ -1087,9 +1953,11 @@ pre {
   color: var(--warning-strong);
 }
 
+/* Outlined, not the filled green of the Approved status pill: confirmation is a separate state. */
 .assumption-pill.assumption-confirmed {
-  background: var(--success-soft);
-  color: var(--success-strong);
+  background: transparent;
+  color: var(--primary);
+  box-shadow: inset 0 0 0 1px currentColor;
 }
 
 .kind-pill {
@@ -1555,10 +2423,12 @@ pre {
   gap: 0.4rem;
   font-family: inherit;
   font-size: 0.8125rem;
-  font-weight: 700;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-decoration: none;
   border-radius: var(--radius-sm);
   height: 36px;
-  padding: 0 1rem;
+  padding: 0 0.875rem;
   border: 1px solid transparent;
   cursor: pointer;
   transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast),
@@ -1567,12 +2437,13 @@ pre {
 }
 
 .btn:active:not(:disabled) {
-  transform: translateY(1px);
+  filter: brightness(0.97);
 }
 
 .btn:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
 .btn:focus-visible {
@@ -1580,13 +2451,20 @@ pre {
   box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--primary-light);
 }
 
+.btn svg {
+  flex-shrink: 0;
+}
+
+/* MMC buttons are flat (disableElevation): solid cobalt primary, outlined secondary. */
 .btn-primary {
-  background: var(--primary);
+  background: var(--primary-solid);
   color: #fff;
+  box-shadow: none;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: var(--primary-hover);
+  background: var(--primary-solid-hover);
+  box-shadow: none;
 }
 
 .btn-primary:active:not(:disabled) {
@@ -1596,12 +2474,14 @@ pre {
 .btn-secondary {
   background: var(--input-surface);
   color: var(--text);
-  border-color: var(--primary-soft-border);
+  border-color: var(--border-strong);
+  box-shadow: none;
 }
 
 .btn-secondary:hover:not(:disabled) {
   background: var(--primary-soft);
-  border-color: var(--primary-light);
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 .btn-ghost {
@@ -1617,6 +2497,11 @@ pre {
 .btn-danger {
   background: var(--danger);
   color: #fff;
+  box-shadow: none;
+}
+
+.btn-danger:focus-visible {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--danger);
 }
 
 .btn-danger:hover:not(:disabled) {
@@ -1626,13 +2511,13 @@ pre {
 .btn-sm {
   height: 32px;
   padding: 0 0.75rem;
-  font-size: 0.78rem;
+  font-size: 0.8125rem;
 }
 
 .btn-lg {
   height: 40px;
-  padding: 0 1.25rem;
-  font-size: 0.85rem;
+  padding: 0 1.125rem;
+  font-size: 0.875rem;
 }
 
 .btn-block {
@@ -1698,7 +2583,7 @@ pre {
   font-weight: 800;
   font-size: 0.85rem;
   flex-shrink: 0;
-  box-shadow: 0 6px 14px -5px rgba(36, 82, 199, 0.55);
+  box-shadow: 0 6px 14px -6px rgba(46, 107, 102, 0.5);
 }
 
 .sidebar-brand-name {
@@ -1800,39 +2685,6 @@ main [id] {
   flex-shrink: 1;
 }
 
-.sidebar-collapse-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--muted);
-  cursor: pointer;
-  position: absolute;
-  right: -13px;
-  top: calc(var(--header-height) / 2 - 13px);
-  box-shadow: var(--shadow-sm);
-  transition: background var(--motion-fast), color var(--motion-fast);
-}
-
-.sidebar-collapse-toggle:hover {
-  background: var(--primary-soft);
-  color: var(--primary);
-}
-
-.sidebar-collapse-toggle svg {
-  width: 14px;
-  height: 14px;
-  transition: transform var(--motion-base);
-}
-
-.sidebar-collapse-toggle svg.rotated {
-  transform: rotate(180deg);
-}
-
 .sidebar-scrim {
   display: none;
 }
@@ -1856,28 +2708,13 @@ main [id] {
     align-items: stretch;
   }
 
-  .sidebar.collapsed .nav-link {
-    flex: 1;
-    justify-content: flex-start;
-    width: auto;
-    padding: 0.5rem 0.6rem;
-  }
-
-  .sidebar.collapsed .nav-modules {
-    align-items: stretch;
-  }
-
-  .sidebar.collapsed .nav-link.active::before {
-    left: -0.75rem;
-  }
-
   .sidebar-mobile-close {
     display: inline-flex;
     align-items: center;
     justify-content: center;
   }
 
-  .sidebar-collapse-toggle {
+  .sidebar-footer {
     display: none;
   }
 
@@ -1885,7 +2722,7 @@ main [id] {
     display: block;
     position: fixed;
     inset: 0;
-    background: rgba(7, 17, 31, 0.45);
+    background: var(--overlay);
     z-index: 55;
   }
 
@@ -1908,6 +2745,14 @@ main [id] {
   font-size: 0.75rem;
   font-weight: 700;
   flex-shrink: 0;
+}
+
+/* MMC header avatar: small solid navy disc (cobalt in dark mode). */
+.topbar-user .avatar {
+  width: 30px;
+  height: 30px;
+  background: var(--avatar-bg);
+  font-size: 0.7rem;
 }
 
 .avatar.avatar-lg {
@@ -1954,10 +2799,9 @@ main [id] {
 }
 
 /* ===========================================================================
-   Sign in / Sign up — light, mint/teal SaaS auth experience.
-   Left: light dotted canvas, gradient headline, feature list. Right: a
-   floating white card. Reuses --secondary (teal) and --primary (cobalt) —
-   no third color introduced.
+   Sign in / Sign up — MMC sign-in pattern.
+   Left: navy → cobalt → teal hero with white type over a faint grid.
+   Right: a white card on the MMC page wash, with a solid cobalt submit.
    ========================================================================= */
 
 .auth-screen {
@@ -1977,7 +2821,9 @@ main [id] {
   gap: 2.5rem;
   padding: 3rem 4rem;
   overflow: hidden;
-  background: linear-gradient(160deg, #f4fbf9 0%, #f7fbfe 55%, #eef7f4 100%);
+  isolation: isolate;
+  color: #fff;
+  background: linear-gradient(140deg, #1f3a36 0%, #2e6b66 52%, #6f9474 100%);
 }
 
 .auth-hero-panel::before {
@@ -1985,9 +2831,10 @@ main [id] {
   position: absolute;
   inset: 0;
   z-index: -1;
-  background-image: radial-gradient(circle, rgba(22, 191, 165, 0.35) 1px, transparent 1px);
-  background-size: 22px 22px;
-  mask-image: radial-gradient(ellipse 85% 75% at 50% 40%, #000 45%, transparent 85%);
+  opacity: 0.16;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.24) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.24) 1px, transparent 1px);
+  background-size: 44px 44px;
 }
 
 .auth-brand {
@@ -2001,12 +2848,12 @@ main [id] {
 }
 
 .auth-brand-mark {
-  width: 40px;
-  height: 40px;
-  border-radius: 11px;
-  background: linear-gradient(150deg, var(--secondary) 0%, var(--secondary-hover) 100%);
-  box-shadow: 0 8px 18px -8px rgba(12, 139, 122, 0.55);
-  color: #fff;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.2);
+  color: #2e6b66;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2021,16 +2868,16 @@ main [id] {
 .auth-brand-name {
   display: block;
   font-family: var(--font-display);
-  font-weight: 700;
-  font-size: 1.02rem;
-  color: var(--text);
-  line-height: 1.25;
+  font-weight: 800;
+  font-size: 1rem;
+  color: #fff;
+  line-height: 1.2;
 }
 
 .auth-brand-tag {
   display: block;
-  font-size: 0.72rem;
-  color: var(--muted-subtle);
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.72);
 }
 
 .auth-hero-copy {
@@ -2041,21 +2888,18 @@ main [id] {
   font-size: 2.25rem;
   line-height: 1.25;
   font-weight: 800;
-  color: var(--text);
+  color: #fff;
   margin: 0 0 1rem;
 }
 
 .auth-hero-accent {
-  background: linear-gradient(100deg, var(--secondary) 0%, var(--primary) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: #8ff0df;
 }
 
 .auth-hero-sub {
   font-size: 1rem;
   line-height: 1.65;
-  color: var(--muted);
+  color: rgba(255, 255, 255, 0.78);
   margin: 0;
 }
 
@@ -2090,32 +2934,26 @@ main [id] {
   height: 18px;
 }
 
-.auth-feature-icon.tone-mint {
-  background: var(--success-soft);
-  color: var(--success-strong);
-}
-
-.auth-feature-icon.tone-blue {
-  background: var(--primary-soft);
-  color: var(--primary);
-}
-
+/* On the coloured hero every feature icon uses the same translucent white tile. */
+.auth-feature-icon.tone-mint,
+.auth-feature-icon.tone-blue,
 .auth-feature-icon.tone-teal {
-  background: var(--ai-soft);
-  color: var(--secondary-hover);
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #fff;
 }
 
 .auth-feature-title {
   display: block;
   font-size: 0.92rem;
   font-weight: 700;
-  color: var(--text);
+  color: #fff;
 }
 
 .auth-feature-desc {
   display: block;
   font-size: 0.83rem;
-  color: var(--muted);
+  color: rgba(255, 255, 255, 0.72);
   line-height: 1.5;
   margin-top: 0.15rem;
 }
@@ -2128,7 +2966,7 @@ main [id] {
   align-items: center;
   justify-content: center;
   padding: 2.5rem 1.75rem;
-  background: var(--bg);
+  background: var(--auth-bg);
   min-height: 100vh;
 }
 
@@ -2137,14 +2975,14 @@ main [id] {
   max-width: 440px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 20px;
-  box-shadow: 0 24px 48px -18px rgba(18, 38, 63, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 24px 48px -18px rgba(34, 44, 40, 0.14);
   padding: 2.75rem;
 }
 
 .auth-card h2 {
   margin: 0 0 0.4rem;
-  font-size: 1.6rem;
+  font-size: 1.75rem;
   font-weight: 800;
   color: var(--text);
 }
@@ -2166,20 +3004,15 @@ main [id] {
 
 .auth-card .field-input-wrap input,
 .auth-card .select-input {
-  height: 50px;
+  height: 48px;
+  border-radius: 10px;
 }
 
 .auth-card .btn.btn-block {
-  height: 50px;
-  font-size: 0.95rem;
-}
-
-.auth-card .btn.btn-primary {
-  background: linear-gradient(100deg, var(--secondary) 0%, var(--primary) 100%);
-}
-
-.auth-card .btn.btn-primary:hover:not(:disabled) {
-  background: linear-gradient(100deg, var(--secondary-hover) 0%, var(--primary-hover) 100%);
+  height: 48px;
+  border-radius: 10px;
+  font-size: 0.9375rem;
+  font-weight: 800;
 }
 
 .auth-form-row {
@@ -2254,7 +3087,7 @@ main [id] {
     display: none;
   }
   .auth-main {
-    background: var(--bg);
+    background: var(--auth-bg);
   }
 }
 
@@ -2264,7 +3097,7 @@ main [id] {
   }
   .auth-card {
     padding: 1.75rem;
-    border-radius: 16px;
+    border-radius: 14px;
   }
   .auth-card h2 {
     font-size: 1.4rem;
@@ -2285,6 +3118,11 @@ main [id] {
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.field-required {
+  color: var(--danger);
+  font-weight: 700;
 }
 
 .field-input-wrap {
@@ -2325,7 +3163,7 @@ main [id] {
 .field-input-wrap input:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 4px var(--primary-soft);
+  box-shadow: var(--focus-ring);
 }
 
 .field-input-wrap:focus-within .field-icon {
@@ -2396,7 +3234,7 @@ main [id] {
 .select-input:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 4px var(--primary-soft);
+  box-shadow: var(--focus-ring);
 }
 
 .alert {
@@ -2443,7 +3281,8 @@ main [id] {
 .dialog-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(7, 17, 31, 0.5);
+  background: var(--overlay);
+  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2467,18 +3306,33 @@ main [id] {
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1.25rem 1.5rem;
+  padding: 1.125rem 1.5rem;
   border-bottom: 1px solid var(--border);
 }
 
 .dialog-header h2 {
   margin: 0;
-  font-size: 1.15rem;
+  font-size: 1rem;
   font-weight: 700;
 }
 
+/* A long unbroken title (a file name) wraps instead of pushing the Close button out of the dialog. */
+.dialog-header > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dialog-header h2,
+.dialog-header .dialog-description {
+  overflow-wrap: anywhere;
+}
+
+.dialog-header > .icon-btn {
+  flex: 0 0 auto;
+}
+
 .dialog-body {
-  padding: 1.5rem;
+  padding: 1.25rem 1.5rem;
 }
 
 .dialog-footer {
@@ -2486,8 +3340,9 @@ main [id] {
   align-items: center;
   justify-content: flex-end;
   gap: 0.6rem;
-  padding: 1rem 1.5rem;
+  padding: 0.875rem 1.5rem;
   border-top: 1px solid var(--border);
+  background: var(--surface-sunken);
 }
 
 /* Dashboard */
@@ -2575,22 +3430,22 @@ main [id] {
 }
 
 .metric-icon.tone-primary {
-  background: linear-gradient(150deg, #eef0fe 0%, var(--primary-soft) 100%);
+  background: var(--primary-soft);
   color: var(--primary);
 }
 
 .metric-icon.tone-success {
-  background: linear-gradient(150deg, #edfbf1 0%, var(--success-soft) 100%);
+  background: var(--success-soft);
   color: var(--success);
 }
 
 .metric-icon.tone-warning {
-  background: linear-gradient(150deg, #fff6e9 0%, var(--warning-soft) 100%);
+  background: var(--warning-soft);
   color: var(--warning);
 }
 
 .metric-icon.tone-ai {
-  background: linear-gradient(150deg, #f8f4ff 0%, var(--ai-soft) 100%);
+  background: var(--ai-soft);
   color: var(--ai);
 }
 
@@ -2727,7 +3582,9 @@ main [id] {
   margin-top: auto;
 }
 
-/* Status pill variants (used alongside the base .status-pill) */
+/* Status pill variants (used alongside the base .status-pill). One family per workflow
+   state — see the token header. Approved and Blocked also differ in shape (outline /
+   dashed outline) so they never rely on colour alone. */
 
 .status-pill.tone-neutral {
   background: var(--neutral-soft);
@@ -2735,8 +3592,21 @@ main [id] {
 }
 
 .status-pill.tone-info {
-  background: var(--primary-soft);
-  color: var(--primary);
+  background: var(--progress-soft);
+  color: var(--progress-strong);
+}
+
+.status-pill.tone-approved {
+  background: var(--approved-soft);
+  color: var(--approved-strong);
+  box-shadow: inset 0 0 0 1px var(--approved);
+}
+
+.status-pill.tone-blocked {
+  background: var(--blocked-soft);
+  color: var(--blocked-strong);
+  outline: 1px dashed var(--blocked);
+  outline-offset: -1px;
 }
 
 .status-pill.tone-success {
@@ -2820,12 +3690,6 @@ main [id] {
   margin-top: 0.5rem;
 }
 
-.agent-stage-actions button.secondary {
-  background: none;
-  color: var(--danger);
-  border: 1px solid var(--border);
-}
-
 .agent-stage-actions input {
   flex: 1;
   min-width: 10rem;
@@ -2847,22 +3711,24 @@ main [id] {
   font-size: 0.85rem;
 }
 
-.users-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.users-table th,
-.users-table td {
-  text-align: left;
-  padding: 0.5rem 0.6rem;
-  border-top: 1px solid var(--border);
-}
-
+/* The users table takes its look from .data-table; only the row action is specific. */
 .users-table button.secondary {
-  background: none;
-  color: var(--danger);
-  border: 1px solid var(--border);
+  height: 30px;
+  padding: 0 0.7rem;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--danger-strong);
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast);
+}
+
+.users-table button.secondary:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
 }
 
 /* Side panels */

@@ -1,7 +1,10 @@
+using AiReap.Api.Auth;
 using AiReap.Api.Authorization;
 using AiReap.Application.Ai.Pipeline;
+using AiReap.Application.Lifecycle;
 using AiReap.Application.Projects;
 using AiReap.Domain.Common;
+using AiReap.Domain.Enums;
 using AiReap.Infrastructure.Identity;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
@@ -17,12 +20,14 @@ public class ProjectsController : ControllerBase
     private readonly IProjectService _projectService;
     private readonly IConflictDetectionService _conflictDetectionService;
     private readonly UserManager<ApplicationUser> _userManager;
+    private readonly IProjectLifecycleService _lifecycle;
 
-    public ProjectsController(IProjectService projectService, IConflictDetectionService conflictDetectionService, UserManager<ApplicationUser> userManager)
+    public ProjectsController(IProjectService projectService, IConflictDetectionService conflictDetectionService, UserManager<ApplicationUser> userManager, IProjectLifecycleService lifecycle)
     {
         _projectService = projectService;
         _conflictDetectionService = conflictDetectionService;
         _userManager = userManager;
+        _lifecycle = lifecycle;
     }
 
     // §4: project creation is a Business Analyst / Administrator responsibility.
@@ -60,21 +65,40 @@ public class ProjectsController : ControllerBase
         return project is null ? NotFound() : Ok(project);
     }
 
-    // §24: status transitions represent approval-workflow milestones — Business Analyst
-    // drives most of them, Reviewer/Manager drives Approved, Administrator can always act.
-    // §5/REAP-021 — only the current stage or the next one in the fixed lifecycle is a legal target.
+    // Permanent delete of the project and all its data (artifacts, sources, documents, runs,
+    // lifecycle history, members). Administrator only - irreversible, unlike every other project action.
+    [HttpDelete("{projectId:guid}")]
+    [Authorize(Roles = Roles.Administrator)]
+    [Capability("Administer", "Delete projects and all their data", 105)]
+    public async Task<IActionResult> Delete(Guid projectId, CancellationToken cancellationToken)
+    {
+        var deleted = await _projectService.DeleteAsync(projectId, cancellationToken);
+        return deleted ? NoContent() : NotFound();
+    }
+
+    // Legacy endpoint, kept for existing clients. It no longer writes Project.Status itself: moving to
+    // the next stage goes through ProjectLifecycleService, with the same stage ownership, exit checks,
+    // gating, history, notifications and concurrency rules as POST .../lifecycle/transitions.
+    //   same status  -> 200, unchanged (the old "stay put" case)
+    //   next stage   -> 200 when it moved, 202 when it became a pending request (Design / Testing)
+    //   anything else (skip, backwards) -> 409; going back is POST .../lifecycle/rollback with a reason
     [HttpPatch("{projectId:guid}/status")]
-    [Authorize(Roles = $"{Roles.Administrator},{Roles.BusinessAnalyst},{Roles.Reviewer}")]
-    [Capability("Review", "Move a project to its next SDLC stage", 80)]
     public async Task<ActionResult<ProjectResponse>> UpdateStatus(Guid projectId, UpdateProjectStatusRequest request, CancellationToken cancellationToken)
     {
-        var (project, error) = await _projectService.UpdateStatusAsync(projectId, request, cancellationToken);
-        if (error is not null)
+        var project = await _projectService.GetByIdAsync(projectId, cancellationToken);
+        if (project is null)
         {
-            return BadRequest(error);
+            return NotFound();
         }
 
-        return project is null ? NotFound() : Ok(project);
+        if (request.Status == project.Status)
+        {
+            return Ok(project);
+        }
+
+        var transition = await _lifecycle.AdvanceAsync(projectId, new AdvanceStageRequest(request.Status), cancellationToken);
+        var updated = await _projectService.GetByIdAsync(projectId, cancellationToken);
+        return transition.State == StageTransitionState.Pending ? Accepted(updated) : Ok(updated);
     }
 
     // §15 — scans all functional requirements in the project for duplicates/conflicts.
@@ -118,6 +142,30 @@ public class ProjectsController : ControllerBase
         return removed ? NoContent() : NotFound();
     }
 
+    // Read-only user lookup for the stakeholder Role -> User picker. BusinessAnalyst can't use the
+    // Administrator-only /api/users list, so this returns just active users with their role - the
+    // same UserResponse shape, nothing from user administration beyond that.
+    [HttpGet("{projectId:guid}/stakeholders/available-users")]
+    [Authorize(Roles = $"{Roles.Administrator},{Roles.BusinessAnalyst}")]
+    public async Task<ActionResult<IReadOnlyList<UserResponse>>> GetStakeholderCandidates(Guid projectId)
+    {
+        var responses = new List<UserResponse>();
+        foreach (var role in Roles.All)
+        {
+            foreach (var user in await _userManager.GetUsersInRoleAsync(role))
+            {
+                if (await _userManager.IsLockedOutAsync(user))
+                {
+                    continue;
+                }
+
+                responses.Add(new UserResponse(user.Id, user.Email ?? string.Empty, user.DisplayName, role, true));
+            }
+        }
+
+        return Ok(responses.OrderBy(u => u.DisplayName).ToList());
+    }
+
     // §38 DoD — project membership (access control). BA/Admin only, mirrors stakeholder-management
     // gating. Added by email, not a raw user id: BusinessAnalyst doesn't have access to the
     // Administrator-only /api/users list to look one up.
@@ -134,10 +182,7 @@ public class ProjectsController : ControllerBase
         foreach (var member in members)
         {
             var user = await _userManager.FindByIdAsync(member.UserId);
-            responses.Add(new ProjectMemberDetailResponse(
-                member.Id, member.ProjectId, member.UserId,
-                user?.Email ?? "(deleted user)", user?.DisplayName ?? "(deleted user)",
-                member.AddedByUserId, member.AddedAt));
+            responses.Add(await ToMemberResponseAsync(member, user, "(deleted user)"));
         }
 
         return Ok(responses);
@@ -160,9 +205,7 @@ public class ProjectsController : ControllerBase
             return NotFound();
         }
 
-        var response = new ProjectMemberDetailResponse(
-            member.Id, member.ProjectId, member.UserId, user.Email ?? request.Email, user.DisplayName,
-            member.AddedByUserId, member.AddedAt);
+        var response = await ToMemberResponseAsync(member, user, request.Email);
         return CreatedAtAction(nameof(GetMembers), new { projectId }, response);
     }
 
@@ -173,9 +216,29 @@ public class ProjectsController : ControllerBase
         var removed = await _projectService.RemoveMemberAsync(projectId, userId, cancellationToken);
         return removed ? NoContent() : NotFound();
     }
+
+    // Account role and active state come from Identity, as in UsersController.ToResponseAsync, so the
+    // Members list can show them to Business Analysts who can't call the Administrator-only /api/users.
+    // A deleted account reads as inactive with no role.
+    private async Task<ProjectMemberDetailResponse> ToMemberResponseAsync(ProjectMemberResponse member, ApplicationUser? user, string fallbackEmail)
+    {
+        string? role = null;
+        var isActive = false;
+        if (user is not null)
+        {
+            role = (await _userManager.GetRolesAsync(user)).FirstOrDefault();
+            isActive = !await _userManager.IsLockedOutAsync(user);
+        }
+
+        return new ProjectMemberDetailResponse(
+            member.Id, member.ProjectId, member.UserId,
+            user?.Email ?? fallbackEmail, user?.DisplayName ?? "(deleted user)",
+            member.AddedByUserId, member.AddedAt, role, isActive);
+    }
 }
 
 // API-layer only (depends on Identity for Email/DisplayName) - the Application-layer
 // ProjectMemberResponse stays UserId-only on purpose; see the comment on GetMembers above.
 public record ProjectMemberDetailResponse(
-    Guid Id, Guid ProjectId, string UserId, string Email, string DisplayName, string AddedByUserId, DateTime AddedAt);
+    Guid Id, Guid ProjectId, string UserId, string Email, string DisplayName, string AddedByUserId, DateTime AddedAt,
+    string? Role, bool IsActive);

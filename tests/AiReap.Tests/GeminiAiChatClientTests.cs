@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using AiReap.Application.Ai;
@@ -46,7 +47,7 @@ public class GeminiAiChatClientTests
         var handler = new FakeHandler(respond);
         var options = Options.Create(new GeminiOptions
         {
-            ApiKey = apiKey, Model = "gemini-3.6-flash", MaxOutputTokens = 4096,
+            ApiKey = apiKey, Model = "gemini-3.8-flash", MaxOutputTokens = 4096,
             ThinkingLevel = thinkingLevel, ThinkingBudget = thinkingBudget, Temperature = temperature
         });
         return (new GeminiAiChatClient(new HttpClient(handler), options), handler);
@@ -62,7 +63,7 @@ public class GeminiAiChatClientTests
         Assert.Equal("{\"actors\":[]}", result);
         var request = Assert.Single(handler.Requests);
         Assert.Equal(HttpMethod.Post, request.Method);
-        Assert.Equal("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent", request.RequestUri!.ToString());
+        Assert.Equal("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", request.RequestUri!.ToString());
         Assert.DoesNotContain(FakeKey, request.RequestUri.ToString());
         Assert.Equal(FakeKey, request.Headers.GetValues("x-goog-api-key").Single());
 
@@ -214,6 +215,192 @@ public class GeminiAiChatClientTests
         Assert.Equal(TimeSpan.FromSeconds(17), ex.RetryAfter);
     }
 
+    // Shaped like a real Gemini 429: QuotaFailure + Help + RetryInfo details.
+    private static HttpResponseMessage RateLimited(string quotaId, string? retryDelay = "17s", string? message = null)
+    {
+        var details = new List<object>
+        {
+            new Dictionary<string, object>
+            {
+                ["@type"] = "type.googleapis.com/google.rpc.QuotaFailure",
+                ["violations"] = new[] { new Dictionary<string, object>
+                {
+                    ["quotaMetric"] = "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+                    ["quotaId"] = quotaId,
+                    ["quotaValue"] = "10"
+                } }
+            },
+            new Dictionary<string, object> { ["@type"] = "type.googleapis.com/google.rpc.Help", ["links"] = Array.Empty<object>() }
+        };
+        if (retryDelay is not null)
+        {
+            details.Add(new Dictionary<string, object> { ["@type"] = "type.googleapis.com/google.rpc.RetryInfo", ["retryDelay"] = retryDelay });
+        }
+
+        return Json(new
+        {
+            error = new
+            {
+                code = 429, status = "RESOURCE_EXHAUSTED",
+                message = message ?? "You exceeded your current quota, please check your plan and billing details.",
+                details
+            }
+        }, HttpStatusCode.TooManyRequests);
+    }
+
+    [Fact]
+    public async Task Per_minute_rate_limit_is_rate_limited_with_the_google_retry_delay_and_not_quota_exhausted()
+    {
+        var (client, _) = Build(_ => RateLimited("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "17s"));
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"));
+
+        Assert.Equal(AiFailureKind.RateLimited, ex.Kind);
+        Assert.Equal(HttpStatusCode.TooManyRequests, ex.ProviderStatusCode);
+        Assert.Equal(TimeSpan.FromSeconds(17), ex.RetryAfter);
+        Assert.False(ex.QuotaExhausted);
+        Assert.StartsWith("Gemini rate limit reached.", ex.Message);
+    }
+
+    [Fact]
+    public async Task Daily_quota_is_flagged_as_exhausted_and_keeps_the_retry_delay()
+    {
+        var (client, _) = Build(_ => RateLimited("GenerateRequestsPerDayPerProjectPerModel-FreeTier", "12s"));
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"));
+
+        Assert.Equal(AiFailureKind.RateLimited, ex.Kind);
+        Assert.True(ex.QuotaExhausted);
+        Assert.Equal(TimeSpan.FromSeconds(12), ex.RetryAfter);
+    }
+
+    [Theory]
+    [InlineData("Quota exceeded for metric: generate_content_free_tier_requests, limit: 0, model: gemini-3.8-flash", true)]
+    [InlineData("Quota exceeded for metric: generate_content_free_tier_requests, limit: 50, model: gemini-3.8-flash", false)]
+    public async Task A_zero_limit_quota_is_flagged_as_exhausted(string message, bool exhausted)
+    {
+        var (client, _) = Build(_ => RateLimited("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", null, message));
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"));
+
+        Assert.Equal(exhausted, ex.QuotaExhausted);
+    }
+
+    [Fact]
+    public async Task Retry_after_header_in_seconds_is_preserved()
+    {
+        var (client, _) = Build(_ =>
+        {
+            var response = Json(Error(429, "RESOURCE_EXHAUSTED", "Quota exceeded."), HttpStatusCode.TooManyRequests);
+            response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(9));
+            return response;
+        });
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"));
+
+        Assert.Equal(TimeSpan.FromSeconds(9), ex.RetryAfter);
+    }
+
+    [Fact]
+    public async Task Retry_after_header_as_an_http_date_is_converted_to_a_delay()
+    {
+        var (client, _) = Build(_ =>
+        {
+            var response = Json(Error(429, "RESOURCE_EXHAUSTED", "Quota exceeded."), HttpStatusCode.TooManyRequests);
+            response.Headers.RetryAfter = new RetryConditionHeaderValue(DateTimeOffset.UtcNow.AddSeconds(60));
+            return response;
+        });
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"));
+
+        Assert.NotNull(ex.RetryAfter);
+        Assert.InRange(ex.RetryAfter!.Value.TotalSeconds, 50, 61);
+    }
+
+    [Fact]
+    public async Task A_429_without_any_retry_hint_has_no_retry_after()
+    {
+        var (client, _) = Build(_ => Json(Error(429, "RESOURCE_EXHAUSTED", "Resource has been exhausted."), HttpStatusCode.TooManyRequests));
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"));
+
+        Assert.Equal(AiFailureKind.RateLimited, ex.Kind);
+        Assert.Null(ex.RetryAfter);
+        Assert.False(ex.QuotaExhausted);
+    }
+
+    [Fact]
+    public async Task Rate_limit_errors_never_contain_the_api_key()
+    {
+        var (client, _) = Build(_ => RateLimited("GenerateRequestsPerDayPerProjectPerModel-FreeTier", "5s", $"Quota exceeded for key {FakeKey}."));
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"));
+
+        Assert.DoesNotContain("AIza", ex.Message);
+        Assert.DoesNotContain("AIza", ex.ProviderMessage ?? "");
+    }
+
+    // End to end through the real retry decorator: how many requests actually reach Google.
+    private static ResilientAiChatClient WrapReal(GeminiAiChatClient inner, List<TimeSpan> delays) =>
+        new(inner, "Gemini", new AiResilienceOptions(), NullLogger.Instance,
+            (delay, _) => { delays.Add(delay); return Task.CompletedTask; });
+
+    [Fact]
+    public async Task Daily_quota_429_is_not_retried_so_only_one_request_reaches_gemini()
+    {
+        var (inner, handler) = Build(_ => RateLimited("GenerateRequestsPerDayPerProjectPerModel-FreeTier", "20s"));
+        var delays = new List<TimeSpan>();
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => WrapReal(inner, delays).CompleteAsync("s", "u"));
+
+        Assert.Equal(AiFailureKind.RateLimited, ex.Kind);
+        Assert.True(ex.QuotaExhausted);
+        Assert.Single(handler.Requests);
+        Assert.Empty(delays);
+    }
+
+    [Fact]
+    public async Task Per_minute_429_is_retried_once_after_googles_delay_then_succeeds()
+    {
+        var calls = 0;
+        var (inner, handler) = Build(_ => ++calls == 1
+            ? RateLimited("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "4s")
+            : Json(Success("{\"ok\":true}")));
+        var delays = new List<TimeSpan>();
+
+        Assert.Equal("{\"ok\":true}", await WrapReal(inner, delays).CompleteAsync("s", "u"));
+
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(TimeSpan.FromSeconds(4), Assert.Single(delays));
+    }
+
+    [Fact]
+    public async Task Persistent_429_stops_after_two_requests_instead_of_three()
+    {
+        var (inner, handler) = Build(_ => Json(Error(429, "RESOURCE_EXHAUSTED", "Resource has been exhausted."), HttpStatusCode.TooManyRequests));
+        var delays = new List<TimeSpan>();
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => WrapReal(inner, delays).CompleteAsync("s", "u"));
+
+        Assert.Equal(AiFailureKind.RateLimited, ex.Kind);
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task Embeddings_429_carries_the_retry_delay_and_quota_flag()
+    {
+        var handler = new FakeHandler(_ => RateLimited("EmbedContentRequestsPerDayPerProjectPerModel-FreeTier", "30s"));
+        var client = new GeminiEmbeddingClient(new HttpClient(handler), Options.Create(new GeminiOptions { ApiKey = FakeKey }));
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.EmbedAsync("question"));
+
+        Assert.Equal(AiFailureKind.RateLimited, ex.Kind);
+        Assert.Equal(HttpStatusCode.TooManyRequests, ex.ProviderStatusCode);
+        Assert.Equal(TimeSpan.FromSeconds(30), ex.RetryAfter);
+        Assert.True(ex.QuotaExhausted);
+        Assert.DoesNotContain("AIza", ex.Message);
+    }
+
     [Fact]
     public async Task Error_messages_never_contain_the_api_key()
     {
@@ -265,7 +452,6 @@ public class ResilientAiChatClientTests
     }
 
     [Theory]
-    [InlineData(AiFailureKind.RateLimited)]
     [InlineData(AiFailureKind.Unavailable)]
     [InlineData(AiFailureKind.Timeout)]
     public async Task Transient_failures_are_retried_then_succeed(AiFailureKind kind)
@@ -344,6 +530,80 @@ public class ResilientAiChatClientTests
     }
 
     [Fact]
+    public async Task Rate_limit_is_retried_once_then_succeeds()
+    {
+        var inner = new ScriptedClient(Fail(AiFailureKind.RateLimited), Ok());
+        var (client, delays) = Wrap(inner);
+
+        Assert.Equal("{\"ok\":true}", await client.CompleteAsync("s", "u"));
+        Assert.Equal(2, inner.Calls);
+        Assert.Single(delays);
+    }
+
+    [Fact]
+    public async Task Rate_limit_gives_up_after_max_rate_limit_attempts_not_max_attempts()
+    {
+        // Each extra attempt spends more of the same quota: 2 requests, not 3.
+        var inner = new ScriptedClient(Fail(AiFailureKind.RateLimited), Fail(AiFailureKind.RateLimited), Ok());
+        var (client, delays) = Wrap(inner, maxAttempts: 3);
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"));
+
+        Assert.Equal(AiFailureKind.RateLimited, ex.Kind);
+        Assert.Equal(2, inner.Calls);
+        Assert.Single(delays);
+    }
+
+    [Fact]
+    public async Task Sub_second_rate_limit_hints_wait_at_least_the_growing_backoff()
+    {
+        // Groq's TPM 429s hint e.g. "try again in 862.5ms"; retrying that soon hits the same window.
+        var hint = TimeSpan.FromMilliseconds(10);
+        var inner = new ScriptedClient(
+            Fail(AiFailureKind.RateLimited, hint), Fail(AiFailureKind.RateLimited, hint), Fail(AiFailureKind.RateLimited, hint), Ok());
+        var delays = new List<TimeSpan>();
+        var options = new AiResilienceOptions { BaseDelayMilliseconds = 100, MaxDelaySeconds = 5, MaxRetryAfterSeconds = 30 }
+            .WithRateLimitAttempts(4);
+        var client = new ResilientAiChatClient(inner, "Test", options, NullLogger.Instance,
+            (delay, _) => { delays.Add(delay); return Task.CompletedTask; });
+
+        Assert.Equal("{\"ok\":true}", await client.CompleteAsync("s", "u"));
+
+        Assert.Equal(4, inner.Calls);
+        Assert.Equal(3, delays.Count);
+        Assert.All(delays.Select((d, i) => (d, i)), x => Assert.True(x.d >= TimeSpan.FromMilliseconds(100 * Math.Pow(2, x.i))));
+    }
+
+    [Fact]
+    public async Task Exhausted_quota_is_not_retried_even_with_a_short_retry_after()
+    {
+        var inner = new ScriptedClient(
+            _ => throw new AiProviderException(AiFailureKind.RateLimited, "Test", "daily quota",
+                HttpStatusCode.TooManyRequests, retryAfter: TimeSpan.FromSeconds(3), quotaExhausted: true),
+            Ok());
+        var (client, delays) = Wrap(inner);
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"));
+
+        Assert.True(ex.QuotaExhausted);
+        Assert.Equal(TimeSpan.FromSeconds(3), ex.RetryAfter);
+        Assert.Equal(1, inner.Calls);
+        Assert.Empty(delays);
+    }
+
+    [Fact]
+    public async Task Legacy_http_429_from_other_providers_is_rate_limited_and_capped()
+    {
+        var inner = new ScriptedClient(_ => throw new HttpRequestException("429", null, HttpStatusCode.TooManyRequests));
+        var (client, _) = Wrap(inner);
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"));
+
+        Assert.Equal(AiFailureKind.RateLimited, ex.Kind);
+        Assert.Equal(2, inner.Calls);
+    }
+
+    [Fact]
     public async Task A_hung_provider_times_out_per_attempt_and_is_reported_as_timeout()
     {
         var inner = new ScriptedClient(async ct => { await Task.Delay(Timeout.Infinite, ct); return ""; });
@@ -374,5 +634,79 @@ public class ResilientAiChatClientTests
 
         Assert.Equal("{\"ok\":true}", await client.CompleteAsync("s", "u"));
         Assert.Equal(2, inner.Calls);
+    }
+
+    // ---- Ai:Gemini:TimeoutSeconds / MaxTimeoutAttempts (AiResilienceOptions.WithTimeout) ----------
+
+    private static ResilientAiChatClient WrapWithTimeoutLimit(IAiChatClient inner, int timeoutSeconds, int maxTimeoutAttempts) =>
+        new(inner, "Gemini",
+            new AiResilienceOptions { MaxAttempts = 3, BaseDelayMilliseconds = 0, MaxDelaySeconds = 0 }.WithTimeout(timeoutSeconds, maxTimeoutAttempts),
+            NullLogger.Instance, (_, _) => Task.CompletedTask);
+
+    // A request that used up its whole timeout is not resent: the provider has usually processed (and
+    // charged) it, and FallbackAiChatClient falls back on the Timeout instead.
+    [Fact]
+    public async Task A_timed_out_attempt_is_not_resent_when_MaxTimeoutAttempts_is_1()
+    {
+        var inner = new ScriptedClient(async ct => { await Task.Delay(Timeout.Infinite, ct); return ""; }, Ok());
+        var client = WrapWithTimeoutLimit(inner, timeoutSeconds: 1, maxTimeoutAttempts: 1);
+
+        var ex = await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"));
+
+        Assert.Equal(AiFailureKind.Timeout, ex.Kind);
+        Assert.Equal("Gemini did not respond within 1s.", ex.Message);
+        Assert.Equal(1, inner.Calls);
+    }
+
+    // The provider's own deadline (504 DEADLINE_EXCEEDED -> Timeout) follows the same rule.
+    [Fact]
+    public async Task A_provider_reported_timeout_is_not_resent_when_MaxTimeoutAttempts_is_1()
+    {
+        var inner = new ScriptedClient(Fail(AiFailureKind.Timeout), Ok());
+        var client = WrapWithTimeoutLimit(inner, timeoutSeconds: 30, maxTimeoutAttempts: 1);
+
+        Assert.Equal(AiFailureKind.Timeout, (await Assert.ThrowsAsync<AiProviderException>(() => client.CompleteAsync("s", "u"))).Kind);
+        Assert.Equal(1, inner.Calls);
+    }
+
+    // Only timeouts are limited: 503s and network errors keep Ai:Resilience:MaxAttempts.
+    [Fact]
+    public async Task Outages_are_still_retried_up_to_MaxAttempts_under_a_timeout_limit()
+    {
+        var inner = new ScriptedClient(Fail(AiFailureKind.Unavailable), Fail(AiFailureKind.Unavailable), Ok());
+        var client = WrapWithTimeoutLimit(inner, timeoutSeconds: 30, maxTimeoutAttempts: 1);
+
+        Assert.Equal("{\"ok\":true}", await client.CompleteAsync("s", "u"));
+        Assert.Equal(3, inner.Calls);
+    }
+
+    // 0 keeps the previous behavior: timeouts retried like any transient failure.
+    [Fact]
+    public async Task MaxTimeoutAttempts_0_retries_timeouts_up_to_MaxAttempts_as_before()
+    {
+        var inner = new ScriptedClient(Fail(AiFailureKind.Timeout), Fail(AiFailureKind.Timeout), Ok());
+        var client = WrapWithTimeoutLimit(inner, timeoutSeconds: 30, maxTimeoutAttempts: 0);
+
+        Assert.Equal("{\"ok\":true}", await client.CompleteAsync("s", "u"));
+        Assert.Equal(3, inner.Calls);
+    }
+
+    [Fact]
+    public void WithTimeout_replaces_only_the_timeout_settings()
+    {
+        var shared = new AiResilienceOptions
+        {
+            TimeoutSeconds = 120, MaxAttempts = 3, BaseDelayMilliseconds = 1000, MaxDelaySeconds = 20,
+            MaxRetryAfterSeconds = 30, MaxRateLimitAttempts = 1
+        };
+
+        var gemini = shared.WithTimeout(300, 1);
+
+        Assert.Equal((300, 1), (gemini.TimeoutSeconds, gemini.MaxTimeoutAttempts));
+        Assert.Equal((3, 1000, 20, 30, 1), (gemini.MaxAttempts, gemini.BaseDelayMilliseconds, gemini.MaxDelaySeconds,
+            gemini.MaxRetryAfterSeconds, gemini.MaxRateLimitAttempts));
+        Assert.Equal((120, 0), (shared.TimeoutSeconds, shared.MaxTimeoutAttempts)); // the shared settings are untouched
+        Assert.Equal(1, gemini.WithoutRateLimitRetry().MaxTimeoutAttempts);
+        Assert.Equal(1, gemini.WithRateLimitAttempts(4).MaxTimeoutAttempts);
     }
 }

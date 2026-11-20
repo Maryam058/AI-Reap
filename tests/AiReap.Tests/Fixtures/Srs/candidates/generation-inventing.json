@@ -1,0 +1,22 @@
+{
+  "_note": "SYNTHETIC scorer test input - hand-written. Invented numbers, an inflated 'stated' target, background text promoted to a requirement, a fabricated quote, an undefined source ID, and one keyword-only match.",
+  "requirements": [
+    { "kind": "FR", "title": "Book a consultation room", "origin": "explicit",
+      "text": "Receptionists book a consultation room for a named clinician and a time slot, with a maximum of 15 bookings per day.", "sourceIds": ["FR-001"],
+      "evidence": [{ "from": "srs", "quote": "Receptionists must be able to book a consultation room for a named clinician and a time slot", "sourceId": "FR-001" }] },
+    { "kind": "NFR", "title": "Booking page load time", "category": "Performance", "origin": "explicit",
+      "text": "The booking page must load quickly.", "targetValue": "1 second for 99% of requests", "targetOrigin": "stated", "sourceIds": ["NFR-001"],
+      "evidence": [{ "from": "srs", "quote": "The booking page must load within 2 seconds for 95% of requests", "sourceId": "NFR-001" }] },
+    { "kind": "FR", "title": "Serve all residents", "origin": "explicit",
+      "text": "The system must serve about 40,000 residents.", "sourceIds": [],
+      "evidence": [{ "from": "srs", "quote": "The Harbourview Community Clinic opened in 2019 and serves about 40,000 residents" }] },
+    { "kind": "FR", "title": "Patient self-booking", "origin": "explicit",
+      "text": "Patients must be able to book rooms online themselves.", "sourceIds": [],
+      "evidence": [{ "from": "srs", "quote": "Patients can book rooms online themselves" }] },
+    { "kind": "FR", "title": "Export bookings", "origin": "explicit",
+      "text": "Receptionists must be able to export bookings to a spreadsheet.", "sourceIds": ["FR-099"], "evidence": [] },
+    { "kind": "FR", "title": "View own bookings", "origin": "derived",
+      "text": "Clinicians view own bookings for the week ahead.", "sourceIds": [], "evidence": [] }
+  ],
+  "clarifications": []
+}

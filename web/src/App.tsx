@@ -13,8 +13,10 @@ import { ProjectGate } from './pages/ProjectGate';
 import { ProjectOverviewPage } from './pages/ProjectOverviewPage';
 import { EditProjectPage, NewProjectPage } from './pages/ProjectFormPages';
 import { AnalysisPage, CopilotPage, DesignPage, DevelopmentPage, GatheringPage, TestingPage, TraceabilityPage, ValidationPage } from './pages/PhasePages';
+import { LifecycleReviewPage } from './pages/LifecycleReviewPage';
 import { UsersPage } from './pages/UsersPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { AiUsagePage } from './pages/AiUsagePage';
 import { RolesPage } from './pages/RolesPage';
 import { AuditLogsPage } from './pages/AuditLogsPage';
 
@@ -54,6 +56,7 @@ function App() {
                   <Route path="testing" element={<TestingPage />} />
                   <Route path="traceability" element={<TraceabilityPage />} />
                   <Route path="copilot" element={<CopilotPage />} />
+                  <Route path="review" element={<LifecycleReviewPage />} />
                   <Route path="*" element={<Navigate to=".." replace />} />
                 </Route>
                 <Route
@@ -80,7 +83,22 @@ function App() {
                     </ProtectedRoute>
                   }
                 />
-                <Route path="/settings" element={<SettingsPage />} />
+                <Route
+                  path="/settings"
+                  element={
+                    <ProtectedRoute role="Administrator">
+                      <SettingsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/admin/ai-usage"
+                  element={
+                    <ProtectedRoute role="Administrator">
+                      <AiUsagePage />
+                    </ProtectedRoute>
+                  }
+                />
               </Route>
 
               <Route path="*" element={<Navigate to="/dashboard" replace />} />

@@ -71,7 +71,7 @@ public class RequirementQualityService : IRequirementQualityService
             sb.Append($"{artifact.Code}: {artifact.Title}\n{artifact.DataJson}\n\n");
         }
 
-        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<QualityAiResponse>(
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseLosslessAsync<QualityAiResponse>(
             _chatClient, _logger, "RequirementQualityAnalysis", source.Id.ToString(), SystemPrompt, sb.ToString(), cancellationToken,
             knownArtifactCodes: candidates.Select(a => a.Code));
 

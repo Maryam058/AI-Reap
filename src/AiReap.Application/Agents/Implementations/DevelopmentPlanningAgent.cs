@@ -23,11 +23,20 @@ public class DevelopmentPlanningAgent : IAgent
     public string Inputs => "Functional requirements plus design, data entity and API artifacts.";
     public string Outputs => "ImplementationTask artifacts linked to the requirements they implement.";
     public IReadOnlyList<string> ApproverRoles => AgentSupport.AdminAnd(Roles.Developer);
+    public IReadOnlyList<ProjectStatus> LifecycleStages => [ProjectStatus.Approved];
+    public string LifecycleContribution => "Drafts the implementation plan in the Approved stage: tasks linked to requirements, for approval before Implementation.";
 
     public async Task<AgentOutput> RunAsync(AgentContext context, CancellationToken cancellationToken)
     {
         var sourceId = context.RequirementSourceId;
         var produced = new List<AgentArtifactRef>();
+
+        // R1 — checked when the stage runs, not when the run started: requirements rejected while an
+        // earlier stage awaited its decision still stop planning here.
+        if (await GenerationInputs.AllFunctionalRequirementsRejectedAsync(_db, sourceId, cancellationToken))
+        {
+            throw new InvalidOperationException(GenerationInputs.AllRejectedMessage("plan implementation tasks for"));
+        }
 
         if (!await AgentSupport.ExistsAsync(_db, sourceId, ArtifactType.ImplementationTask, cancellationToken))
         {
@@ -40,6 +49,6 @@ public class DevelopmentPlanningAgent : IAgent
             new Dictionary<string, int> { ["ImplementationTask"] = total },
             produced,
             Array.Empty<string>(),
-            "Review task scope, dependencies and estimates. Approving a task is what later promotes its requirement to Implemented — this platform does not build or deploy anything.");
+            "Review task scope, dependencies and estimates. Approving a task accepts the plan; its requirement becomes Implemented only when a Developer records the task as complete — this platform does not build or deploy anything.");
     }
 }

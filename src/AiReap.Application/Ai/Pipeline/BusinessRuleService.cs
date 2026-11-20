@@ -55,14 +55,13 @@ public class BusinessRuleService : IBusinessRuleService
         var source = await _db.RequirementSources.FirstOrDefaultAsync(s => s.Id == requirementSourceId, cancellationToken)
             ?? throw new KeyNotFoundException($"RequirementSource {requirementSourceId} not found.");
         await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
+        await GenerationInputs.EnsureNotAllRejectedAsync(_db, requirementSourceId, "extract business rules from", cancellationToken);
 
-        var functionalRequirements = await _db.Artifacts
-            .Where(a => a.RequirementSourceId == requirementSourceId && a.ArtifactType == ArtifactType.FunctionalRequirement)
-            .OrderBy(a => a.Code)
-            .ToListAsync(cancellationToken);
+        var functionalRequirements = await GenerationSupport.LoadGenerationInputsAsync(
+            _db, requirementSourceId, ArtifactType.FunctionalRequirement, cancellationToken);
 
         var context = await ClarificationContextBuilder.BuildAsync(_db, requirementSourceId, cancellationToken);
-        var frContext = new StringBuilder("\n\nFunctional requirements derived so far:\n");
+        var frContext = new StringBuilder($"\n\n{GenerationSupport.FunctionalRequirementsHeading}\n");
         foreach (var fr in functionalRequirements)
         {
             frContext.Append($"- {fr.Code}: {fr.Title}\n");
@@ -70,19 +69,45 @@ public class BusinessRuleService : IBusinessRuleService
 
         var userPrompt = source.RawText + context + (functionalRequirements.Count > 0 ? frContext.ToString() : string.Empty);
 
-        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<BusinessRuleAiResponse>(
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseLosslessAsync<BusinessRuleAiResponse>(
             _chatClient, _logger, "BusinessRuleExtraction", source.Id.ToString(), SystemPrompt, userPrompt, cancellationToken,
             knownArtifactCodes: functionalRequirements.Select(fr => fr.Code));
 
+        // G2 — one save (ArtifactPersistence) of the business rules not already saved for this source
+        // (ArtifactFingerprints): a re-run with the same output adds nothing, and existing artifacts are
+        // never changed. A unique-index race re-prepares against the database.
+        var ruleArtifacts = new List<Artifact>();
+        var skipped = 0;
+        await ArtifactPersistence.SaveAsync(_db, async ct =>
+            (ruleArtifacts, skipped) = await PrepareRulesAsync(source, parsed, functionalRequirements, rawResponse, ct), cancellationToken);
+
+        if (skipped > 0)
+        {
+            _logger.LogInformation(
+                "{Operation} for {Input}: {Created} created, {Skipped} already existed and were not saved again.",
+                "BusinessRuleExtraction", source.Id, ruleArtifacts.Count, skipped);
+        }
+
+        return new GeneratedArtifacts(ruleArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList(), skipped);
+    }
+
+    // The business rules of the response not already saved for the source, added to the context with
+    // their versions, fingerprints, links and audit rows - not saved here.
+    private async Task<(List<Artifact> Created, int Skipped)> PrepareRulesAsync(
+        RequirementSource source, BusinessRuleAiResponse parsed, IReadOnlyList<Artifact> functionalRequirements, string rawResponse,
+        CancellationToken cancellationToken)
+    {
         var now = DateTime.UtcNow;
-        var codes = await ArtifactCodeGenerator.ReserveCodesAsync(
-            _db, source.ProjectId, ArtifactType.BusinessRule, parsed.BusinessRules.Count, cancellationToken);
+        var existing = await ArtifactFingerprints.ExistingAsync(_db, source.Id, [ArtifactType.BusinessRule], cancellationToken);
+        var fresh = ArtifactFingerprints.Fresh(parsed.BusinessRules, ArtifactType.BusinessRule,
+            r => ArtifactFingerprints.ForBusinessRule(r.Title, r.Statement), existing, out var skipped);
+        var codes = await ArtifactCodeGenerator.ReserveCodesAsync(_db, source.ProjectId, ArtifactType.BusinessRule, fresh.Count, cancellationToken);
 
         var ruleArtifacts = new List<Artifact>();
 
-        for (var i = 0; i < parsed.BusinessRules.Count; i++)
+        for (var i = 0; i < fresh.Count; i++)
         {
-            var item = parsed.BusinessRules[i];
+            var item = fresh[i].Item;
             var payload = new BusinessRulePayload { Statement = item.Statement };
 
             var artifact = new Artifact
@@ -117,21 +142,18 @@ public class BusinessRuleService : IBusinessRuleService
                 Reason = "AI business rule extraction",
                 Origin = ArtifactOrigin.Ai
             });
+            _db.ArtifactFingerprints.Add(ArtifactFingerprints.Record(artifact, fresh[i].Fingerprint, now));
 
-            foreach (var frCode in item.RelatedRequirementCodes)
+            foreach (var relatedFr in GenerationSupport.ResolveCited(item.RelatedRequirementCodes, functionalRequirements))
             {
-                var relatedFr = functionalRequirements.FirstOrDefault(fr => fr.Code == frCode);
-                if (relatedFr is not null)
+                _db.ArtifactRelationships.Add(new ArtifactRelationship
                 {
-                    _db.ArtifactRelationships.Add(new ArtifactRelationship
-                    {
-                        Id = Guid.NewGuid(),
-                        SourceArtifactId = artifact.Id,
-                        TargetArtifactId = relatedFr.Id,
-                        RelationshipType = RelationshipType.LinkedRule,
-                        CreatedAt = now
-                    });
-                }
+                    Id = Guid.NewGuid(),
+                    SourceArtifactId = artifact.Id,
+                    TargetArtifactId = relatedFr.Id,
+                    RelationshipType = RelationshipType.LinkedRule,
+                    CreatedAt = now
+                });
             }
 
             ruleArtifacts.Add(artifact);
@@ -142,9 +164,7 @@ public class BusinessRuleService : IBusinessRuleService
             _chatClient.ModelName, source.Id.ToString(), rawResponse, now,
             ruleArtifacts.Select(a => a.Id).ToList());
 
-        await _db.SaveChangesAsync(cancellationToken);
-
-        return ruleArtifacts.Select(ArtifactResponseMapper.ToResponse).ToList();
+        return (ruleArtifacts, skipped);
     }
 
     private class BusinessRuleAiResponse : IValidatableAiResponse

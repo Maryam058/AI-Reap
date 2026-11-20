@@ -1,34 +1,39 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { projectsApi } from '../api/projects';
 import type { Project } from '../api/types';
-import { statusLabel } from '../lib/format';
 import { apiErrorText } from '../lib/errors';
-import { PROJECT_STATUS_COUNT } from '../lib/sdlc';
 import { useToast } from '../context/ToastContext';
 import { ConfirmDialog } from './ui/Dialog';
 import { Menu, type MenuItem } from './ui/Menu';
-import { IconArrowRight, IconEdit, IconFolder } from './icons';
+import { IconArrowRight, IconCheckCircle, IconEdit, IconFolder, IconTrash } from './icons';
 
 /**
- * The "⋯" action menu for a project: Open, Edit, and Update stage (advance to the next lifecycle
- * status). Delete is intentionally absent — the API has no project-delete endpoint.
+ * The "⋯" action menu for a project: Open, Edit, the project's lifecycle, the SDLC Review, and (Administrator only)
+ * Delete. Stage changes are not made from here: they happen in the lifecycle panel on the overview,
+ * where the backend's exit checks, stage ownership and Reviewer gates are shown.
  */
 export function ProjectActionsMenu({
   project,
-  onUpdated,
   showOpen = true,
   label,
+  onDeleted,
 }: {
   project: Project;
-  onUpdated: (p: Project) => void;
+  /** Kept for callers that refresh after changes; the menu itself no longer changes the project. */
+  onUpdated?: (p: Project) => void;
+  /** Called after a successful delete. Without it, the menu navigates back to the project list. */
+  onDeleted?: (projectId: string) => void;
   showOpen?: boolean;
   label?: string;
 }) {
   const { token, hasRole } = useAuth();
   const { toast } = useToast();
+  const navigate = useNavigate();
   const canEdit = hasRole('Administrator') || hasRole('BusinessAnalyst');
-  const canAdvance = (canEdit || hasRole('Reviewer')) && project.status < PROJECT_STATUS_COUNT - 1;
+  const canDelete = hasRole('Administrator');
+
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,29 +41,32 @@ export function ProjectActionsMenu({
   const items: MenuItem[] = [];
   if (showOpen) items.push({ key: 'open', label: 'Open project', icon: <IconFolder width={15} height={15} />, to: `/projects/${project.id}` });
   if (canEdit) items.push({ key: 'edit', label: 'Edit project', icon: <IconEdit width={15} height={15} />, to: `/projects/${project.id}/edit` });
-  if (canAdvance) {
+  items.push({ key: 'lifecycle', label: 'Lifecycle stage & approvals', icon: <IconArrowRight width={15} height={15} />, to: `/projects/${project.id}#lifecycle` });
+  items.push({ key: 'review', label: 'SDLC Review', icon: <IconCheckCircle width={15} height={15} />, to: `/projects/${project.id}/review` });
+  if (canDelete) {
     items.push({
-      key: 'advance',
-      label: `Update stage → ${statusLabel(project.status + 1)}`,
-      icon: <IconArrowRight width={15} height={15} />,
+      key: 'delete',
+      label: 'Delete project',
+      icon: <IconTrash width={15} height={15} />,
+      danger: true,
       onSelect: () => {
         setError(null);
         setConfirming(true);
       },
     });
   }
-  if (items.length === 0) return null;
 
-  const advance = async () => {
+  const confirmDelete = async () => {
     setBusy(true);
     setError(null);
     try {
-      const updated = await projectsApi.updateStatus(project.id, project.status + 1, token);
-      onUpdated(updated);
-      toast(`${project.name} moved to ${statusLabel(updated.status)}.`);
+      await projectsApi.remove(project.id, token);
       setConfirming(false);
+      toast(`Deleted “${project.name}”.`, 'success');
+      if (onDeleted) onDeleted(project.id);
+      else navigate('/projects');
     } catch (err) {
-      setError(apiErrorText(err, 'Could not update the stage. Please try again.'));
+      setError(apiErrorText(err, 'Could not delete the project.'));
     } finally {
       setBusy(false);
     }
@@ -69,17 +77,19 @@ export function ProjectActionsMenu({
       <Menu items={items} label={label ?? `Actions for ${project.name}`} />
       {confirming && (
         <ConfirmDialog
-          title="Update project stage?"
+          title="Delete project?"
           description={
             <>
-              <strong>{project.name}</strong> will move from <strong>{statusLabel(project.status)}</strong> to <strong>{statusLabel(project.status + 1)}</strong>. Stages advance one step at a time.
+              <strong>{project.name}</strong> and all of its requirements, designs, tasks, tests, documents, agent runs,
+              lifecycle history and members will be permanently deleted. This cannot be undone.
             </>
           }
-          confirmLabel={`Move to ${statusLabel(project.status + 1)}`}
+          confirmLabel="Delete project"
+          danger
           busy={busy}
           error={error}
-          onConfirm={advance}
-          onCancel={() => setConfirming(false)}
+          onConfirm={confirmDelete}
+          onCancel={() => !busy && setConfirming(false)}
         />
       )}
     </>

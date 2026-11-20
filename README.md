@@ -22,17 +22,18 @@ docs/                      requirements analysis, ADRs, roadmap
 
 ## Running locally
 
-**Backend.** No credentials are committed: the connection string, the JWT signing key and the Gemini API key come from `dotnet user-secrets` (Development) or environment variables (`ConnectionStrings__Default`, `Jwt__Key`, `Ai__Gemini__ApiKey`). The API refuses to start without the first two, and outside Development it refuses a JWT key shorter than 32 bytes.
+**Backend.** No credentials are committed: the connection string, the JWT signing key and the AI keys come from `dotnet user-secrets` (Development) or environment variables (`ConnectionStrings__Default`, `Jwt__Key`, `Ai__Anthropic__ApiKey`, optionally `Ai__Gemini__ApiKey` for embeddings). The API refuses to start without the first two, and outside Development it refuses a JWT key shorter than 32 bytes.
 
 ```
 dotnet user-secrets set "ConnectionStrings:Default" "Server=127.0.0.1,14330;Database=AIReapDb;User Id=sa;Password=<your SQL password>;TrustServerCertificate=True" --project src/AiReap.Api
 dotnet user-secrets set "Jwt:Key" "<64+ random characters>" --project src/AiReap.Api
-dotnet user-secrets set "Ai:Gemini:ApiKey" "<your Gemini API key>" --project src/AiReap.Api
+dotnet user-secrets set "Ai:Anthropic:ApiKey" "<your Anthropic API key>" --project src/AiReap.Api
+dotnet user-secrets set "Ai:Gemini:ApiKey" "<your Gemini API key>" --project src/AiReap.Api   # optional: embeddings only
 dotnet ef database update --project src/AiReap.Infrastructure --startup-project src/AiReap.Api
 dotnet run --project src/AiReap.Api
 ```
 
-**AI provider.** Google Gemini (`Ai:Provider = Gemini`, model `Ai:Gemini:Model`, default `gemini-3.6-flash`) is the real LLM, called through the `IAiChatClient` seam with JSON output enforced by the provider, semantic validation of every response, one automatic repair attempt, and retry/backoff/timeout for transient failures. Embeddings for RAG use `gemini-embedding-001` with the same key. See [`docs/GEMINI_SETUP.md`](docs/GEMINI_SETUP.md) for setup, quotas, error codes and the manual live-verification script. In Development without a key, AI calls use a canned stub (recorded as model `stub-canned-model` in the audit trail); outside Development a missing key is a clear 503, never stub data.
+**AI provider.** Anthropic Claude (`Ai:Provider = Anthropic`, model `Ai:Anthropic:Model`, default `claude-sonnet-5-5`) is the only chat provider for requirement analysis and every lifecycle stage; Gemini and Groq are not used for chat and there is no chat fallback. Calls go through the `IAiChatClient` seam under a lossless application budget (an over-budget source is split or refused, never condensed), with semantic validation of every response, one automatic repair attempt, truncation detection, and retry/backoff/timeout for transient failures. Embeddings for RAG are selected independently (`Ai:EmbeddingProvider`; automatic default keeps `gemini-embedding-001` when a Gemini key is set). See [`docs/CLAUDE_SETUP.md`](docs/CLAUDE_SETUP.md) for configuration, limits, large-SRS handling and error behavior. In Development without an Anthropic key, AI calls use a canned stub (recorded as model `stub-canned-model` in the audit trail); outside Development a missing key is a clear 503, never stub data.
 
 **Users and roles.** Public sign-up (`/register`) never grants a role: the account can sign in but every endpoint refuses it until an Administrator assigns one under **User management** (`/admin/users`, Administrator only; enforced by the API, not just the UI). The first Administrator is created at startup from configuration, and only if no Administrator exists yet:
 

@@ -18,5 +18,6 @@ public static class ArtifactResponseMapper
         artifact.CurrentVersion,
         artifact.CreatedAt,
         artifact.UpdatedAt,
-        artifact.ApprovedVersion);
+        artifact.ApprovedVersion,
+        CreatedByUserId: artifact.CreatedByUserId);
 }

@@ -115,4 +115,56 @@ public class ProjectAccessControlTests : IAsyncLifetime
         Assert.Equal(dev.Email, devEntry!["email"]!.GetValue<string>());
         Assert.Equal("Developer", devEntry!["displayName"]!.GetValue<string>());
     }
+
+    // Members also carry the account's role and active state, so a BA (who can't call the
+    // Administrator-only /api/users) can see them; deactivating the account shows up in the list.
+    [Fact]
+    public async Task Member_responses_carry_role_and_account_status()
+    {
+        var (ps, project) = await _creator.PostAsync("/api/projects", new { name = "Status check" });
+        Assert.Equal(201, ps);
+        var projectId = Id(project);
+        var dev = await _host.RegisterAsync("Developer");
+
+        var (addStatus, added) = await _creator.PostAsync($"/api/projects/{projectId}/members", new { email = dev.Email });
+        Assert.InRange(addStatus, 200, 201);
+        Assert.Equal("Developer", added!["role"]!.GetValue<string>());
+        Assert.True(added!["isActive"]!.GetValue<bool>());
+        var devUserId = added["userId"]!.GetValue<string>();
+
+        Assert.Equal(200, (await _admin.SendAsync(HttpMethod.Put, $"/api/users/{devUserId}/status", new { isActive = false })).Status);
+
+        var list = (await _creator.GetAsync($"/api/projects/{projectId}/members")).Body!.AsArray();
+        var devEntry = list.Single(m => m!["userId"]!.GetValue<string>() == devUserId);
+        Assert.Equal("Developer", devEntry!["role"]!.GetValue<string>());
+        Assert.False(devEntry!["isActive"]!.GetValue<bool>());
+        var creatorEntry = list.Single(m => m!["userId"]!.GetValue<string>() != devUserId);
+        Assert.Equal("BusinessAnalyst", creatorEntry!["role"]!.GetValue<string>());
+        Assert.True(creatorEntry!["isActive"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task Only_an_administrator_can_delete_a_project_and_it_removes_everything_the_project_owns()
+    {
+        var (ps, project) = await _creator.PostAsync("/api/projects", new { name = "Doomed", objectives = "Cut approval time" });
+        Assert.Equal(201, ps);
+        var projectId = Id(project);
+        var (ss, source) = await _creator.PostAsync($"/api/projects/{projectId}/requirement-sources",
+            new { sourceType = 1, rawText = "Employees submit leave requests; managers approve." });
+        Assert.InRange(ss, 200, 201);
+        Assert.Equal(200, (await _creator.PostAsync($"/api/requirement-sources/{Id(source)}/generate-requirements")).Status);
+        Assert.True(await _host.ScalarAsync($"SELECT COUNT(*) FROM Artifacts WHERE ProjectId = '{projectId}'") > 0);
+
+        // Even the project's own BA creator can't delete it.
+        Assert.Equal(403, (await _creator.SendAsync(HttpMethod.Delete, $"/api/projects/{projectId}")).Status);
+
+        Assert.Equal(204, (await _admin.SendAsync(HttpMethod.Delete, $"/api/projects/{projectId}")).Status);
+        Assert.Equal(404, (await _admin.GetAsync($"/api/projects/{projectId}")).Status);
+        Assert.Equal(404, (await _admin.SendAsync(HttpMethod.Delete, $"/api/projects/{projectId}")).Status);
+
+        foreach (var table in new[] { "Artifacts", "RequirementSources", "ProjectMembers", "ProjectStageTransitions", "AIExecutions", "Documents", "AgentRuns" })
+        {
+            Assert.Equal(0, await _host.ScalarAsync($"SELECT COUNT(*) FROM {table} WHERE ProjectId = '{projectId}'"));
+        }
+    }
 }

@@ -1,14 +1,16 @@
 namespace AiReap.Application.Ai;
 
 // Read-only diagnostic snapshot of which AI provider is configured and whether it's usable
-// right now (§ Step 8: "determine whether Ollama is reachable, the configured model exists,
-// and which provider is active"). Never triggers an actual generation call.
+// right now: whether the key is accepted, the configured model exists, and which provider is
+// active - plus the same for the automatic fallback provider, when one is configured. Never
+// triggers an actual generation call.
 public record AiProviderStatus(
     string Provider,
     bool Configured,
     bool ModelAvailable,
     string Model,
-    string? Detail);
+    string? Detail,
+    AiProviderStatus? Fallback = null);
 
 public interface IAiHealthCheckService
 {

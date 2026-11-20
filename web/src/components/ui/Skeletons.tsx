@@ -1,7 +1,7 @@
-export function MetricGridSkeleton() {
+export function MetricGridSkeleton({ count = 4 }: { count?: number }) {
   return (
     <div className="skeleton-metric-grid">
-      {Array.from({ length: 4 }).map((_, i) => (
+      {Array.from({ length: count }).map((_, i) => (
         <div key={i} className="skeleton skeleton-metric-card" />
       ))}
     </div>

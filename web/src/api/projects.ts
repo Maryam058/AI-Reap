@@ -8,6 +8,7 @@ import type {
   ProjectMember,
   Stakeholder,
   UpdateProjectRequest,
+  UserAccount,
 } from './types';
 
 export const projectsApi = {
@@ -19,14 +20,19 @@ export const projectsApi = {
   update: (projectId: string, request: UpdateProjectRequest, token: string | null) =>
     apiClient.put<Project>(`/api/projects/${projectId}`, request, token),
 
-  updateStatus: (projectId: string, status: number, token: string | null) =>
-    apiClient.patch<Project>(`/api/projects/${projectId}/status`, { status }, token),
+  remove: (projectId: string, token: string | null) => apiClient.delete(`/api/projects/${projectId}`, token),
+
+  get: (projectId: string, token: string | null) => apiClient.get<Project>(`/api/projects/${projectId}`, token),
 
   detectConflicts: (projectId: string, token: string | null) =>
     apiClient.post<ConflictFinding[]>(`/api/projects/${projectId}/detect-conflicts`, {}, token),
 
   getStakeholders: (projectId: string, token: string | null) =>
     apiClient.get<Stakeholder[]>(`/api/projects/${projectId}/stakeholders`, token),
+
+  // Active users for the stakeholder Role -> User picker (BA/Admin); same shape as UserAccount.
+  getStakeholderCandidates: (projectId: string, token: string | null) =>
+    apiClient.get<UserAccount[]>(`/api/projects/${projectId}/stakeholders/available-users`, token),
 
   addStakeholder: (projectId: string, request: CreateStakeholderRequest, token: string | null) =>
     apiClient.post<Stakeholder>(`/api/projects/${projectId}/stakeholders`, request, token),

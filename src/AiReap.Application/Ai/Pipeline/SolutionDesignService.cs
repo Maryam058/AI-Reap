@@ -3,7 +3,9 @@ using AiReap.Application.Artifacts;
 using AiReap.Application.Artifacts.Payloads;
 using AiReap.Application.Common;
 using AiReap.Application.Persistence;
+using AiReap.Domain.Entities;
 using AiReap.Domain.Enums;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace AiReap.Application.Ai.Pipeline;
@@ -49,18 +51,54 @@ public class SolutionDesignService : ISolutionDesignService
         _logger = logger;
     }
 
-    public async Task<ArtifactResponse> GenerateAsync(Guid requirementSourceId, CancellationToken cancellationToken = default)
+    public async Task<ArtifactResponse> GenerateAsync(Guid requirementSourceId, CancellationToken cancellationToken = default) =>
+        (await GenerateWithOutcomeAsync(requirementSourceId, cancellationToken)).Design;
+
+    public async Task<(ArtifactResponse Design, bool Created)> GenerateWithOutcomeAsync(Guid requirementSourceId, CancellationToken cancellationToken = default)
     {
         var source = await GenerationSupport.LoadSourceAsync(_db, requirementSourceId, cancellationToken);
         await _projectAccess.EnsureMemberAsync(source.ProjectId, cancellationToken);
-        var functionalRequirements = await GenerationSupport.LoadArtifactsAsync(_db, requirementSourceId, ArtifactType.FunctionalRequirement, cancellationToken);
+        await GenerationInputs.EnsureNotAllRejectedAsync(_db, requirementSourceId, "design against", cancellationToken);
+        var functionalRequirements = await GenerationSupport.LoadGenerationInputsAsync(_db, requirementSourceId, ArtifactType.FunctionalRequirement, cancellationToken);
         var context = await ClarificationContextBuilder.BuildAsync(_db, requirementSourceId, cancellationToken);
-        var frContext = GenerationSupport.BuildContextBlock("Functional requirements derived so far:", functionalRequirements);
+        var frContext = GenerationSupport.BuildContextBlock(GenerationSupport.FunctionalRequirementsHeading, functionalRequirements);
 
-        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseAsync<DesignAiResponse>(
+        var (rawResponse, parsed) = await GenerationSupport.CallAiAndParseLosslessAsync<DesignAiResponse>(
             _chatClient, _logger, "SolutionDesignGeneration", source.Id.ToString(), SystemPrompt, source.RawText + context + frContext, cancellationToken);
 
+        // G2 — the same design (title and architecture overview) already saved for this source is not
+        // saved again: the existing design is returned unchanged and nothing new is created.
+        Artifact? created = null;
+        ArtifactResponse? design = null;
+        await ArtifactPersistence.SaveAsync(_db, async ct =>
+            (created, design) = await PrepareDesignAsync(source, parsed, rawResponse, ct), cancellationToken);
+
+        if (created is null)
+        {
+            _logger.LogInformation(
+                "{Operation} for {Input}: 0 created, 1 already existed and was not saved again.", "SolutionDesignGeneration", source.Id);
+            return (design!, false);
+        }
+
+        return (ArtifactResponseMapper.ToResponse(created), true);
+    }
+
+    // The design of the response, added to the context with its version, fingerprint and audit row - or,
+    // when the same design is already saved for the source, only the audit row, and the existing design.
+    private async Task<(Artifact? Created, ArtifactResponse? Existing)> PrepareDesignAsync(
+        RequirementSource source, DesignAiResponse parsed, string rawResponse, CancellationToken cancellationToken)
+    {
         var now = DateTime.UtcNow;
+        var fingerprint = ArtifactFingerprints.ForSolutionDesign(parsed.Title, parsed.ArchitectureOverview);
+        var existing = await ArtifactFingerprints.ExistingAsync(_db, source.Id, [ArtifactType.DesignArtifact], cancellationToken);
+        if (existing.Contains((ArtifactType.DesignArtifact, fingerprint)))
+        {
+            GenerationSupport.AddExecutions(
+                _db, source.ProjectId, "SolutionDesignGeneration", PromptTemplateVersion, _currentUser.UserId,
+                _chatClient.ModelName, source.Id.ToString(), rawResponse, now, Array.Empty<Guid>());
+            return (null, await ExistingDesignAsync(source.Id, fingerprint, cancellationToken));
+        }
+
         var codes = await ArtifactCodeGenerator.ReserveCodesAsync(_db, source.ProjectId, ArtifactType.DesignArtifact, 1, cancellationToken);
 
         var payload = new DesignArtifactPayload
@@ -80,13 +118,25 @@ public class SolutionDesignService : ISolutionDesignService
 
         _db.Artifacts.Add(artifact);
         _db.ArtifactVersions.Add(GenerationSupport.InitialVersion(artifact, "AI solution design", _currentUser.UserId, now));
+        _db.ArtifactFingerprints.Add(ArtifactFingerprints.Record(artifact, fingerprint, now));
         GenerationSupport.AddExecutions(
             _db, source.ProjectId, "SolutionDesignGeneration", PromptTemplateVersion, _currentUser.UserId,
             _chatClient.ModelName, source.Id.ToString(), rawResponse, now, new[] { artifact.Id });
 
-        await _db.SaveChangesAsync(cancellationToken);
+        return (artifact, null);
+    }
 
-        return ArtifactResponseMapper.ToResponse(artifact);
+    // The saved design with this fingerprint: by its current content, else by the fingerprint it was created with.
+    private async Task<ArtifactResponse> ExistingDesignAsync(Guid sourceId, string fingerprint, CancellationToken cancellationToken)
+    {
+        var designs = await GenerationSupport.LoadArtifactsAsync(_db, sourceId, ArtifactType.DesignArtifact, cancellationToken);
+        var recorded = await _db.ArtifactFingerprints.AsNoTracking()
+            .Where(f => f.RequirementSourceId == sourceId && f.ArtifactType == ArtifactType.DesignArtifact && f.Fingerprint == fingerprint)
+            .Select(f => f.ArtifactId)
+            .ToListAsync(cancellationToken);
+        var match = designs.FirstOrDefault(d => ArtifactFingerprints.ForCurrentContent(d) == fingerprint)
+            ?? designs.First(d => recorded.Contains(d.Id));
+        return ArtifactResponseMapper.ToResponse(match);
     }
 
     private class DesignAiResponse : IValidatableAiResponse

@@ -1,9 +1,14 @@
+using AiReap.Application.Artifacts;
 using AiReap.Application.Common;
+using AiReap.Application.Files;
+using AiReap.Application.Lifecycle;
 using AiReap.Application.Persistence;
 using AiReap.Application.Traceability;
 using AiReap.Domain.Common;
 using AiReap.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AiReap.Application.Projects;
 
@@ -11,11 +16,15 @@ public class ProjectService : IProjectService
 {
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly IOriginalDocumentStore? _originals;
+    private readonly ILogger<ProjectService> _logger;
 
-    public ProjectService(IAiReapDbContext db, ICurrentUser currentUser)
+    public ProjectService(IAiReapDbContext db, ICurrentUser currentUser, IOriginalDocumentStore? originals = null, ILogger<ProjectService>? logger = null)
     {
         _db = db;
         _currentUser = currentUser;
+        _originals = originals;
+        _logger = logger ?? NullLogger<ProjectService>.Instance;
     }
 
     public async Task<ProjectResponse> CreateAsync(CreateProjectRequest request, CancellationToken cancellationToken = default)
@@ -51,6 +60,9 @@ public class ProjectService : IProjectService
             AddedByUserId = _currentUser.UserId,
             AddedAt = now
         });
+
+        // §5 — lifecycle history starts at creation, like the Baseline rows backfilled for older projects.
+        _db.ProjectStageTransitions.Add(ProjectLifecycleService.NewBaseline(project.Id, project.Status, _currentUser.UserId, now));
 
         await _db.SaveChangesAsync(cancellationToken);
         await BusinessObjectives.SyncAsync(_db, project.Id, project.Objectives, _currentUser.UserId, cancellationToken);
@@ -107,32 +119,72 @@ public class ProjectService : IProjectService
         return ToResponse(project);
     }
 
-    // §5/REAP-021: the lifecycle is the fixed linear sequence the enum declares
-    // (Draft -> ... -> Completed). Only staying put or advancing exactly one stage is legal -
-    // no skipping ahead, no moving backward. There's no "reopen a completed project" or
-    // "reject back to draft" concept in the spec, so none is invented here.
-    public async Task<(ProjectResponse? Project, string? Error)> UpdateStatusAsync(Guid id, UpdateProjectStatusRequest request, CancellationToken cancellationToken = default)
+    // Most project-owned tables are Restrict (audit history is never deleted as a side effect), so a
+    // project delete removes those rows explicitly. One SaveChanges = one transaction, and EF orders
+    // the deletes children-first. Rows that are Cascade in the database (artifact versions/reviews/
+    // work records, agent stage runs, document chunks, stage reviews, stakeholders) go with their parents.
+    public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
         var project = await _db.Projects.FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
         if (project is null)
         {
-            return (null, null);
+            return false;
         }
 
-        var current = (int)project.Status;
-        var target = (int)request.Status;
+        var artifactIds = _db.Artifacts.Where(a => a.ProjectId == id).Select(a => a.Id);
 
-        if (target != current && target != current + 1)
+        _db.ProjectNotifications.RemoveRange(await _db.ProjectNotifications.Where(n => n.ProjectId == id).ToListAsync(cancellationToken));
+        _db.ProjectStageTransitions.RemoveRange(await _db.ProjectStageTransitions.Where(t => t.ProjectId == id).ToListAsync(cancellationToken));
+        _db.ArtifactImpactNotices.RemoveRange(await _db.ArtifactImpactNotices.Where(n => n.ProjectId == id).ToListAsync(cancellationToken));
+        _db.ArtifactRelationships.RemoveRange(await _db.ArtifactRelationships
+            .Where(r => artifactIds.Contains(r.SourceArtifactId) || artifactIds.Contains(r.TargetArtifactId))
+            .ToListAsync(cancellationToken));
+        _db.AIExecutions.RemoveRange(await _db.AIExecutions.Where(e => e.ProjectId == id).ToListAsync(cancellationToken));
+        _db.AgentRuns.RemoveRange(await _db.AgentRuns.Where(r => r.ProjectId == id).ToListAsync(cancellationToken));
+        _db.Artifacts.RemoveRange(await _db.Artifacts.Where(a => a.ProjectId == id).ToListAsync(cancellationToken));
+        // The sources' kept originals: their rows go with the sources (Cascade); the stored files are
+        // removed once the delete has committed (below).
+        var sourceIds = _db.RequirementSources.Where(s => s.ProjectId == id).Select(s => s.Id);
+        var originalKeys = await _db.RequirementSourceFiles.Where(f => sourceIds.Contains(f.RequirementSourceId)).Select(f => f.StorageKey).ToListAsync(cancellationToken);
+        _db.RequirementSources.RemoveRange(await _db.RequirementSources.Where(s => s.ProjectId == id).ToListAsync(cancellationToken));
+        _db.Documents.RemoveRange(await _db.Documents.Where(d => d.ProjectId == id).ToListAsync(cancellationToken));
+        _db.ProjectMembers.RemoveRange(await _db.ProjectMembers.Where(m => m.ProjectId == id).ToListAsync(cancellationToken));
+        _db.Projects.Remove(project);
+
+        // One save, so one transaction: everything above is deleted together or not at all. A row
+        // deleted under a concurrency token (an artifact's CurrentVersion/RowVersion, a stage
+        // transition's RowVersion) that changed since it was read - or one already deleted by someone
+        // else - fails the whole save (409, nothing deleted; not retried automatically). Any other
+        // database failure (e.g. a row added meanwhile that still references the project) propagates.
+        try
         {
-            return (null, $"Invalid status transition: {project.Status} can only move to itself or to the next stage in the lifecycle.");
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            ArtifactPersistence.Undo(_db);
+            throw new ConflictException(DeleteConflictMessage);
         }
 
-        project.Status = request.Status;
-        project.UpdatedAt = DateTime.UtcNow;
-        await _db.SaveChangesAsync(cancellationToken);
+        // After the commit, so a failed delete never loses a file. A file that cannot be removed now is
+        // an orphan (no row references it) and OriginalDocumentJanitor removes it later.
+        foreach (var key in originalKeys)
+        {
+            try
+            {
+                if (_originals is not null) await _originals.DeleteAsync(key, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not remove the stored original {StorageKey} of deleted project {ProjectId}; the orphan sweep will remove it.", key, id);
+            }
+        }
 
-        return (ToResponse(project), null);
+        return true;
     }
+
+    public const string DeleteConflictMessage =
+        "The project changed while it was being deleted, so it was not deleted. Reload and try again.";
 
     public async Task<IReadOnlyList<StakeholderResponse>> GetStakeholdersAsync(Guid projectId, CancellationToken cancellationToken = default)
     {

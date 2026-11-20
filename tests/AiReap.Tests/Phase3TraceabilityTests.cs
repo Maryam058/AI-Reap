@@ -149,6 +149,8 @@ public class Phase3TraceabilityTests : IAsyncLifetime
         var frId = Id(generated!["functionalRequirements"]![0]);
         var (_, stories) = await _ba.PostAsync($"/api/requirement-sources/{sourceId}/generate-user-stories");
         var storyId = Id(stories![0]);
+        // Approved, so the Developer below can see it (and so its notice) - DeveloperArtifactVisibilityTests.
+        await _reviewer.SendAsync(HttpMethod.Patch, $"/api/artifacts/{storyId}/status", new { status = Approved });
 
         await _reviewer.SendAsync(HttpMethod.Patch, $"/api/artifacts/{frId}/status", new { status = Approved });
         await _ba.SendAsync(HttpMethod.Patch, $"/api/artifacts/{frId}", new { title = "Change one" });

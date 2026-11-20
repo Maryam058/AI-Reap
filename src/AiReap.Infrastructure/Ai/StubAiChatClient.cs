@@ -1,4 +1,5 @@
 using AiReap.Application.Ai;
+using AiReap.Application.Ai.Pipeline;
 
 namespace AiReap.Infrastructure.Ai;
 
@@ -17,7 +18,7 @@ public class StubAiChatClient : IAiChatClient
         var response = systemPrompt switch
         {
             _ when systemPrompt.Contains("readinessSummary") => ReviewResponse,
-            _ when systemPrompt.Contains("missingInformation") => AnalysisResponse,
+            _ when systemPrompt.Contains("missingInformation") => AnalysisResponse(userPrompt),
             _ when systemPrompt.Contains("functionalRequirements") => RequirementsResponse,
             _ when systemPrompt.Contains("userStories") => UserStoriesResponse,
             _ when systemPrompt.Contains("acceptanceCriteria") => AcceptanceCriteriaResponse,
@@ -28,6 +29,9 @@ public class StubAiChatClient : IAiChatClient
             _ when systemPrompt.Contains("dataEntities") => DataEntitiesResponse,
             _ when systemPrompt.Contains("apiSpecifications") => ApiSpecsResponse,
             _ when systemPrompt.Contains("taskType") => TasksResponse,
+            // A non-functional requirement's prompt (TestGenerationService.NfrPrompt) gets quality test
+            // cases, so the stub exercises the NFR test kinds rather than the FR ones.
+            _ when systemPrompt.Contains("testCases") && userPrompt.Contains("\nTarget status: ") => NfrTestCasesResponse,
             _ when systemPrompt.Contains("testCases") => TestCasesResponse,
             _ when systemPrompt.Contains("citedChunkRefs") => CopilotResponse,
             _ => "{}"
@@ -35,14 +39,16 @@ public class StubAiChatClient : IAiChatClient
 
         // Canned responses link to "FR-001" / "BO-001". Like a real model, only reference artifacts
         // that were actually given in the prompt (reference validation rejects anything else): use
-        // the first such code present, or no reference at all when there is none.
-        response = ReferenceFirstCodeInPrompt(response, userPrompt, "FR");
-        response = ReferenceFirstCodeInPrompt(response, userPrompt, "BO");
+        // the first such code present, or no reference at all when there is none. An FR code is
+        // taken only from the eligible-FR list under its heading - never from an FR-like ID written
+        // in the raw source text above it ("FR-012" there is a document ID, not a stored code).
+        response = ReferenceFirstCode(response, "FR", FirstListedRequirementCode(userPrompt));
+        response = ReferenceFirstCode(response, "BO", FirstCodeInPrompt(userPrompt, "BO"));
 
         return Task.FromResult(response);
     }
 
-    private static string ReferenceFirstCodeInPrompt(string response, string userPrompt, string prefix)
+    private static string ReferenceFirstCode(string response, string prefix, string? code)
     {
         var placeholder = $"\"{prefix}-001\"";
         if (!response.Contains(placeholder, StringComparison.Ordinal))
@@ -50,31 +56,95 @@ public class StubAiChatClient : IAiChatClient
             return response;
         }
 
-        var firstCode = System.Text.RegularExpressions.Regex.Match(userPrompt, $@"\b{prefix}-\d{{3,}}\b");
-        return firstCode.Success
-            ? response.Replace(placeholder, $"\"{firstCode.Value}\"", StringComparison.Ordinal)
+        return code is not null
+            ? response.Replace(placeholder, $"\"{code}\"", StringComparison.Ordinal)
             : response.Replace($"[{placeholder}]", "[]", StringComparison.Ordinal);
+    }
+
+    // The first "- FR-001: Title" line directly under the last FunctionalRequirementsHeading (the
+    // services append the list after the raw text); null when the prompt carries no such list.
+    private static string? FirstListedRequirementCode(string userPrompt)
+    {
+        var heading = GenerationSupport.FunctionalRequirementsHeading;
+        var at = userPrompt.LastIndexOf(heading, StringComparison.Ordinal);
+        if (at < 0)
+        {
+            return null;
+        }
+
+        var lines = userPrompt[(at + heading.Length)..].Split('\n');
+        var first = lines.Length > 1 ? lines[1].TrimEnd('\r') : string.Empty;
+        var match = System.Text.RegularExpressions.Regex.Match(first, @"^- (FR-\d{3,}): ");
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
+    private static string? FirstCodeInPrompt(string userPrompt, string prefix)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(userPrompt, $@"\b{prefix}-\d{{3,}}\b");
+        return match.Success ? match.Value : null;
     }
 
     private const string ReviewResponse = """
         {
-          "readinessSummary": "Stub assessment - configure Ai:Gemini:ApiKey for a real model. See the deterministic findings for the actual gaps.",
+          "readinessSummary": "Stub assessment - configure Ai:Anthropic:ApiKey (Claude) for a real model. See the deterministic findings for the actual gaps.",
           "recommendation": "not_ready"
         }
         """;
 
-    private const string AnalysisResponse = """
+    // Clarification questions must quote the source they are about (ClarificationCandidateValidator), so
+    // the stub grounds its two questions in the text it was sent: the first two statements of at least
+    // four words (or the whole text when it has none), each quoted verbatim and named in its question.
+    private static string AnalysisResponse(string userPrompt)
+    {
+        var text = userPrompt.StartsWith("[AI-REAP note:", StringComparison.Ordinal) && userPrompt.IndexOf("]\n\n", StringComparison.Ordinal) is var end and > 0
+            ? userPrompt[(end + 3)..]
+            : userPrompt;
+        var statements = text.Split('\n')
+            .Select(l => l.Trim())
+            .Where(l => l.Length > 0 && !l.StartsWith('#') && !System.Text.RegularExpressions.Regex.IsMatch(l, @"^\d+(\.\d+)*\.?\s+\S+$"))
+            .SelectMany(l => System.Text.RegularExpressions.Regex.Split(l, @"(?<=[.;!?])\s+"))
+            .Select(s => s.Trim())
+            .Where(s => s.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length >= 4)
+            .Take(2)
+            .ToList();
+        if (statements.Count == 0 && text.Trim().Length > 0) statements.Add(text.Trim());
+        if (statements.Count == 1) statements.Add(statements[0]);
+
+        static string Short(string statement) =>
+            string.Join(' ', statement.TrimEnd('.', ';', '!', '?', ':').Replace("?", string.Empty).Replace("\"", "'")
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(6));
+
+        var questions = statements.Count == 0
+            ? new System.Text.Json.Nodes.JsonArray()
+            : new System.Text.Json.Nodes.JsonArray(
+                new System.Text.Json.Nodes.JsonObject
+                {
+                    ["kind"] = "ambiguous",
+                    ["topic"] = $"Who may: {Short(statements[0])}",
+                    ["question"] = $"Which user roles are allowed to perform \"{Short(statements[0])}\"?",
+                    ["reason"] = "The statement does not say which roles it applies to.",
+                    ["impact"] = "Access rules and the acceptance tests depend on it.",
+                    ["evidence"] = new System.Text.Json.Nodes.JsonArray(statements[0])
+                },
+                new System.Text.Json.Nodes.JsonObject
+                {
+                    ["kind"] = "missing",
+                    ["topic"] = $"Acceptance: {Short(statements[1])}",
+                    ["question"] = $"What measurable acceptance condition confirms \"{Short(statements[1])}\" is met?",
+                    ["reason"] = "No measurable outcome is stated for this statement.",
+                    ["impact"] = "Without it the requirement cannot be verified.",
+                    ["evidence"] = new System.Text.Json.Nodes.JsonArray(statements[1])
+                });
+
+        return new System.Text.Json.Nodes.JsonObject
         {
-          "actors": ["Employee", "Manager"],
-          "capabilities": ["Submit request", "Review request", "Approve or reject request"],
-          "dataElements": ["Request type", "Start date", "End date", "Status"],
-          "notes": ["This is a stub response — configure Ai:Gemini:ApiKey for a real model."],
-          "missingInformation": [
-            {"topic": "Approval hierarchy", "question": "Can approval be delegated, and is multi-level approval required?", "reason": "Not stated in the raw requirement."},
-            {"topic": "Notifications", "question": "Should the submitter be notified when the request is approved or rejected?", "reason": "Not stated in the raw requirement."}
-          ]
-        }
-        """;
+            ["actors"] = new System.Text.Json.Nodes.JsonArray("Employee", "Manager"),
+            ["capabilities"] = new System.Text.Json.Nodes.JsonArray("Submit request", "Review request", "Approve or reject request"),
+            ["dataElements"] = new System.Text.Json.Nodes.JsonArray("Request type", "Start date", "End date", "Status"),
+            ["notes"] = new System.Text.Json.Nodes.JsonArray("This is a stub response — configure Ai:Anthropic:ApiKey (Claude) for a real model."),
+            ["missingInformation"] = questions
+        }.ToJsonString();
+    }
 
     private const string RequirementsResponse = """
         {
@@ -133,7 +203,7 @@ public class StubAiChatClient : IAiChatClient
     private const string DesignResponse = """
         {
           "title": "Solution Design",
-          "architectureOverview": "Stub response — configure Ai:Gemini:ApiKey for a grounded design proposal.",
+          "architectureOverview": "Stub response — configure Ai:Anthropic:ApiKey (Claude) for a grounded design proposal.",
           "modules": ["RequestService"], "integrationPoints": null, "authentication": "JWT bearer",
           "backgroundProcessing": null, "caching": null, "logging": "Structured logging via the platform's standard middleware.",
           "deploymentConsiderations": null
@@ -181,9 +251,22 @@ public class StubAiChatClient : IAiChatClient
         }
         """;
 
+    // No number of its own: the pass criterion is "the agreed target", as the NFR prompt requires
+    // when a target is not confirmed.
+    private const string NfrTestCasesResponse = """
+        {
+          "testCases": [
+            {"title": "Response time under expected peak load", "preconditions": "Test environment loaded with production-like data", "steps": ["Generate the expected peak number of concurrent users", "Measure the response time of each request for the duration of the test"],
+             "expectedResult": "Response times meet the agreed target (to be confirmed if the target is still an assumption)", "testKind": "performance"},
+            {"title": "Access is refused without authentication", "preconditions": "No signed-in session", "steps": ["Request the protected page or API directly", "Repeat with an expired session"],
+             "expectedResult": "Access is refused and no requirement data is returned", "testKind": "security"}
+          ]
+        }
+        """;
+
     private const string CopilotResponse = """
         {
-          "answer": "Stub response — configure Ai:Gemini:ApiKey for a grounded answer. Check the structured facts above for the actual current counts.",
+          "answer": "Stub response — configure Ai:Anthropic:ApiKey (Claude) for a grounded answer. Check the structured facts above for the actual current counts.",
           "citedChunkRefs": [],
           "relatedArtifactCodes": []
         }

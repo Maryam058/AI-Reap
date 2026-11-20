@@ -1,12 +1,14 @@
-import { useEffect, useState, type FocusEvent, type MouseEvent } from 'react';
+import { useEffect, useState, type CSSProperties, type FocusEvent, type MouseEvent } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useSidebar } from '../context/SidebarContext';
 import { readLastProject, useProjectContext } from '../context/ProjectContext';
-import { NAV_GROUPS, SEGMENT_DEFAULT_TAB, type NavGroup, type NavModule } from '../navigation/navConfig';
-import { deriveSdlc, phasePath, type PhaseState } from '../lib/sdlc';
-import { statusLabel, statusVariant } from '../lib/format';
-import { IconCheck, IconChevronDown, IconChevronLeft, IconFolder, IconSparkles, IconX } from './icons';
+import { ALL_MODULES, NAV_GROUPS, SEGMENT_DEFAULT_TAB, type NavGroup, type NavModule } from '../navigation/navConfig';
+import { phasePath } from '../lib/workAreas';
+import { lifecycleProgress, stageLabel } from '../lib/lifecycle';
+import { activeStages, activeStagesLabel, APPROVED_PROGRESS_LABEL, completedWorkStages, outstandingWorkNote, STAGE_COUNT, STAGE_STATUS_LABEL, stageByKey, STAGES, stageGaps, stageStatus, type StageStatus } from '../lib/stages';
+import { initials, statusLabel, statusVariant } from '../lib/format';
+import { IconAlert, IconCheck, IconChevronDown, IconFolder, IconPanelLeft, IconSelector, IconX } from './icons';
 
 const SECTIONS_KEY = 'aireap.nav-sections-closed';
 
@@ -40,7 +42,7 @@ export function Sidebar() {
   const { pathname, search } = useLocation();
   const { collapsed, toggleCollapsed, mobileOpen, closeMobile } = useSidebar();
   const { hasRole } = useAuth();
-  const { projectId, project } = useProjectContext();
+  const { projectId, project, lifecycle } = useProjectContext();
   const isMobile = useIsMobile();
   const rail = collapsed && !isMobile;
   const [closed, setClosed] = useState<Record<string, boolean>>(loadClosed);
@@ -66,8 +68,7 @@ export function Sidebar() {
   // Outside a project the workflow links point at the last project the user opened, if any.
   const last = projectId ? null : readLastProject();
   const targetProjectId = projectId ?? last?.id ?? null;
-  const sdlc = project ? deriveSdlc(project.status) : null;
-  const stateByKey: Record<string, PhaseState> = Object.fromEntries((sdlc?.phases ?? []).map((p) => [p.key, p.state]));
+  const progress = project ? lifecycleProgress(project.status) : null;
   const tab = new URLSearchParams(search).get('tab');
 
   const isActive = (mod: NavModule): boolean => {
@@ -75,22 +76,16 @@ export function Sidebar() {
     if (mod.key === 'projects') return pathname === '/projects' || /^\/projects\/[^/]+(\/edit)?\/?$/.test(pathname);
     if (mod.to) return pathname === mod.to || pathname.startsWith(`${mod.to}/`);
     if (!projectId || !mod.segment || !pathname.startsWith(phasePath(projectId, mod.segment))) return false;
-    // Modules sharing one route are told apart by tab. The agent pipeline owns its own tab;
-    // every other assistant tab (documents, audit) belongs to the assistant.
-    const fallback = SEGMENT_DEFAULT_TAB[mod.segment];
-    if (!fallback) return true;
-    if (mod.segment === 'copilot') return (tab === 'pipeline') === (mod.tab === 'pipeline');
-    return (tab ?? fallback) === (mod.tab ?? fallback);
+    // Modules sharing one route are told apart by tab: a tool owns its tab (stakeholders, agent
+    // pipeline); the stage owns every other tab of its route.
+    if (mod.tab) return tab === mod.tab;
+    return !ALL_MODULES.some((m) => m.tab && m.segment === mod.segment && m.tab === tab);
   };
 
-  /** Combined state across the SDLC phases a module covers; only shown once a project is open. */
-  const moduleState = (mod: NavModule): PhaseState | undefined => {
-    if (!projectId || !mod.phases) return undefined;
-    const states = mod.phases.map((k) => stateByKey[k]).filter(Boolean);
-    if (states.length === 0) return undefined;
-    if (states.every((s) => s === 'completed')) return 'completed';
-    return states.includes('current') ? 'current' : 'upcoming';
-  };
+  /** The derived status of a stage entry; only once a project is open. */
+  const moduleStatus = (mod: NavModule): StageStatus | undefined => (project && mod.stageKey ? stageStatus(stageByKey(mod.stageKey)!, project.status, lifecycle) : undefined);
+  const moduleGaps = (mod: NavModule): number => (project && mod.stageKey ? stageGaps(stageByKey(mod.stageKey)!, project.status, lifecycle).length : 0);
+  const nowKeys = new Set(project ? activeStages(project.status).map((s) => s.key) : []);
 
   const showTip = (label: string) => (e: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
     if (!rail) return;
@@ -104,39 +99,50 @@ export function Sidebar() {
     const active = isActive(mod);
     const suffix = mod.tab && mod.tab !== SEGMENT_DEFAULT_TAB[mod.segment ?? ''] ? `?tab=${mod.tab}` : '';
     const to = mod.to ?? (mod.status !== 'planned' && targetProjectId && mod.segment ? `${phasePath(targetProjectId, mod.segment)}${suffix}` : null);
-    const state = moduleState(mod);
+    const status = moduleStatus(mod);
+    const gaps = moduleGaps(mod);
+    const stage = mod.stageKey ? stageByKey(mod.stageKey) : undefined;
+    const isNow = !!mod.stageKey && nowKeys.has(mod.stageKey);
     const planned = mod.status === 'planned';
     const needsProject = !to && !planned;
-    const tipLabel = planned ? `${mod.label} (planned)` : mod.label;
+    const tipLabel = stage ? `${stage.number}. ${mod.label}${status ? ` — ${STAGE_STATUS_LABEL[status]}` : ''}` : planned ? `${mod.label} (planned)` : mod.label;
 
     const content = (
       <>
-        <Icon />
+        {stage ? (
+          <span className={`nav-stage-node${status ? ` st-${status}` : ''}${isNow ? ' now' : ''}`} aria-hidden="true">
+            {status === 'completed' ? <IconCheck width={11} height={11} strokeWidth={3.25} /> : status === 'attention' ? <IconAlert width={11} height={11} strokeWidth={2.5} /> : stage.number}
+          </span>
+        ) : (
+          <Icon />
+        )}
         {!rail && (
           <>
             <span className="nav-label">{mod.label}</span>
-            {planned && <span className="nav-soon">Soon</span>}
-            {state === 'completed' && (
-              <span className="nav-state completed" role="img" aria-label="Phase completed">
-                <IconCheck width={10} height={10} strokeWidth={3.5} />
+            {status && <span className="sr-only">, {STAGE_STATUS_LABEL[status]}</span>}
+            {gaps > 0 && (
+              <span className="nav-gap-count" title={`${gaps} ${gaps === 1 ? 'gap' : 'gaps'} to resolve`}>
+                {gaps}
+                <span className="sr-only"> {gaps === 1 ? 'gap' : 'gaps'} to resolve</span>
               </span>
             )}
-            {state === 'current' && <span className="nav-state current" role="img" aria-label="Current phase" />}
+            {planned && <span className="nav-soon">Soon</span>}
+            {isNow && status !== 'ready' && <span className="nav-step-tag">Now</span>}
           </>
         )}
-        {rail && state === 'current' && <span className="nav-rail-dot" aria-hidden="true" />}
+        {rail && isNow && <span className="nav-rail-dot" aria-hidden="true" />}
       </>
     );
 
     const cls = `nav-link${active ? ' active' : ''}${mod.ai ? ' ai' : ''}${to ? '' : ' disabled'}`;
     return (
-      <li key={mod.key} className="nav-item" onMouseEnter={showTip(tipLabel)} onMouseLeave={hideTip} onFocus={showTip(tipLabel)} onBlur={hideTip}>
+      <li key={mod.key} className={`nav-item${stage ? ' nav-stage' : ''}`} onMouseEnter={showTip(tipLabel)} onMouseLeave={hideTip} onFocus={showTip(tipLabel)} onBlur={hideTip}>
         {to ? (
-          <Link to={to} className={cls} aria-label={rail ? mod.label : undefined} aria-current={active ? 'page' : undefined}>
+          <Link to={to} className={cls} aria-label={rail ? mod.label : undefined} aria-current={active ? 'page' : undefined} title={rail ? undefined : mod.description}>
             {content}
           </Link>
         ) : (
-          <span className={cls} aria-disabled="true" title={rail ? undefined : needsProject ? 'Open a project to use this step' : mod.description}>
+          <span className={cls} aria-disabled="true" title={rail ? undefined : needsProject ? 'Open a project to use this' : mod.description}>
             {content}
           </span>
         )}
@@ -148,28 +154,30 @@ export function Sidebar() {
     const modules = group.modules.filter((m) => !m.role || hasRole(m.role));
     if (modules.length === 0) return null;
     const open = rail || !group.collapsible || !closed[group.key];
-    const meta = group.key === 'sdlc' && sdlc ? `${sdlc.percent}%` : null;
+    const meta = group.key === 'lifecycle' && progress ? `${progress.percent}%` : null;
+    const metaNote = group.key === 'lifecycle' && project ? outstandingWorkNote(project.status, lifecycle) : null;
     return (
-      <section className="nav-group" key={group.key} aria-label={group.label}>
+      <section className={`nav-group nav-group-${group.key}`} key={group.key} aria-label={group.label}>
         {rail ? (
           <div className="nav-rail-sep" />
         ) : group.collapsible ? (
           <button type="button" className="nav-group-toggle" aria-expanded={open} onClick={() => toggleSection(group.key)}>
-            <IconChevronDown className={`nav-group-chevron${open ? '' : ' closed'}`} width={12} height={12} />
             <span className="nav-group-text">{group.label}</span>
-            {group.key === 'ai' && (
-              <span className="nav-ai-chip" aria-hidden="true">
-                <IconSparkles width={9} height={9} /> AI
+            <IconChevronDown className={`nav-group-chevron${open ? '' : ' closed'}`} width={12} height={12} />
+            {meta && (
+              <span className={`nav-group-meta${metaNote ? ' warn' : ''}`} title={metaNote ? `${APPROVED_PROGRESS_LABEL} ${meta} — ${metaNote}` : `${APPROVED_PROGRESS_LABEL} ${meta}`}>
+                {meta}
+                {metaNote && <IconAlert width={10} height={10} strokeWidth={3} aria-label={metaNote} />}
               </span>
             )}
-            {meta && <span className="nav-group-meta">{meta}</span>}
           </button>
         ) : (
           <div className="nav-group-label">{group.label}</div>
         )}
         <div className={`nav-collapse${open ? ' open' : ''}`}>
           <div className="nav-collapse-inner" {...(open ? {} : { inert: true })}>
-            <ul className="nav-list">{modules.map(renderModule)}</ul>
+            {!rail && group.hint && <p className="nav-group-hint">{group.hint}</p>}
+            <ul className="nav-list">{modules.map((m) => renderModule(m))}</ul>
           </div>
         </div>
       </section>
@@ -177,53 +185,49 @@ export function Sidebar() {
   };
 
   // Only shown while a project is open; outside a project the sidebar has no project card.
-  const projectCard = !rail && projectId && (
-    <div className="nav-project active">
-      <div className="nav-project-head">
-        <IconFolder width={14} height={14} />
-        <span className="nav-project-label">Current project</span>
-        <Link to="/projects" className="nav-project-switch">
-          Switch
+  // In the rail it shrinks to the project's initials inside a lifecycle-progress ring.
+  const overviewPath = projectId ? `/projects/${projectId}` : null;
+  const projectCard =
+    overviewPath &&
+    (rail ? (
+      <div className="nav-rail-project">
+        <Link
+          to={overviewPath}
+          className={`nav-project-ring${pathname === overviewPath ? ' current' : ''}`}
+          style={{ '--p': `${progress?.percent ?? 0}%` } as CSSProperties}
+          aria-label={`Current project: ${project?.name ?? 'loading'}`}
+          onMouseEnter={showTip(project?.name ?? 'Current project')}
+          onMouseLeave={hideTip}
+          onFocus={showTip(project?.name ?? 'Current project')}
+          onBlur={hideTip}
+        >
+          <span className="nav-project-avatar">{project ? initials(project.name) : ''}</span>
         </Link>
       </div>
-      {projectId ? (
-        project && sdlc ? (
-          <>
-            <Link to={`/projects/${project.id}`} className={`nav-project-name${pathname === `/projects/${project.id}` ? ' current' : ''}`} title={project.name}>
-              {project.name}
-            </Link>
-            <div className="nav-project-meta">
-              <span className={`status-pill tone-${statusVariant(project.status)}`}>{statusLabel(project.status)}</span>
-              <span>{sdlc.percent}% SDLC</span>
-            </div>
-            <ol className="phase-track" aria-label="SDLC phases">
-              {sdlc.phases.map((p) => (
-                <li key={p.key} className={`phase-seg ${p.state}`} title={`${p.step}. ${p.navLabel} — ${p.state === 'current' ? 'in progress' : p.state}`} />
-              ))}
-            </ol>
-            <div className="nav-project-phase">
-              {sdlc.current ? (
-                <>
-                  <span className="nav-state current" aria-hidden="true" /> Now: <strong>{sdlc.current.navLabel}</strong>
-                </>
-              ) : (
-                <>
-                  <IconCheck width={12} height={12} strokeWidth={3} /> All phases complete
-                </>
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="skeleton skeleton-line" />
-        )
-      ) : null}
-    </div>
-  );
+    ) : (
+      <div className="nav-project">
+        <div className="nav-project-head">
+          <Link to={overviewPath} className={`nav-project-id${pathname === overviewPath ? ' current' : ''}`} title={project?.name}>
+            <span className="nav-project-avatar" aria-hidden="true">
+              {project ? initials(project.name) : <IconFolder width={14} height={14} />}
+            </span>
+            <span className="nav-project-text">
+              {project ? <span className="nav-project-name">{project.name}</span> : <span className="skeleton skeleton-line" />}
+              <span className="nav-project-label">Current project</span>
+            </span>
+          </Link>
+          <Link to="/projects" className="nav-project-switch" aria-label="Switch project" title="Switch project">
+            <IconSelector width={15} height={15} />
+          </Link>
+        </div>
+        {project && progress && <SidebarLifecycle status={project.status} />}
+      </div>
+    ));
 
   return (
     <>
       {mobileOpen && <div className="sidebar-scrim" onClick={closeMobile} />}
-      <aside className={`sidebar${collapsed ? ' collapsed' : ''}${mobileOpen ? ' mobile-open' : ''}`} aria-label="Primary navigation">
+      <aside className={`sidebar${collapsed ? ' collapsed' : ''}${rail ? ' rail' : ''}${mobileOpen ? ' mobile-open' : ''}`} aria-label="Primary navigation">
         <div className="sidebar-brand-row">
           <Link to="/dashboard" className="sidebar-brand" aria-label="AI-REAP dashboard" onMouseEnter={showTip('AI-REAP')} onMouseLeave={hideTip} onFocus={showTip('AI-REAP')} onBlur={hideTip}>
             <span className="sidebar-logo">AI</span>
@@ -234,26 +238,99 @@ export function Sidebar() {
               </span>
             )}
           </Link>
+          {!rail && (
+            <button type="button" className="sidebar-collapse-btn" onClick={toggleCollapsed} aria-label="Collapse navigation" aria-expanded={true} title="Collapse navigation">
+              <IconPanelLeft width={17} height={17} />
+            </button>
+          )}
           <button className="sidebar-mobile-close" onClick={closeMobile} aria-label="Close navigation">
             <IconX />
           </button>
         </div>
 
         <nav className="sidebar-scroll" aria-label="Main" onScroll={hideTip}>
-          {renderGroup(NAV_GROUPS[0])}
           {projectCard}
-          {NAV_GROUPS.slice(1).map(renderGroup)}
+          {/* Outside a project the work-area links open the last project; say which one. */}
+          {!rail && last && (
+            <p className="nav-last-project">
+              Project links open your last project:{' '}
+              <Link to={`/projects/${last.id}`} title={last.name}>
+                {last.name}
+              </Link>
+            </p>
+          )}
+          {NAV_GROUPS.map(renderGroup)}
         </nav>
 
-        <button className="sidebar-collapse-toggle" onClick={toggleCollapsed} aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'} title={collapsed ? 'Expand navigation' : 'Collapse navigation'}>
-          <IconChevronLeft className={collapsed ? 'rotated' : undefined} />
-        </button>
+        {rail && (
+          <div className="sidebar-footer">
+            <button
+              type="button"
+              className="sidebar-collapse-btn"
+              onClick={toggleCollapsed}
+              aria-label="Expand navigation"
+              aria-expanded={false}
+              onMouseEnter={showTip('Expand navigation')}
+              onMouseLeave={hideTip}
+              onFocus={showTip('Expand navigation')}
+              onBlur={hideTip}
+            >
+              <IconPanelLeft width={17} height={17} />
+            </button>
+          </div>
+        )}
       </aside>
       {tip && rail && (
         <div className="nav-tooltip" role="tooltip" style={{ top: tip.top, left: tip.left }}>
           {tip.label}
         </div>
       )}
+    </>
+  );
+}
+
+/** The open project's position: overall progress, the nine stages as a track, and any pending Reviewer request. */
+function SidebarLifecycle({ status }: { status: number }) {
+  const { lifecycle: state } = useProjectContext();
+  const progress = lifecycleProgress(status);
+  const pending = !!state?.pendingTransition;
+  const attention = completedWorkStages(status, state).attention;
+  return (
+    <>
+      <div className="nav-project-meta">
+        <span title={`${APPROVED_PROGRESS_LABEL}: the formally approved lifecycle position${attention > 0 ? '. Open gaps are counted separately below.' : ''}`}>
+          Approved progress {progress.percent}%
+        </span>
+        <span className={`status-pill tone-${statusVariant(status)}`} title="Lifecycle status">
+          {statusLabel(status)}
+        </span>
+      </div>
+      <ol className={`phase-track stages${progress.finished ? ' finished' : ''}`} aria-label={`Project stages, ${STAGE_COUNT} in total`}>
+        {STAGES.map((s) => {
+          const st = stageStatus(s, status, state);
+          return <li key={s.key} className={`phase-seg st-${st}`} title={`${s.number}. ${s.name}: ${STAGE_STATUS_LABEL[st]}`} />;
+        })}
+      </ol>
+      <div className="nav-project-phase">
+        {attention > 0 ? (
+          <span className="nav-project-attention">
+            <IconAlert width={12} height={12} strokeWidth={2.5} /> {progress.finished ? 'Approved, but ' : ''}
+            {attention} {attention === 1 ? 'stage needs' : 'stages need'} attention
+          </span>
+        ) : progress.finished ? (
+          <span className="nav-project-done">
+            <IconCheck width={12} height={12} strokeWidth={3} /> Lifecycle completed · 100%
+          </span>
+        ) : pending ? (
+          <>
+            <span className="nav-state current" aria-hidden="true" /> <strong>Awaiting review</strong> to {stageLabel(state!.pendingTransition!.toStatus)}
+          </>
+        ) : (
+          <>
+            <span className="nav-state current" aria-hidden="true" /> Now: <strong>{activeStagesLabel(status)}</strong>
+          </>
+        )}
+      </div>
     </>
   );
 }

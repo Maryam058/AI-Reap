@@ -39,8 +39,8 @@ export const SECTIONS: SectionDef[] = [
     title: 'Project context',
     description: 'What the project is called and the problem it exists to solve.',
     fields: [
-      { key: 'name', label: 'Project name', kind: 'text', placeholder: 'e.g. Medical Clinic Management System', required: true },
-      { key: 'description', label: 'Description', kind: 'area', rows: 3, placeholder: 'A short summary anyone on the team can read in ten seconds.' },
+      { key: 'name', label: 'Project name', kind: 'text', placeholder: 'e.g. Medical Clinic Management System', required: true, hint: 'Use a name your team will recognise. You can change it later.' },
+      { key: 'description', label: 'Description', kind: 'area', rows: 3, placeholder: 'A short summary anyone on the team can read in ten seconds.', hint: 'Shown on project cards and the project overview.' },
       { key: 'businessProblem', label: 'Business problem', kind: 'area', rows: 4, placeholder: 'What pain point or opportunity is being addressed?', hint: 'Describe the problem, not the solution.' },
     ],
   },
@@ -61,8 +61,8 @@ export const SECTIONS: SectionDef[] = [
     title: 'Domain & target users',
     description: 'The business area and the people who will use the result.',
     fields: [
-      { key: 'domain', label: 'Domain', kind: 'text', placeholder: 'e.g. Healthcare, Retail' },
-      { key: 'targetUsers', label: 'Target users', kind: 'text', placeholder: 'e.g. Clinic administrators, patients' },
+      { key: 'domain', label: 'Domain', kind: 'text', placeholder: 'e.g. Healthcare, Retail', hint: 'The business area, so the AI uses the right vocabulary.' },
+      { key: 'targetUsers', label: 'Target users', kind: 'text', placeholder: 'e.g. Clinic administrators, patients', hint: 'The people who will use the finished system.' },
     ],
   },
   {
@@ -70,15 +70,15 @@ export const SECTIONS: SectionDef[] = [
     title: 'Technology & constraints',
     description: 'The environment the solution has to live in.',
     fields: [
-      { key: 'technologyPreferences', label: 'Technology preferences', kind: 'text', placeholder: 'e.g. .NET, React, Azure' },
-      { key: 'constraints', label: 'Constraints', kind: 'area', rows: 3, placeholder: 'Budget, compliance, legacy systems, fixed dates…' },
+      { key: 'technologyPreferences', label: 'Technology preferences', kind: 'text', placeholder: 'e.g. .NET, React, Azure', hint: 'Any technologies the solution must or should use. Leave empty if unsure.' },
+      { key: 'constraints', label: 'Constraints', kind: 'area', rows: 3, placeholder: 'Budget, compliance, legacy systems, fixed dates…', hint: 'Limits the solution has to respect.' },
     ],
   },
   {
     key: 'timeline',
     title: 'Expected timeline',
     description: 'When the project needs to land.',
-    fields: [{ key: 'expectedTimeline', label: 'Expected timeline', kind: 'text', placeholder: 'e.g. 6 months, go-live Q3' }],
+    fields: [{ key: 'expectedTimeline', label: 'Expected timeline', kind: 'text', placeholder: 'e.g. 6 months, go-live Q3', hint: 'Roughly when the project needs to be delivered.' }],
   },
 ];
 
@@ -126,7 +126,7 @@ function Fields({ section, values, onChange, showErrors }: { section: SectionDef
           <TextField
             key={f.key}
             id={`pf-${f.key}`}
-            label={f.label + (f.required ? ' *' : '')}
+            label={f.label + (f.required ? ' *' : ' (optional)')}
             value={values[f.key]}
             onChange={(v) => onChange(f.key, v)}
             placeholder={f.placeholder}
@@ -136,7 +136,7 @@ function Fields({ section, values, onChange, showErrors }: { section: SectionDef
             autoFocus={f.key === 'name'}
           />
         ) : (
-          <TextArea key={f.key} id={`pf-${f.key}`} label={f.label} value={values[f.key]} onChange={(v) => onChange(f.key, v)} rows={f.rows} placeholder={f.placeholder} hint={f.hint} />
+          <TextArea key={f.key} id={`pf-${f.key}`} label={`${f.label} (optional)`} value={values[f.key]} onChange={(v) => onChange(f.key, v)} rows={f.rows} placeholder={f.placeholder} hint={f.hint} />
         ),
       )}
     </div>
@@ -164,12 +164,12 @@ function SectionCard({ section, values, children, id }: { section: SectionDef; v
 
 /* ------------------------------------------------------------------ wizard (create) */
 
-const WIZARD_STEPS: { title: string; sections: string[] }[] = [
-  { title: 'Context', sections: ['context'] },
-  { title: 'Goals & scope', sections: ['objectives', 'scope'] },
-  { title: 'Users & timeline', sections: ['domain', 'timeline'] },
-  { title: 'Technology', sections: ['technology'] },
-  { title: 'Review', sections: [] },
+const WIZARD_STEPS: { title: string; hint: string; sections: string[] }[] = [
+  { title: 'Context', hint: 'Name and problem', sections: ['context'] },
+  { title: 'Goals & scope', hint: 'What success is', sections: ['objectives', 'scope'] },
+  { title: 'Users & timeline', hint: 'Who and when', sections: ['domain', 'timeline'] },
+  { title: 'Technology', hint: 'Constraints', sections: ['technology'] },
+  { title: 'Review', hint: 'Check and create', sections: [] },
 ];
 
 export function ProjectWizard({
@@ -221,11 +221,19 @@ export function ProjectWizard({
           <li key={s.title} className={i === step ? 'current' : i < step ? 'done' : ''} aria-current={i === step ? 'step' : undefined}>
             <button type="button" onClick={() => go(i)}>
               <span className="pf-step-num">{i < step ? <IconCheck width={13} height={13} strokeWidth={2.5} /> : i + 1}</span>
-              <span className="pf-step-title">{s.title}</span>
+              <span className="pf-step-title">
+                {s.title}
+                <small>{s.hint}</small>
+              </span>
             </button>
           </li>
         ))}
       </ol>
+
+      <p className="pf-step-status" aria-live="polite">
+        Step {step + 1} of {WIZARD_STEPS.length}: {current.title}
+        {step > 0 && !last && ' — all fields on this step are optional'}
+      </p>
 
       <div className="pf-progress" aria-hidden="true">
         <div style={{ width: `${((step + 1) / WIZARD_STEPS.length) * 100}%` }} />
@@ -257,6 +265,28 @@ export function ProjectWizard({
             <span className="pf-chip">{overallCompletion(values).done}/{overallCompletion(values).total}</span>
           </header>
           <ProjectSummary values={values} />
+        </section>
+      )}
+
+      {last && (
+        <section className="pf-card pf-next">
+          <header className="pf-card-head">
+            <div>
+              <h2>What happens next</h2>
+              <p>Creating the project takes you to its overview, where the nine stages are laid out.</p>
+            </div>
+          </header>
+          <ol className="pf-next-list">
+            <li>
+              <strong>Gathering</strong> — upload your SRS (.pdf, .docx or .txt) or paste requirement notes, and record stakeholders.
+            </li>
+            <li>
+              <strong>Analysis</strong> — AI structures your input into requirements, user stories and business rules for you to review.
+            </li>
+            <li>
+              <strong>Validation onwards</strong> — answer AI’s questions, then generate design, tasks and tests, approving each step.
+            </li>
+          </ol>
         </section>
       )}
 

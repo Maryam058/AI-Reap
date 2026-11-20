@@ -1,6 +1,8 @@
 import { useState } from 'react';
-import type { ArtifactSummary, ClarificationQuestionData } from '../api/types';
-import { IconInfo } from './icons';
+import type { ArtifactSummary, ClarificationQuestionData, SourceReference } from '../api/types';
+import { clarificationKindLabel, evidencePurpose, isLocatedEvidence, sourceLinkAriaLabel, sourceLinkLabel } from '../lib/sourceReferences';
+import { IconDocument } from './icons';
+import { SourceDocumentViewer } from './SourceDocumentViewer';
 
 interface Props {
   artifact: ArtifactSummary;
@@ -8,10 +10,16 @@ interface Props {
   onAnswer: (artifactId: string, answer: string, notApplicable: boolean) => Promise<void>;
 }
 
+// A clarification question: the question, and a link to the verified passage of the requirement source
+// that raised it (both statements, for a conflict). The server only returns questions whose passage it
+// verified (ClarificationVisibility), so there is no "unlinked" state to show; a caller who may not read
+// raw sources (S2) gets no passages, and so no link.
 export function ClarificationQuestionCard({ artifact, canAnswer, onAnswer }: Props) {
   const data = artifact.data as unknown as ClarificationQuestionData;
   const [answer, setAnswer] = useState(data.answer ?? '');
   const [submitting, setSubmitting] = useState(false);
+  // The passage the viewer opens, with the question's other passages to step through.
+  const [opened, setOpened] = useState<SourceReference | null>(null);
 
   const isOpen = data.clarificationStatus === 'Open';
 
@@ -27,20 +35,53 @@ export function ClarificationQuestionCard({ artifact, canAnswer, onAnswer }: Pro
   const status = data.clarificationStatus.toLowerCase();
   const statusTone = isOpen ? 'warning' : status === 'notapplicable' ? 'neutral' : 'success';
   const statusLabel = status === 'notapplicable' ? 'Not applicable' : data.clarificationStatus;
+  const passages = (data.sourceEvidence ?? []).filter(isLocatedEvidence);
+  const conflict = data.kind === 'contradiction' && passages.length > 1;
 
   return (
     <li className={`cq-card cq-${status}`}>
       <div className="cq-header">
         <span className="code">{artifact.code}</span>
         <span className={`status-pill tone-${statusTone}`}>{statusLabel}</span>
+        {data.kind && <span className="cq-kind">{clarificationKindLabel(data.kind)}</span>}
       </div>
       <p className="cq-question">{data.question}</p>
-      {data.reason && (
-        <p className="cq-reason">
-          <IconInfo width={13} height={13} />
-          <span>
-            <span className="detail-label">Why it matters:</span> {data.reason}
-          </span>
+      {passages.length > 0 && (
+        <div className="cq-sources" role="group" aria-label="Source in the requirement document">
+          {passages.map((p, i) => {
+            const label = sourceLinkLabel(p);
+            const statement = conflict ? `Statement ${i + 1}` : null;
+            return (
+              <button
+                key={i}
+                type="button"
+                className="cq-source"
+                aria-haspopup="dialog"
+                aria-label={sourceLinkAriaLabel(p, statement)}
+                title={p.excerpt ?? undefined}
+                onClick={() => setOpened(p)}
+              >
+                <IconDocument width={14} height={14} aria-hidden="true" />
+                {statement && <span className="cq-source-statement">{statement}</span>}
+                <span className="cq-source-label">{label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {opened && (
+        <SourceDocumentViewer
+          reference={opened}
+          passages={passages.length > 1 ? passages : undefined}
+          purpose={evidencePurpose(data.kind)}
+          question={data.question}
+          onClose={() => setOpened(null)}
+        />
+      )}
+      {data.relatedDocuments && data.relatedDocuments.length > 0 && (
+        <p className="cq-related">
+          <span className="detail-label">Project documents that may bear on this:</span>{' '}
+          {data.relatedDocuments.map((d) => d.reference).join(', ')}
         </p>
       )}
 

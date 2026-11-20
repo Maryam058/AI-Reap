@@ -8,4 +8,81 @@ public class ClarificationQuestionPayload
     public string? Reason { get; set; }
     public string ClarificationStatus { get; set; } = "Open"; // Open|Answered|Resolved|NotApplicable
     public string? Answer { get; set; }
+
+    // Server-owned: the places in Reason that resolve to the requirement source (SourceReferences).
+    // Null on a question made before references were resolved - those are resolved when read
+    // (ClarificationService), never invented; an empty list means none of Reason resolved.
+    public List<SourceReferencePayload>? SourceReferences { get; set; }
+
+    // Set by ClarificationCandidateValidator on questions created from RequirementAnalysis-v3 onwards;
+    // null on older questions. Kind: missing | ambiguous | contradiction | undefined-rule.
+    public string? Kind { get; set; }
+
+    // Why the answer matters to requirements, design, implementation or acceptance (the model's words).
+    // Kept for generation and audit; not shown as its own section (the question links to its passage).
+    public string? Impact { get; set; }
+
+    // Server-owned: the model's evidence quotes that were found verbatim in the source, located there
+    // (a contradiction carries both conflicting statements). Never the model's unverified claim.
+    public List<SourceReferencePayload>? SourceEvidence { get; set; }
+
+    // Server-owned: what the question concerns - the requirement IDs or sections its evidence sits in.
+    public List<string>? RequirementRefs { get; set; }
+
+    // Server-owned, set when the question is read (ClarificationSourceReferences.WithSourceLinks): how
+    // far it is linked to its source - "passage" (located evidence to highlight), "section" (only its
+    // reason's section links), or "unresolved" (no place in the source could be verified). Only a
+    // "passage" question whose evidence it is about is ever shown (ClarificationVisibility).
+    public string? SourceLinkStatus { get; set; }
+
+    // Server-owned: project document passages retrieved for the question (KnowledgeRetriever). Shown to
+    // reviewers as material that may bear on it; never used to accept or reject the question.
+    public List<RelatedDocumentPassagePayload>? RelatedDocuments { get; set; }
+
+    // Server-owned, set when the question sets passages against each other (RuleRelations): how the
+    // rules were compared - each rule's passage, condition, outcome and the context it inherits, every
+    // item with its source line. Null on other questions and on questions made before it was recorded.
+    public RuleComparisonPayload? RuleComparison { get; set; }
+
+    // Server-owned, set when the question is accepted (CqValidation-v4 onwards): what each validation
+    // check found - evidence, information gap, impact, conditions, cross-reference, assumptions,
+    // duplicates. A record of the checks, not a score. Null on questions made before it was recorded.
+    public List<QualityCheckPayload>? Assessment { get; set; }
+}
+
+public class QualityCheckPayload
+{
+    public string Criterion { get; set; } = string.Empty;
+    public string Result { get; set; } = string.Empty; // passed | failed | not-applicable
+    public string Detail { get; set; } = string.Empty;
+}
+
+public class RuleComparisonPayload
+{
+    public List<string> SharedSubject { get; set; } = new();
+    public string? Conflict { get; set; }
+    public List<RuleComparisonRulePayload> Rules { get; set; } = new();
+}
+
+public class RuleComparisonRulePayload
+{
+    public int Line { get; set; }           // 0-based source line of the rule passage
+    public string Text { get; set; } = string.Empty;
+    public string Condition { get; set; } = string.Empty;
+    public string Outcome { get; set; } = string.Empty;
+    public List<InheritedContextPayload> Inherited { get; set; } = new();
+}
+
+public class InheritedContextPayload
+{
+    public string Kind { get; set; } = string.Empty; // heading | lead-in | scope | table-title | table-header | definition
+    public string Text { get; set; } = string.Empty; // copied verbatim from the source
+    public int Line { get; set; }                    // 0-based source line
+}
+
+public class RelatedDocumentPassagePayload
+{
+    public string Reference { get; set; } = string.Empty; // "notes.pdf#3"
+    public float Score { get; set; }
+    public string Excerpt { get; set; } = string.Empty;
 }

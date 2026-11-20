@@ -1,4 +1,5 @@
 import { ApiError } from '../api/client';
+import type { LifecycleCheck } from '../api/types';
 
 // Stable codes the API puts on ProblemDetails responses (ApplicationExceptionHandler). Their
 // `detail` text is written for end users and never contains secrets or stack traces.
@@ -11,8 +12,18 @@ const USER_FACING_CODES = new Set([
   'ai_request_rejected',
   'ai_content_blocked',
   'ai_invalid_output',
+  // Batched AI runs (AiChunkRunService): batch mode off, a run that cannot start, an active run.
+  'batch_mode_disabled',
+  'ai_batch_not_needed',
+  'ai_batch_too_many_parts',
+  'ai_batch_cannot_plan',
+  'ai_batch_run_active',
   'invalid_status_transition',
   'validation_failed',
+  // §5 lifecycle: failing exit checks, wrong state / skipped stage / lost race, role or separation of duties.
+  'lifecycle_evidence_failed',
+  'conflict',
+  'forbidden',
 ]);
 
 interface ProblemDetails {
@@ -36,6 +47,13 @@ export function apiErrorCode(err: unknown): string | null {
   if (!(err instanceof ApiError)) return null;
   const parsed = parseBody(err) as ProblemDetails | undefined;
   return parsed && typeof parsed === 'object' && typeof parsed.code === 'string' ? parsed.code : null;
+}
+
+/** The failing exit checks a lifecycle 409 (`lifecycle_evidence_failed`) carries, or []. */
+export function failingChecksOf(err: unknown): LifecycleCheck[] {
+  if (!(err instanceof ApiError)) return [];
+  const parsed = parseBody(err) as { failingChecks?: unknown } | undefined;
+  return parsed && Array.isArray(parsed.failingChecks) ? (parsed.failingChecks as LifecycleCheck[]) : [];
 }
 
 /** True when the API says trying the same request again later may succeed (rate limit, timeout, outage). */
@@ -65,7 +83,13 @@ export function apiErrorText(err: unknown, fallback: string): string {
   }
 
   if (err.status === 403) return 'You do not have permission to do that.';
-  if (err.status === 404) return 'That item no longer exists.';
+  if (err.status === 404) {
+    // A plain-text 404 is the API's own explanation (e.g. "No user with email ..."); a bare or
+    // ProblemDetails 404 just means the thing is gone.
+    const text = typeof parsed === 'string' ? parsed : parsed === undefined ? err.message : '';
+    const usable = text && text !== 'Not Found' && text.length < 200 && !text.includes('\n');
+    return usable ? text : 'That item no longer exists.';
+  }
   if (err.status >= 500 || err.status === 0) return fallback;
 
   if (typeof parsed === 'string') return parsed;

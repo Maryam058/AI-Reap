@@ -8,4 +8,9 @@ public interface IDocumentTextExtractor
     bool CanExtract(string fileName);
 
     Task<string> ExtractAsync(Stream stream, string fileName, CancellationToken cancellationToken = default);
+
+    // The same text as ExtractAsync, after checking that the content really is the type its name says
+    // (DocumentSignature, and that the document opens) - InvalidDocumentException when it is not - plus
+    // what the source viewer needs to show the original (ExtractedDocument).
+    Task<ExtractedDocument> ExtractDocumentAsync(ReadOnlyMemory<byte> content, string fileName, CancellationToken cancellationToken = default);
 }

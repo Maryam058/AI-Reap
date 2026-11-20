@@ -28,6 +28,22 @@ public class TraceabilityController : ControllerBase
         return Ok(await _traceability.GetMatrixAsync(projectId, cancellationToken));
     }
 
+    // §21 — what the matrix cannot show: downstream artifacts traced to no requirement, untraced NFRs.
+    [HttpGet("api/projects/{projectId:guid}/traceability-gaps")]
+    public async Task<ActionResult<TraceabilityGapsResponse>> GetGaps(Guid projectId, CancellationToken cancellationToken)
+    {
+        return Ok(await _traceability.GetGapsAsync(projectId, cancellationToken));
+    }
+
+    // §21 — fix an orphan by hand: link the artifact to the requirement (or story) it traces to.
+    [HttpPost("api/artifacts/{id:guid}/requirement-links")]
+    [Authorize(Roles = WriterRoles)]
+    public async Task<ActionResult<TraceRef>> LinkToRequirement(Guid id, LinkToRequirementRequest request, CancellationToken cancellationToken)
+    {
+        var linked = await _traceability.LinkToRequirementAsync(id, request.TargetArtifactId, cancellationToken);
+        return linked is null ? NotFound() : Ok(linked);
+    }
+
     // §21 — objectives (seeded from the project's Objectives field) and the requirements serving each.
     [HttpGet("api/projects/{projectId:guid}/business-objectives")]
     public async Task<ActionResult<IReadOnlyList<BusinessObjectiveResponse>>> GetBusinessObjectives(Guid projectId, CancellationToken cancellationToken)

@@ -1,23 +1,55 @@
-import { Link } from 'react-router-dom';
+import { useCallback, useEffect } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
+import { projectsApi } from '../api/projects';
 import { useProject } from '../context/ProjectContext';
 import { useProjectInsights } from '../hooks/useProjectInsights';
-import { deriveSdlc, phasePath } from '../lib/sdlc';
+import { isGatedStage, lifecycleProgress, LIFECYCLE_STAGES, stageLabel } from '../lib/lifecycle';
+import { phasePath, workAreaForStage } from '../lib/workAreas';
 import { BUCKET_COLOR, BUCKET_LABEL, BUCKET_ORDER, countBuckets, isRequirement } from '../lib/requirements';
-import { formatFullDateTime, formatRelativeTime, statusLabel, statusVariant } from '../lib/format';
-import { PageHeader } from '../components/ui/PageHeader';
+import { formatFullDateTime, formatRelativeTime, initials, statusLabel, statusVariant } from '../lib/format';
+import { activeStagesLabel, APPROVED_PROGRESS_LABEL, completedWorkStages, currentStage, outstandingWorkNote, STAGE_COUNT, STAGES, stageGaps } from '../lib/stages';
+import { useStageSignals } from '../context/StageSignalsContext';
+import { ProgressBar } from '../components/ui/ProgressBar';
+import { Term } from '../components/ui/Term';
+import { ProjectJourney } from '../components/stage/ProjectJourney';
 import { EmptyState } from '../components/ui/EmptyState';
+import { ExpandableText } from '../components/ui/ExpandableText';
 import { Avatar } from '../components/ui/Avatar';
-import { SdlcStepper } from '../components/SdlcStepper';
 import { ProjectActionsMenu } from '../components/ProjectActionsMenu';
-import { IconArrowRight, IconDocument, IconEdit, IconInbox, IconSparkles, IconUsers } from '../components/icons';
+import { LifecyclePanel } from '../components/LifecyclePanel';
+import { AgentActivitySummary } from '../components/AgentActivitySummary';
+import { ProjectTeamCard } from '../components/ProjectTeamCard';
+import { IconArrowRight, IconCheckCircle, IconDocument, IconEdit, IconInbox, IconSparkles, IconUsers } from '../components/icons';
 
 export function ProjectOverviewPage() {
-  const { hasRole } = useAuth();
+  const { hasRole, token } = useAuth();
   const { project, setProject, contentVersion } = useProject();
   const insights = useProjectInsights(project.id, contentVersion);
-  const sdlc = deriveSdlc(project.status);
+  const progress = lifecycleProgress(project.status);
+  const stageArea = workAreaForStage(project.status);
   const canEdit = hasRole('Administrator') || hasRole('BusinessAnalyst');
+  const { hash } = useLocation();
+  const signals = useStageSignals();
+  const focus = currentStage(project.status);
+  const work = completedWorkStages(project.status, signals);
+  const outstanding = outstandingWorkNote(project.status, signals);
+  // The first stage whose already-passed exit checks no longer hold: fixing it comes before new work.
+  const attention = STAGES.map((s) => ({ stage: s, gaps: stageGaps(s, project.status, signals).length })).find((x) => x.gaps > 0) ?? null;
+
+  // A lifecycle change moves Project.status on the server; re-read the project so the whole shell follows.
+  const refreshProject = useCallback(async () => {
+    try {
+      setProject(await projectsApi.get(project.id, token));
+    } catch {
+      // The lifecycle panel already shows the outcome; the header catches up on the next load.
+    }
+  }, [project.id, token, setProject]);
+
+  // Notifications link to #lifecycle.
+  useEffect(() => {
+    if (hash === '#lifecycle') document.getElementById('lifecycle')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [hash]);
 
   const { dashboard, artifacts, stakeholders, matrix, loading } = insights;
   const requirements = artifacts?.filter(isRequirement) ?? null;
@@ -25,75 +57,165 @@ export function ProjectOverviewPage() {
 
   // The single most useful next step, chosen only from real counts.
   const next = (() => {
-    const phaseTarget = sdlc.current ? phasePath(project.id, sdlc.current.segment) : phasePath(project.id, 'traceability');
+    const stageTarget = phasePath(project.id, stageArea.segment);
+    if (attention) {
+      const more = work.attention > 1 ? ` ${work.attention - 1} other ${work.attention - 1 === 1 ? 'stage needs' : 'stages need'} attention too.` : '';
+      return {
+        title: `Fix ${attention.gaps} ${attention.gaps === 1 ? 'gap' : 'gaps'} in ${attention.stage.name}`,
+        text: `${attention.stage.name} was passed, but ${attention.gaps === 1 ? 'one of its exit checks no longer holds' : 'some of its exit checks no longer hold'}. The stage page lists each gap and how to resolve it.${more}`,
+        to: phasePath(project.id, attention.stage.segment),
+        cta: `Resolve ${attention.stage.name} gaps`,
+      };
+    }
+    // A Completed project has no lifecycle move left, so leftover review items (e.g. answered
+    // clarification questions not yet resolved, draft objectives) are information, not a next step.
+    if (progress.finished) {
+      const leftover = dashboard?.pendingReviewCount ?? 0;
+      return {
+        title: 'This project has completed its lifecycle',
+        text:
+          leftover > 0
+            ? `Review what each stage produced, who approved it and how it is traced. ${leftover} artifact ${leftover === 1 ? 'item still requires' : 'items still require'} review; ${leftover === 1 ? 'it is' : 'they are'} not needed for the completed lifecycle.`
+            : 'Review what each stage produced, who approved it and how it is traced.',
+        to: phasePath(project.id, 'review'),
+        cta: 'Open SDLC Review',
+      };
+    }
     if (requirements && requirements.length === 0)
       return { title: 'Capture your first requirements', text: 'Add stakeholder notes or a document and let AI-REAP structure them.', to: phasePath(project.id, 'gathering'), cta: 'Start Requirements Gathering' };
     if (dashboard && dashboard.openClarificationCount > 0)
       return { title: `Resolve ${dashboard.openClarificationCount} open clarification ${dashboard.openClarificationCount === 1 ? 'question' : 'questions'}`, text: 'Unanswered questions leave requirements ambiguous.', to: phasePath(project.id, 'validation'), cta: 'Open Validation' };
     if (dashboard && dashboard.pendingReviewCount > 0)
       return { title: `Review ${dashboard.pendingReviewCount} pending ${dashboard.pendingReviewCount === 1 ? 'artifact' : 'artifacts'}`, text: 'Approve or reject AI-generated work before moving on.', to: phasePath(project.id, 'analysis'), cta: 'Review requirements' };
-    return sdlc.finished
-      ? { title: 'This project has completed every SDLC phase', text: 'Review end-to-end coverage in the traceability matrix.', to: phasePath(project.id, 'traceability'), cta: 'Open Traceability' }
-      : { title: `Continue with ${sdlc.current?.navLabel ?? 'the next phase'}`, text: sdlc.current?.description ?? '', to: phaseTarget, cta: `Open ${sdlc.current?.label ?? 'phase'}` };
+    return { title: `Continue the ${stageLabel(project.status)} work`, text: stageArea.description, to: stageTarget, cta: `Open ${stageArea.label}` };
   })();
 
   const rowsWith = (pick: (r: NonNullable<typeof matrix>[number]) => number) => (matrix && matrix.length > 0 ? matrix.filter((r) => pick(r) > 0).length : null);
   const withTests = rowsWith((r) => r.testCases.length);
   const withDesign = rowsWith((r) => r.designArtifacts.length);
+  // §28 project-wide dashboard aggregates (not visibility-filtered, unlike the matrix rows above).
+  const needingReview = dashboard?.requirementsNeedingReviewCount ?? 0;
+  const testedFrs = dashboard?.testedFunctionalRequirementCount ?? 0;
 
   return (
     <>
-      <PageHeader
-        title={project.name}
-        subtitle={project.description || 'No description yet.'}
-        badge={<span className={`status-pill tone-${statusVariant(project.status)}`}>{statusLabel(project.status)}</span>}
-        actions={
-          <>
+      <section className="project-hero" aria-labelledby="project-title">
+        <div className="project-hero-main">
+          <span className="project-hero-avatar" aria-hidden="true">
+            {initials(project.name)}
+          </span>
+          <div className="project-hero-text">
+            <span className="eyebrow">Project</span>
+            <h1 id="project-title">{project.name}</h1>
+            <div className="project-hero-desc">{project.description ? <ExpandableText lines={2}>{project.description}</ExpandableText> : <span className="muted">No description yet.</span>}</div>
+            {(project.domain || project.targetUsers || project.expectedTimeline) && (
+              <dl className="project-hero-facts">
+                {project.domain && (
+                  <div>
+                    <dt>Domain</dt>
+                    <dd>{project.domain}</dd>
+                  </div>
+                )}
+                {project.targetUsers && (
+                  <div>
+                    <dt>Target users</dt>
+                    <dd>{project.targetUsers}</dd>
+                  </div>
+                )}
+                {project.expectedTimeline && (
+                  <div>
+                    <dt>Timeline</dt>
+                    <dd>{project.expectedTimeline}</dd>
+                  </div>
+                )}
+                <div>
+                  <dt>Updated</dt>
+                  <dd title={formatFullDateTime(project.updatedAt)}>{formatRelativeTime(project.updatedAt)}</dd>
+                </div>
+              </dl>
+            )}
+          </div>
+          <div className="page-header-actions project-hero-actions">
+            <Link to={phasePath(project.id, 'review')} className={`btn ${progress.finished ? 'btn-primary' : 'btn-secondary'}`}>
+              <IconCheckCircle width={15} height={15} /> SDLC Review
+            </Link>
             {canEdit && (
               <Link to={`/projects/${project.id}/edit`} className="btn btn-secondary">
                 <IconEdit width={15} height={15} /> Edit Project
               </Link>
             )}
             <ProjectActionsMenu project={project} onUpdated={setProject} showOpen={false} label="More project actions" />
-          </>
-        }
-      />
-
-      <section className="panel sdlc-panel" aria-labelledby="sdlc-title">
-        <header className="panel-head">
-          <div>
-            <h2 id="sdlc-title">SDLC progress</h2>
-            <p>
-              {sdlc.finished ? 'Every phase is complete.' : `Currently in ${sdlc.current?.navLabel}.`} {sdlc.completed} of {sdlc.phases.length} phases complete.
-            </p>
           </div>
-          <div className="big-percent" aria-label={`${sdlc.percent}% complete`}>
-            {sdlc.percent}
-            <span>%</span>
-          </div>
-        </header>
-        <div className="progress-track progress-lg" aria-hidden="true">
-          <div className="progress-fill" style={{ width: `${Math.max(sdlc.percent, 2)}%` }} />
         </div>
-        <SdlcStepper phases={sdlc.phases} projectId={project.id} />
+        <div className="project-hero-stats">
+          <div className="hero-stat hero-stat-progress">
+            <span className="hero-stat-label">{APPROVED_PROGRESS_LABEL}</span>
+            <strong className="hero-stat-value">{progress.percent}%</strong>
+            <ProgressBar percent={progress.percent} />
+            {outstanding ? (
+              <small className="progress-outstanding">
+                {progress.finished ? 'Approved by Reviewers, but' : 'Formally approved position;'} {outstanding.toLowerCase()} — see below
+              </small>
+            ) : (
+              <small>Based on the approved lifecycle status</small>
+            )}
+          </div>
+          <div className="hero-stat">
+            <span className="hero-stat-label">Current stage</span>
+            <strong className="hero-stat-value text">{activeStagesLabel(project.status)}</strong>
+            <small>
+              Stage {focus.number} of {STAGE_COUNT}
+            </small>
+          </div>
+          <div className="hero-stat">
+            <span className="hero-stat-label">
+              <Term id="lifecycleStatus" />
+            </span>
+            <span className={`status-pill tone-${statusVariant(project.status)}`}>{statusLabel(project.status)}</span>
+            <small>
+              {progress.finished ? (
+                outstanding ? 'Lifecycle approved · gaps reopened since' : 'Lifecycle completed'
+              ) : (
+                <>
+                  Next: {stageLabel(project.status + 1)}
+                  {isGatedStage(project.status) && ' (needs Reviewer approval)'}
+                </>
+              )}
+            </small>
+          </div>
+          <div className="hero-stat">
+            <span className="hero-stat-label">Work stages completed</span>
+            <strong className="hero-stat-value">
+              {work.done}
+              <span className="hero-stat-of"> / {work.total}</span>
+            </strong>
+            <small>{work.attention > 0 ? `${work.attention} ${work.attention === 1 ? 'stage needs' : 'stages need'} attention` : 'AI Copilot and Review are available anytime'}</small>
+          </div>
+        </div>
       </section>
+
+      <div className="next-action next-action-hero">
+        <span className="next-action-icon">
+          <IconSparkles width={18} height={18} />
+        </span>
+        <div className="next-action-text">
+          <span className="eyebrow">Recommended next step</span>
+          <h3>{next.title}</h3>
+          <p>{next.text}</p>
+        </div>
+        <Link to={next.to} className="btn btn-primary">
+          {next.cta} <IconArrowRight width={15} height={15} />
+        </Link>
+      </div>
+
+      <ProjectJourney projectId={project.id} status={project.status} signals={signals} data={{ dashboard, artifacts, stakeholders, matrix }} />
+
+      <LifecyclePanel project={project} onProjectChanged={refreshProject} />
+
+      <AgentActivitySummary projectId={project.id} version={`${contentVersion}|${project.status}`} />
 
       <div className="overview-grid">
         <div className="overview-main">
-          <div className="next-action">
-            <span className="next-action-icon">
-              <IconSparkles width={18} height={18} />
-            </span>
-            <div className="next-action-text">
-              <span className="eyebrow">Recommended next step</span>
-              <h3>{next.title}</h3>
-              <p>{next.text}</p>
-            </div>
-            <Link to={next.to} className="btn btn-primary">
-              {next.cta} <IconArrowRight width={15} height={15} />
-            </Link>
-          </div>
-
           <section className="panel" aria-labelledby="req-title">
             <header className="panel-head">
               <div>
@@ -187,16 +309,18 @@ export function ProjectOverviewPage() {
             </h2>
             <dl className="kv">
               <div>
-                <dt>Status</dt>
-                <dd>{statusLabel(project.status)}</dd>
+                <dt>Lifecycle stage</dt>
+                <dd>
+                  {statusLabel(project.status)} ({progress.stageNumber} of {LIFECYCLE_STAGES.length})
+                </dd>
               </div>
               <div>
-                <dt>Current phase</dt>
-                <dd>{sdlc.current?.navLabel ?? 'All phases complete'}</dd>
+                <dt>Next stage</dt>
+                <dd>{progress.finished ? 'None - completed' : stageLabel(project.status + 1)}</dd>
               </div>
               <div>
-                <dt>Progress</dt>
-                <dd>{sdlc.percent}%</dd>
+                <dt>Lifecycle progress</dt>
+                <dd>{progress.percent}%</dd>
               </div>
               <div>
                 <dt>Last updated</dt>
@@ -208,6 +332,8 @@ export function ProjectOverviewPage() {
               </div>
             </dl>
           </section>
+
+          <ProjectTeamCard projectId={project.id} />
 
           <section className="panel" aria-labelledby="sh-title">
             <header className="panel-head tight">
@@ -244,6 +370,12 @@ export function ProjectOverviewPage() {
                 </ul>
               </>
             )}
+            {canEdit && (
+              <p className="field-hint">
+                Stakeholders don't get project access. To give a user access, add them under{' '}
+                <Link to={`${phasePath(project.id, 'gathering')}?tab=members`}>Members</Link>.
+              </p>
+            )}
           </section>
 
           <section className="panel" aria-labelledby="health-title">
@@ -259,7 +391,15 @@ export function ProjectOverviewPage() {
                 {dashboard && (
                   <>
                     <HealthRow label="Open clarifications" value={dashboard.openClarificationCount} tone={dashboard.openClarificationCount === 0 ? 'good' : 'warn'} />
-                    <HealthRow label="Awaiting review" value={dashboard.pendingReviewCount} tone={dashboard.pendingReviewCount === 0 ? 'good' : 'warn'} />
+                    <HealthRow label="Artifacts awaiting review" value={dashboard.pendingReviewCount} tone={dashboard.pendingReviewCount === 0 ? 'good' : 'warn'} />
+                    <HealthRow label="Requirements needing review" value={needingReview} tone={needingReview === 0 ? 'good' : 'warn'} />
+                    {dashboard.functionalRequirementCount > 0 && (
+                      <HealthRow
+                        label="Test coverage (FRs)"
+                        value={`${testedFrs}/${dashboard.functionalRequirementCount} (${Math.round((testedFrs / dashboard.functionalRequirementCount) * 100)}%)`}
+                        tone={testedFrs === dashboard.functionalRequirementCount ? 'good' : 'neutral'}
+                      />
+                    )}
                     <HealthRow label="Rejected" value={dashboard.rejectedCount} tone={dashboard.rejectedCount === 0 ? 'good' : 'bad'} />
                     <HealthRow label="Potential conflicts" value={dashboard.conflictCount} tone={dashboard.conflictCount === 0 ? 'good' : 'warn'} />
                   </>

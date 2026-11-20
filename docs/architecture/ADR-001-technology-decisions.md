@@ -11,6 +11,8 @@ Resolves the Open Questions raised in `docs/requirements/REQUIREMENTS-ANALYSIS.m
 
 Implemented entirely behind `IAiChatClient` (`AiReap.Application.Ai`). A `StubAiChatClient` is registered when no API key is configured, so the app runs and is demoable without a live key. Swapping to OpenAI/Azure OpenAI later means adding one new `IAiChatClient` implementation — zero changes to `Application` services.
 
+**Amendment (2026-10-21):** after an interim period with Gemini as primary and Groq as fallback, Anthropic Claude (`claude-sonnet-5-5` by default) is again the only chat provider, with no chat fallback; Gemini/Groq are rejected as `Ai:Provider` values. Still plain `HttpClient` (no SDK package was added). Embedding selection is now independent of the chat provider (`Ai:EmbeddingProvider`). See `docs/CLAUDE_SETUP.md`.
+
 ## 2. RAG Vector Store & Embedding Provider
 
 **Decision (embedding provider, resolved 2026-09-17):** OpenAI `text-embedding-3-small`, called via plain `HttpClient` (`OpenAiEmbeddingClient : IEmbeddingClient`), same pattern as `AnthropicAiChatClient`. Required because Anthropic — the chosen chat provider — has no embeddings endpoint, so RAG needs a second vendor regardless of which one is picked; `text-embedding-3-small` was chosen for cost and being well-supported. A `StubEmbeddingClient` (deterministic hashed-bag-of-words vectors) is registered when no `Ai:OpenAI:ApiKey` is configured, so the app still runs and the pipeline is exercisable end-to-end without a live key — same philosophy as `StubAiChatClient`, though unlike the chat stub its output is not semantically meaningful, only structurally valid.

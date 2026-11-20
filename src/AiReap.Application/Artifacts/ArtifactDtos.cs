@@ -19,7 +19,9 @@ public record ArtifactResponse(
     DateTime UpdatedAt,
     int? ApprovedVersion = null,
     // §22 — upstream changes this artifact has not been reviewed against yet.
-    int OpenImpactNoticeCount = 0);
+    int OpenImpactNoticeCount = 0,
+    // The artifact's author (who created or generated it); e.g. may not confirm their own NFR target.
+    string? CreatedByUserId = null);
 
 // Title/Priority/Status are null for versions recorded before full snapshots existed.
 public record ArtifactVersionResponse(
@@ -40,7 +42,9 @@ public record ArtifactReviewResponse(
     ReviewDecision Decision,
     string? Comment,
     DateTime ReviewedAt,
-    int? VersionNumber);
+    int? VersionNumber,
+    // The role the reviewer acted under (e.g. Developer for a §17 design review); null on older rows.
+    string? ReviewerRole = null);
 
 public record ArtifactRelationshipResponse(
     Guid RelatedArtifactId,
@@ -59,6 +63,17 @@ public record UpdateArtifactRequest(
     JsonElement? Data,
     string? Reason);
 
-public record UpdateArtifactStatusRequest(ArtifactStatus Status, string? Comment);
+// Version (S1): the version the reviewer decided on. When given, an approval or rejection of any other
+// version is refused (409); omitted, the decision applies to the current version, as before.
+public record UpdateArtifactStatusRequest(ArtifactStatus Status, string? Comment, int? Version = null);
 
 public record ClarificationAnswerRequest(string Answer, bool NotApplicable);
+
+// The version the confirmer reviewed; confirming anything but the current version is refused.
+// Who confirms, when, and the resulting status are decided by the server.
+public record ConfirmNfrTargetRequest(int? Version);
+
+public record CommentReviewRequest(string? Comment);
+
+// REAP-046 — the User Story that the story in the route depends on.
+public record AddDependencyRequest(Guid DependsOnArtifactId);

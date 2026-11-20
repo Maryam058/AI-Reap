@@ -52,8 +52,8 @@ public class AuditTrailFieldsTests : IAsyncLifetime
         // one execution per artifact, not one execution for the whole call
         Assert.NotEqual(frRow["id"]!.GetValue<string>(), nfrRow["id"]!.GetValue<string>());
         Assert.Equal("RequirementGeneration", frRow["operationType"]!.GetValue<string>());
-        Assert.Equal("RequirementGeneration-v2", frRow["promptTemplateVersion"]!.GetValue<string>());
-        Assert.Equal("RequirementGeneration-v2", nfrRow["promptTemplateVersion"]!.GetValue<string>());
+        Assert.Equal("RequirementGeneration-v4", frRow["promptTemplateVersion"]!.GetValue<string>());
+        Assert.Equal("RequirementGeneration-v4", nfrRow["promptTemplateVersion"]!.GetValue<string>());
         Assert.Null(frRow["accepted"]);
         Assert.Null(nfrRow["accepted"]);
         // both rows carry the same underlying AI response (one call, fanned out per artifact)
@@ -78,7 +78,7 @@ public class AuditTrailFieldsTests : IAsyncLifetime
         var nfrId = Id(generated["nonFunctionalRequirements"]![0]);
 
         Assert.Equal(200, (await _reviewer.SendAsync(HttpMethod.Patch, $"/api/artifacts/{frId}/status", new { status = 3 })).Status); // Approved
-        Assert.Equal(200, (await _reviewer.SendAsync(HttpMethod.Patch, $"/api/artifacts/{nfrId}/status", new { status = 4 })).Status); // Rejected
+        Assert.Equal(200, (await _reviewer.SendAsync(HttpMethod.Patch, $"/api/artifacts/{nfrId}/status", new { status = 4, comment = "Not measurable" })).Status); // Rejected
 
         var frRow = await AuditRowForArtifactAsync(projectId, frId);
         var nfrRow = await AuditRowForArtifactAsync(projectId, nfrId);

@@ -79,6 +79,9 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("ProjectId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<int?>("ProjectStatusAtStart")
+                        .HasColumnType("int");
+
                     b.Property<Guid>("RequirementSourceId")
                         .HasColumnType("uniqueidentifier");
 
@@ -159,6 +162,168 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.ToTable("AgentStageRuns");
                 });
 
+            modelBuilder.Entity("AiReap.Domain.Entities.AiChunkRun", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ContextHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("FixedContext")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTime?>("LeaseExpiresAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("LeaseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Operation")
+                        .HasColumnType("int");
+
+                    b.Property<int>("PartCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PlanHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("PlanJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("PromptTemplateVersion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<Guid>("RequirementSourceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ResultJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("SourceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTime>("StartedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("StartedByUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SystemPrompt")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProjectId");
+
+                    b.HasIndex("RequirementSourceId", "Operation")
+                        .IsUnique()
+                        .HasFilter("[Status] IN (0, 1)");
+
+                    b.ToTable("AiChunkRuns");
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.AiChunkRunPart", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AiChunkRunId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ChunkHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("Model")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ParsedJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("PartNumber")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PromptText")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("RawResponse")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("SectionPath")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("SourceIdsJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AiChunkRunId", "PartNumber")
+                        .IsUnique();
+
+                    b.ToTable("AiChunkRunParts");
+                });
+
             modelBuilder.Entity("AiReap.Domain.Entities.Artifact", b =>
                 {
                     b.Property<Guid>("Id")
@@ -184,6 +349,7 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<int>("CurrentVersion")
+                        .IsConcurrencyToken()
                         .HasColumnType("int");
 
                     b.Property<string>("DataJson")
@@ -201,6 +367,12 @@ namespace AiReap.Infrastructure.Persistence.Migrations
 
                     b.Property<Guid?>("RequirementSourceId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
 
                     b.Property<int>("Status")
                         .HasColumnType("int");
@@ -224,6 +396,33 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("Artifacts");
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.ArtifactFingerprint", b =>
+                {
+                    b.Property<Guid>("ArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("ArtifactType")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("RequirementSourceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("ArtifactId");
+
+                    b.HasIndex("RequirementSourceId", "ArtifactType", "Fingerprint")
+                        .IsUnique();
+
+                    b.ToTable("ArtifactFingerprints");
                 });
 
             modelBuilder.Entity("AiReap.Domain.Entities.ArtifactImpactNotice", b =>
@@ -323,6 +522,10 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("ReviewedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("ReviewerRole")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
                     b.Property<string>("ReviewerUserId")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
@@ -381,6 +584,44 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.HasIndex("ArtifactId");
 
                     b.ToTable("ArtifactVersions");
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.ArtifactWorkRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<int>("Outcome")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("RecordedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("RecordedByRole")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("RecordedByUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<int>("VersionNumber")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ArtifactId", "RecordedAt");
+
+                    b.ToTable("ArtifactWorkRecords");
                 });
 
             modelBuilder.Entity("AiReap.Domain.Entities.Document", b =>
@@ -525,6 +766,172 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.ToTable("ProjectMembers");
                 });
 
+            modelBuilder.Entity("AiReap.Domain.Entities.ProjectNotification", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("AcknowledgedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("RecipientUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<Guid>("TransitionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProjectId");
+
+                    b.HasIndex("RecipientUserId", "AcknowledgedAt");
+
+                    b.HasIndex("TransitionId", "RecipientUserId", "Kind")
+                        .IsUnique();
+
+                    b.ToTable("ProjectNotifications");
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.ProjectStageReview", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Comment")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<int>("Decision")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("ReviewedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ReviewerRole")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("ReviewerUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<Guid>("TransitionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TransitionId");
+
+                    b.ToTable("ProjectStageReviews");
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.ProjectStageTransition", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("DecidedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DecidedByRole")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("DecidedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("DecisionEvidenceSnapshotJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("DecisionReason")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("EvidenceSnapshotJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int?>("FromStatus")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsOverride")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("int");
+
+                    b.Property<string>("OverrideReason")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("RequestNote")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTime>("RequestedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("RequestedByRole")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("RequestedByUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("int");
+
+                    b.Property<int>("State")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ToStatus")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProjectId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_ProjectStageTransitions_ProjectId_Pending")
+                        .HasFilter("[State] = 0");
+
+                    b.HasIndex("ProjectId", "Sequence")
+                        .IsUnique();
+
+                    b.ToTable("ProjectStageTransitions");
+                });
+
             modelBuilder.Entity("AiReap.Domain.Entities.ProjectStakeholder", b =>
                 {
                     b.Property<Guid>("Id")
@@ -582,6 +989,43 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.HasIndex("ProjectId");
 
                     b.ToTable("RequirementSources");
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.RequirementSourceFile", b =>
+                {
+                    b.Property<Guid>("RequirementSourceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Format")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<long>("Length")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("PageLineStartsJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("StorageKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.HasKey("RequirementSourceId");
+
+                    b.HasIndex("StorageKey")
+                        .IsUnique();
+
+                    b.ToTable("RequirementSourceFiles");
                 });
 
             modelBuilder.Entity("AiReap.Infrastructure.Identity.ApplicationUser", b =>
@@ -812,6 +1256,32 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.Navigation("AgentRun");
                 });
 
+            modelBuilder.Entity("AiReap.Domain.Entities.AiChunkRun", b =>
+                {
+                    b.HasOne("AiReap.Domain.Entities.Project", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("AiReap.Domain.Entities.RequirementSource", null)
+                        .WithMany()
+                        .HasForeignKey("RequirementSourceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.AiChunkRunPart", b =>
+                {
+                    b.HasOne("AiReap.Domain.Entities.AiChunkRun", "AiChunkRun")
+                        .WithMany("Parts")
+                        .HasForeignKey("AiChunkRunId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("AiChunkRun");
+                });
+
             modelBuilder.Entity("AiReap.Domain.Entities.Artifact", b =>
                 {
                     b.HasOne("AiReap.Domain.Entities.Project", "Project")
@@ -828,6 +1298,15 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.Navigation("Project");
 
                     b.Navigation("RequirementSource");
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.ArtifactFingerprint", b =>
+                {
+                    b.HasOne("AiReap.Domain.Entities.Artifact", null)
+                        .WithOne()
+                        .HasForeignKey("AiReap.Domain.Entities.ArtifactFingerprint", "ArtifactId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("AiReap.Domain.Entities.ArtifactImpactNotice", b =>
@@ -892,6 +1371,15 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.Navigation("Artifact");
                 });
 
+            modelBuilder.Entity("AiReap.Domain.Entities.ArtifactWorkRecord", b =>
+                {
+                    b.HasOne("AiReap.Domain.Entities.Artifact", null)
+                        .WithMany()
+                        .HasForeignKey("ArtifactId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("AiReap.Domain.Entities.DocumentChunk", b =>
                 {
                     b.HasOne("AiReap.Domain.Entities.Document", "Document")
@@ -904,6 +1392,41 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                 });
 
             modelBuilder.Entity("AiReap.Domain.Entities.ProjectMember", b =>
+                {
+                    b.HasOne("AiReap.Domain.Entities.Project", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.ProjectNotification", b =>
+                {
+                    b.HasOne("AiReap.Domain.Entities.Project", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("AiReap.Domain.Entities.ProjectStageTransition", null)
+                        .WithMany()
+                        .HasForeignKey("TransitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.ProjectStageReview", b =>
+                {
+                    b.HasOne("AiReap.Domain.Entities.ProjectStageTransition", "Transition")
+                        .WithMany("Reviews")
+                        .HasForeignKey("TransitionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Transition");
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.ProjectStageTransition", b =>
                 {
                     b.HasOne("AiReap.Domain.Entities.Project", null)
                         .WithMany()
@@ -932,6 +1455,15 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Project");
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.RequirementSourceFile", b =>
+                {
+                    b.HasOne("AiReap.Domain.Entities.RequirementSource", null)
+                        .WithOne()
+                        .HasForeignKey("AiReap.Domain.Entities.RequirementSourceFile", "RequirementSourceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<string>", b =>
@@ -990,6 +1522,11 @@ namespace AiReap.Infrastructure.Persistence.Migrations
                     b.Navigation("Stages");
                 });
 
+            modelBuilder.Entity("AiReap.Domain.Entities.AiChunkRun", b =>
+                {
+                    b.Navigation("Parts");
+                });
+
             modelBuilder.Entity("AiReap.Domain.Entities.Artifact", b =>
                 {
                     b.Navigation("Reviews");
@@ -1005,6 +1542,11 @@ namespace AiReap.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("AiReap.Domain.Entities.Project", b =>
                 {
                     b.Navigation("Stakeholders");
+                });
+
+            modelBuilder.Entity("AiReap.Domain.Entities.ProjectStageTransition", b =>
+                {
+                    b.Navigation("Reviews");
                 });
 #pragma warning restore 612, 618
         }

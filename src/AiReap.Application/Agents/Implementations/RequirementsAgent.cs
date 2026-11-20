@@ -24,27 +24,32 @@ public class RequirementsAgent : IAgent
     public string Inputs => "Requirement source (raw text, retained verbatim).";
     public string Outputs => "Clarification questions (ClarificationQuestion artifacts).";
     public IReadOnlyList<string> ApproverRoles => AgentSupport.AdminAnd(Roles.BusinessAnalyst);
+    public IReadOnlyList<ProjectStatus> LifecycleStages => [ProjectStatus.RequirementsGathering];
+    public string LifecycleContribution => "Works in Requirements Gathering: analyses the raw source and raises clarification questions, preparing the evidence Analysis needs (analysis run, questions answered).";
 
     public async Task<AgentOutput> RunAsync(AgentContext context, CancellationToken cancellationToken)
     {
-        var existing = await AgentSupport.LoadAsync(_db, context.RequirementSourceId, ArtifactType.ClarificationQuestion, cancellationToken);
+        // The stored analysis is reused (no AI call) whenever the source has one - including one that
+        // raised no questions; only an explicit regenerate in the Requirements workspace analyses again.
         var findings = new List<string>();
-        string summary;
+        var result = await _analysis.AnalyzeAsync(context.RequirementSourceId, cancellationToken);
+        if (result.Actors.Count > 0) findings.Add($"Actors: {string.Join(", ", result.Actors)}");
+        if (result.Capabilities.Count > 0) findings.Add($"Capabilities: {string.Join(", ", result.Capabilities)}");
+        if (result.DataElements.Count > 0) findings.Add($"Data elements: {string.Join(", ", result.DataElements)}");
+        findings.AddRange(result.Notes);
+        findings.AddRange(result.StaleReasons ?? []);
+        if (result.Coverage is { Status: AnalysisCoverageReport.Incomplete } coverage)
+        {
+            findings.Add($"Incomplete analysis - not sent to the AI: {string.Join("; ", coverage.MissingSections)}.");
+        }
 
-        if (existing.Count > 0)
-        {
-            summary = $"Reused {existing.Count} clarification question(s) already raised for this source; analysis was not repeated.";
-        }
-        else
-        {
-            var result = await _analysis.AnalyzeAsync(context.RequirementSourceId, cancellationToken);
-            if (result.Actors.Count > 0) findings.Add($"Actors: {string.Join(", ", result.Actors)}");
-            if (result.Capabilities.Count > 0) findings.Add($"Capabilities: {string.Join(", ", result.Capabilities)}");
-            if (result.DataElements.Count > 0) findings.Add($"Data elements: {string.Join(", ", result.DataElements)}");
-            findings.AddRange(result.Notes);
-            existing = await AgentSupport.LoadAsync(_db, context.RequirementSourceId, ArtifactType.ClarificationQuestion, cancellationToken);
-            summary = $"Analysed the requirement and raised {existing.Count} clarification question(s).";
-        }
+        // Only questions with verified source evidence are reported (ClarificationVisibility).
+        var existing = await ClarificationVisibility.FilterAsync(
+            _db, await AgentSupport.LoadAsync(_db, context.RequirementSourceId, ArtifactType.ClarificationQuestion, cancellationToken), cancellationToken);
+        var summary = result.Reused
+            ? $"Reused the stored analysis of this source ({existing.Count} clarification question(s)); the AI was not called again."
+            : $"Analysed the requirement and raised {existing.Count} clarification question(s)" +
+              (result.RejectedCandidates is { Count: > 0 } rejected ? $"; {rejected.Count} proposed question(s) were rejected by validation." : ".");
 
         var open = AgentSupport.OpenClarifications(existing);
         return new AgentOutput(

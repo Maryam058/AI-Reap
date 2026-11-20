@@ -28,4 +28,9 @@ public class CopilotController : ControllerBase
 
         return Ok(await _copilot.AskAsync(projectId, request.Question, cancellationToken));
     }
+
+    // The question-length limit Ask enforces (Ai:Copilot:MaxQuestionChars), so the question input can
+    // apply the same limit. Not a separate capability - part of asking the assistant.
+    [HttpGet("api/projects/{projectId:guid}/copilot/limits")]
+    public ActionResult<CopilotLimitsResponse> Limits(Guid projectId) => Ok(_copilot.GetLimits());
 }

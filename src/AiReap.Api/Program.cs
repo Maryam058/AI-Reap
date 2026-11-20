@@ -2,6 +2,7 @@ using System.Text;
 using AiReap.Api.Auth;
 using AiReap.Api.Authorization;
 using AiReap.Api.ErrorHandling;
+using AiReap.Api.Serialization;
 using AiReap.Api.Startup;
 using AiReap.Application.Agents;
 using AiReap.Application.Agents.Implementations;
@@ -10,7 +11,11 @@ using AiReap.Application.Artifacts;
 using AiReap.Application.Audit;
 using AiReap.Application.Common;
 using AiReap.Application.Dashboard;
+using AiReap.Application.Sdlc;
 using AiReap.Application.Knowledge;
+using AiReap.Application.Lifecycle;
+using AiReap.Application.LifecycleReview;
+using AiReap.Application.Notifications;
 using AiReap.Application.Projects;
 using AiReap.Application.RequirementSources;
 using AiReap.Application.Traceability;
@@ -25,7 +30,9 @@ using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddControllers(options => options.Filters.Add<ProjectMembershipFilter>());
+builder.Services.AddControllers(options => options.Filters.Add<ProjectMembershipFilter>())
+    // Timestamps are stored as UTC; emit them with an explicit "Z" so clients don't read them as local time.
+    .AddJsonOptions(options => options.JsonSerializerOptions.Converters.Add(new UtcDateTimeJsonConverter()));
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddHttpContextAccessor();
 
@@ -45,6 +52,11 @@ builder.Services.AddScoped<IArtifactService, ArtifactService>();
 builder.Services.AddScoped<IRequirementAnalysisService, RequirementAnalysisService>();
 builder.Services.AddScoped<IClarificationService, ClarificationService>();
 builder.Services.AddScoped<IRequirementGenerationService, RequirementGenerationService>();
+builder.Services.AddScoped<IAiPlanService, AiPlanService>();
+builder.Services.AddScoped<IAiChunkRunService, AiChunkRunService>();
+// Batched runs reach each operation through the service that owns it (same prompt, rules, persistence).
+builder.Services.AddScoped<IChunkRunOperation>(sp => (RequirementAnalysisService)sp.GetRequiredService<IRequirementAnalysisService>());
+builder.Services.AddScoped<IChunkRunOperation>(sp => (RequirementGenerationService)sp.GetRequiredService<IRequirementGenerationService>());
 builder.Services.AddScoped<IUserStoryService, UserStoryService>();
 builder.Services.AddScoped<IBusinessRuleService, BusinessRuleService>();
 builder.Services.AddScoped<IRequirementQualityService, RequirementQualityService>();
@@ -55,6 +67,14 @@ builder.Services.AddScoped<IApiDesignService, ApiDesignService>();
 builder.Services.AddScoped<IImplementationPlanningService, ImplementationPlanningService>();
 builder.Services.AddScoped<ITestGenerationService, TestGenerationService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
+builder.Services.AddScoped<ISdlcProgressService, SdlcProgressService>();
+builder.Services.AddScoped<ILifecycleEvidenceService, LifecycleEvidenceService>();
+builder.Services.AddScoped<IProjectLifecycleService, ProjectLifecycleService>();
+builder.Services.AddScoped<ILifecycleReviewService, LifecycleReviewService>();
+builder.Services.AddScoped<LifecycleNotifications>();
+builder.Services.AddScoped<ExitCheckGuidanceService>();
+builder.Services.AddScoped<INotificationService, NotificationService>();
+builder.Services.AddScoped<IArtifactWorkService, ArtifactWorkService>();
 builder.Services.AddScoped<ITraceabilityService, TraceabilityService>();
 builder.Services.AddScoped<IImpactAnalysisService, ImpactAnalysisService>();
 builder.Services.AddScoped<IAuditTrailService, AuditTrailService>();
@@ -62,7 +82,7 @@ builder.Services.AddScoped<IDocumentService, DocumentService>();
 builder.Services.AddScoped<IKnowledgeRetriever, KnowledgeRetriever>();
 builder.Services.AddScoped<ICopilotService, CopilotService>();
 
-// §36 — the agent chain. Registration order is irrelevant; AgentOrchestrator sorts by AgentKind.
+// Â§36 â€” the agent chain. Registration order is irrelevant; AgentOrchestrator sorts by AgentKind.
 builder.Services.AddScoped<IAgent, RequirementsAgent>();
 builder.Services.AddScoped<IAgent, AnalysisAgent>();
 builder.Services.AddScoped<IAgent, ArchitectureAgent>();
@@ -73,6 +93,8 @@ builder.Services.AddScoped<IAgentOrchestrator, AgentOrchestrator>();
 
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 builder.Services.AddSingleton<JwtTokenService>();
+builder.Services.AddSingleton<LoginThrottle>();
+builder.Services.AddHostedService<ClarificationWarmup>();
 
 // Secrets are never committed: they come from `dotnet user-secrets` (Development) or environment
 // variables (ConnectionStrings__Default, Jwt__Key, Ai__Gemini__ApiKey). See README "Configuration".

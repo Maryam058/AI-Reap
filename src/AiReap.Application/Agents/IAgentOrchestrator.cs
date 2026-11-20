@@ -1,7 +1,8 @@
 namespace AiReap.Application.Agents;
 
-// §36/REAP-090/091 — runs the agent chain one stage at a time, pausing for a human decision
-// after every stage. Nothing here deploys or executes generated code (REAP-092).
+// §36/REAP-090/091 — runs the agent chain one step at a time, pausing for a human decision
+// after every step. Agent steps are not project lifecycle stages and never change Project.Status.
+// Nothing here deploys or executes generated code (REAP-092).
 public interface IAgentOrchestrator
 {
     IReadOnlyList<AgentDefinitionResponse> GetDefinitions();
@@ -14,11 +15,14 @@ public interface IAgentOrchestrator
 
     Task<IReadOnlyList<AgentRunResponse>> GetForProjectAsync(Guid projectId, CancellationToken cancellationToken = default);
 
-    // Approve advances to the next stage (running it); reject halts the run. Throws
+    // Read-only counts and the latest runs with their current step. Changes nothing.
+    Task<AgentRunSummaryResponse> GetSummaryAsync(Guid projectId, CancellationToken cancellationToken = default);
+
+    // Approve advances to the next step (running it); reject halts the run. Throws
     // KeyNotFoundException, InvalidOperationException (run not awaiting a decision),
-    // UnauthorizedAccessException (caller's role may not decide this stage).
+    // UnauthorizedAccessException (caller's role may not decide this step).
     Task<AgentRunResponse> DecideAsync(Guid runId, bool approve, string? comment, CancellationToken cancellationToken = default);
 
-    // Re-runs the failed stage. Same exceptions as DecideAsync for state/authorization.
+    // Re-runs the failed step. Same exceptions as DecideAsync for state/authorization.
     Task<AgentRunResponse> RetryAsync(Guid runId, CancellationToken cancellationToken = default);
 }

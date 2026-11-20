@@ -1,0 +1,88 @@
+{
+  "fixture": "clinic-booking.srs.md",
+  "synthetic": true,
+  "requirements": [
+    { "key": "R-FR-001", "kind": "FR", "sourceIds": ["FR-001"],
+      "anchorQuotes": ["Receptionists must be able to book a consultation room for a named clinician and a time slot"],
+      "keywords": ["book", "consultation room", "clinician", "time slot"] },
+    { "key": "R-FR-002", "kind": "FR", "sourceIds": ["FR-002"],
+      "anchorQuotes": ["The system must prevent two bookings of the same room for overlapping time slots"],
+      "keywords": ["prevent", "same room", "overlapping"] },
+    { "key": "R-FR-003", "kind": "FR", "sourceIds": ["FR-003"],
+      "anchorQuotes": ["Clinicians must be able to view their own bookings for the coming week"],
+      "keywords": ["clinicians", "view", "own bookings"] },
+    { "key": "R-FR-004", "kind": "FR", "sourceIds": ["FR-004", "FR-011"],
+      "anchorQuotes": ["The system must send a confirmation email to the clinician when a booking is created",
+                       "When a booking is made, the clinician receives an email confirming it"],
+      "keywords": ["email", "clinician", "confirm"] },
+    { "key": "R-FR-005", "kind": "FR", "sourceIds": ["FR-005"],
+      "anchorQuotes": ["Priority patients must be offered the earliest available room"],
+      "keywords": ["priority patients", "earliest"] },
+    { "key": "R-FR-006", "kind": "FR", "sourceIds": ["FR-006"],
+      "anchorQuotes": ["Receptionists may delete bookings that were created by mistake"],
+      "keywords": ["receptionists", "delete", "mistake"] },
+    { "key": "R-FR-007", "kind": "FR", "sourceIds": ["FR-007"],
+      "anchorQuotes": ["Receptionists must be able to cancel a booking up to 24 hours before its start time"],
+      "keywords": ["cancel", "24 hours"] },
+    { "key": "R-FR-008", "kind": "FR", "sourceIds": ["FR-008"],
+      "anchorQuotes": ["The system must record who cancelled a booking and when"],
+      "keywords": ["record", "cancelled"] },
+    { "key": "R-FR-009", "kind": "FR", "sourceIds": ["FR-009"],
+      "anchorQuotes": ["Only administrators may delete bookings"],
+      "keywords": ["only administrators", "delete"] },
+    { "key": "R-FR-010", "kind": "FR", "sourceIds": ["FR-010"],
+      "anchorQuotes": ["Administrators must be able to create, disable and re-enable staff accounts"],
+      "keywords": ["administrators", "staff accounts", "disable"] },
+    { "key": "R-FR-012", "kind": "FR", "sourceIds": ["FR-012"],
+      "anchorQuotes": ["Patients pay a deposit when a room is booked for a private consultation"],
+      "keywords": ["deposit", "private consultation"] },
+    { "key": "R-NFR-001", "kind": "NFR", "sourceIds": ["NFR-001"],
+      "anchorQuotes": ["The booking page must load within 2 seconds for 95% of requests"],
+      "keywords": ["load", "2 seconds"], "statedTarget": "2 seconds for 95% of requests" },
+    { "key": "R-NFR-002", "kind": "NFR", "sourceIds": ["NFR-002"],
+      "anchorQuotes": ["The system must support at least 50 concurrent users"],
+      "keywords": ["50 concurrent users"], "statedTarget": "at least 50 concurrent users" },
+    { "key": "R-NFR-003", "kind": "NFR", "sourceIds": ["NFR-003"],
+      "anchorQuotes": ["The system must be available 99.5% of the time each calendar month"],
+      "keywords": ["available", "99.5%"], "statedTarget": "99.5% each calendar month" },
+    { "key": "R-NFR-004", "kind": "NFR", "sourceIds": ["NFR-004"],
+      "anchorQuotes": ["The system should be secure"],
+      "keywords": ["secure"] },
+    { "key": "R-NFR-005", "kind": "NFR", "sourceIds": ["NFR-005"],
+      "anchorQuotes": ["Staff passwords must be at least 12 characters long"],
+      "keywords": ["passwords", "12 characters"], "statedTarget": "at least 12 characters" }
+  ],
+  "allowedDerived": [
+    { "key": "AD-01", "keywords": ["search", "available", "room"] }
+  ],
+  "nonRequirements": [
+    { "key": "N-01", "anchorQuote": "opened in 2019 and serves about 40,000 residents", "keywords": ["40,000 residents"] },
+    { "key": "N-02", "anchorQuote": "The current paper diary is often double-booked", "keywords": ["paper diary"] },
+    { "key": "N-03", "anchorQuote": "Patient records are kept separately in the clinic's existing records system", "keywords": ["existing records system"] }
+  ],
+  "contradictions": [
+    { "key": "C1", "anchorQuotes": ["cancel a booking up to 24 hours before its start time",
+                                    "Bookings can be cancelled up to 48 hours before the start time"],
+      "keywordGroups": [["24 hours"], ["48 hours"]] },
+    { "key": "C2", "anchorQuotes": ["Receptionists may delete bookings that were created by mistake",
+                                    "Only administrators may delete bookings"],
+      "keywordGroups": [["administrator", "administrators"], ["receptionist", "receptionists"], ["delete", "deleting", "deletion"]] }
+  ],
+  "gaps": [
+    { "key": "G1", "anchorQuotes": ["Patients pay a deposit when a room is booked for a private consultation"],
+      "keywordGroups": [["deposit"], ["amount", "how much", "method", "refund", "refundable"]] },
+    { "key": "G2", "anchorQuotes": ["Priority patients must be offered the earliest available room"],
+      "keywordGroups": [["priority"], ["define", "defined", "definition", "criteria", "who", "qualifies", "mean"]] },
+    { "key": "G3", "anchorQuotes": ["Booking records are retained as required by law"],
+      "keywordGroups": [["retain", "retained", "retention", "kept", "keep"], ["period", "how long", "years", "duration"]] }
+  ],
+  "duplicates": [
+    { "key": "D1", "requirement": "R-FR-004", "sourceIds": ["FR-004", "FR-011"] },
+    { "key": "D2", "requirement": "R-FR-002", "sourceIds": ["FR-002"] }
+  ],
+  "sourceIds": {
+    "defined": ["FR-001", "FR-002", "FR-003", "FR-004", "FR-005", "FR-006", "FR-007", "FR-008", "FR-009", "FR-010",
+                "FR-011", "FR-012", "NFR-001", "NFR-002", "NFR-003", "NFR-004", "NFR-005"],
+    "mentionedOnly": ["SHA-256"]
+  }
+}

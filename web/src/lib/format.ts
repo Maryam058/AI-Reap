@@ -1,3 +1,5 @@
+import { stageLabel } from './lifecycle';
+
 export function initials(name: string | null | undefined): string {
   if (!name) return '?';
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -11,43 +13,21 @@ export function firstName(name: string | null | undefined): string {
   return name.trim().split(/\s+/)[0] ?? name;
 }
 
-const STATUS_LABELS: Record<number, string> = {
-  0: 'Draft',
-  1: 'Requirements Gathering',
-  2: 'Analysis',
-  3: 'Design',
-  4: 'Approved',
-  5: 'Implementation',
-  6: 'Testing',
-  7: 'Completed',
-};
-
-export const SDLC_STAGES = [
-  'Draft',
-  'Requirements Gathering',
-  'Analysis',
-  'Design',
-  'Approved',
-  'Implementation',
-  'Testing',
-  'Completed',
-];
-
+/** A project's lifecycle stage name (see lib/lifecycle). */
 export function statusLabel(status: number): string {
-  return STATUS_LABELS[status] ?? `Status ${status}`;
+  return stageLabel(status);
 }
 
+/**
+ * Pill tone for a lifecycle stage. Stages in flight are blue; amber is kept for real warnings
+ * (pending reviews, evidence gaps) and green for Completed. Approved has its own outlined tone so
+ * it never reads as Completed.
+ */
 export function statusVariant(status: number): string {
   if (status <= 0) return 'neutral';
-  if (status <= 3) return 'info';
-  if (status === 4) return 'success';
-  if (status <= 6) return 'warning';
-  return 'success';
-}
-
-export function stageProgress(status: number): number {
-  const clamped = Math.min(Math.max(status, 0), SDLC_STAGES.length - 1);
-  return Math.round((clamped / (SDLC_STAGES.length - 1)) * 100);
+  if (status === 4) return 'approved';
+  if (status >= 7) return 'success';
+  return 'info';
 }
 
 export function formatRelativeTime(iso: string): string {

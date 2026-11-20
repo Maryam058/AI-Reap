@@ -2,6 +2,7 @@ using System.Text.Json;
 using AiReap.Application.Ai;
 using AiReap.Application.Ai.Pipeline;
 using AiReap.Application.Common;
+using AiReap.Application.Lifecycle;
 using AiReap.Application.Persistence;
 using AiReap.Domain.Common;
 using AiReap.Domain.Enums;
@@ -10,9 +11,11 @@ using Microsoft.Extensions.Logging;
 
 namespace AiReap.Application.Agents.Implementations;
 
-// Stage 6 — read-only readiness review of everything the earlier agents produced. The gaps are
-// computed deterministically from the artifact graph (so they can be trusted); the model only
-// writes the narrative on top. It changes no artifact and approves nothing.
+// Step 6 — read-only readiness report for the human Reviewer. It does not compute readiness itself:
+// it reports the project's lifecycle exit checks (LifecycleEvidenceService, the same checks that
+// gate every stage transition) for the current stage and the two gated moves, Design -> Approved and
+// Testing -> Completed, plus earlier stages whose evidence no longer holds. The model only writes a
+// narrative over those counts. It changes no artifact, approves nothing and never moves the project.
 public class ReviewAgent : IAgent
 {
     private const string PromptTemplateVersion = "AgentReviewSummary-v1";
@@ -33,68 +36,65 @@ public class ReviewAgent : IAgent
     private readonly IAiChatClient _chatClient;
     private readonly IAiReapDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly ILifecycleEvidenceService _evidence;
     private readonly ILogger<ReviewAgent> _logger;
 
-    public ReviewAgent(IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser, ILogger<ReviewAgent> logger)
+    public ReviewAgent(IAiChatClient chatClient, IAiReapDbContext db, ICurrentUser currentUser, ILifecycleEvidenceService evidence, ILogger<ReviewAgent> logger)
     {
         _chatClient = chatClient;
         _db = db;
         _currentUser = currentUser;
+        _evidence = evidence;
         _logger = logger;
     }
 
     public AgentKind Kind => AgentKind.Review;
     public string DisplayName => "Review Agent";
-    public string Responsibility => "Checks the whole artifact set for open questions, unreviewed AI output, requirements without tasks or tests, stories without acceptance criteria, and unresolved conflicts.";
-    public string Inputs => "All artifacts and relationships for the requirement source.";
-    public string Outputs => "A readiness report. Read-only: creates and approves no artifacts.";
+    public string Responsibility => "Reports lifecycle readiness from the project's exit checks: what still blocks the current stage and the Design → Approved and Testing → Completed gates, and any earlier stage whose evidence no longer holds.";
+    public string Inputs => "The project's lifecycle exit checks (artifacts, human reviews and approvals, work records, conflicts, impact notices).";
+    public string Outputs => "A readiness report for the human Reviewer. Read-only: creates, approves and advances nothing.";
     public IReadOnlyList<string> ApproverRoles => AgentSupport.AdminAnd(Roles.Reviewer);
+    public IReadOnlyList<ProjectStatus> LifecycleStages => [ProjectStatus.Design, ProjectStatus.Testing];
+    public string LifecycleContribution => "Readiness support for the Reviewer at the Design → Approved and Testing → Completed gates. The report is not evidence and approves nothing.";
+
+    // The gates this report always covers, besides the project's current stage.
+    private static readonly ProjectStatus[] Gates = [ProjectStatus.Design, ProjectStatus.Testing];
 
     public async Task<AgentOutput> RunAsync(AgentContext context, CancellationToken cancellationToken)
     {
-        var artifacts = await _db.Artifacts
-            .Where(a => a.RequirementSourceId == context.RequirementSourceId)
-            .ToListAsync(cancellationToken);
+        var current = await _db.Projects.Where(p => p.Id == context.ProjectId).Select(p => p.Status).FirstAsync(cancellationToken);
+        var stages = await _evidence.GetAsync(context.ProjectId, cancellationToken);
+        var currentIndex = ProjectLifecyclePolicy.IndexOf(current);
 
-        var frs = artifacts.Where(a => a.ArtifactType == ArtifactType.FunctionalRequirement).ToList();
-        var stories = artifacts.Where(a => a.ArtifactType == ArtifactType.UserStory).ToList();
-        var questions = artifacts.Where(a => a.ArtifactType == ArtifactType.ClarificationQuestion).ToList();
+        string Move(StageEvidence stage) => ProjectLifecyclePolicy.Next(stage.Stage) is { } next
+            ? $"{stage.Label} → {ProjectLifecyclePolicy.Stage(next).Label}"
+            : stage.Label;
+        int Failing(StageEvidence stage) => stage.Checks.Count(c => !c.Passed);
 
-        var frsWithTasks = await AgentSupport.TargetsOfAsync(_db, ArtifactType.ImplementationTask, RelationshipType.Implements, context.ProjectId, cancellationToken);
-        var frsWithTests = await AgentSupport.SourcesOfAsync(_db, ArtifactType.TestCase, RelationshipType.TestedBy, context.ProjectId, cancellationToken);
-        var storiesWithCriteria = await AgentSupport.TargetsOfAsync(_db, ArtifactType.AcceptanceCriterion, RelationshipType.DerivedFrom, context.ProjectId, cancellationToken);
-
-        var ids = artifacts.Select(a => a.Id).ToList();
-        var openConflicts = await _db.ArtifactRelationships.CountAsync(r =>
-            (r.RelationshipType == RelationshipType.ConflictsWith || r.RelationshipType == RelationshipType.DuplicateOf)
-            && ids.Contains(r.SourceArtifactId), cancellationToken);
-
-        var untestedFrs = frs.Where(f => !frsWithTests.Contains(f.Id)).ToList();
-        var unplannedFrs = frs.Where(f => !frsWithTasks.Contains(f.Id)).ToList();
-        var storiesMissingCriteria = stories.Where(s => !storiesWithCriteria.Contains(s.Id)).ToList();
-        var openQuestions = AgentSupport.OpenClarifications(questions);
-        var awaitingReview = artifacts.Count(a => a.ArtifactType != ArtifactType.ClarificationQuestion && a.Status == ArtifactStatus.AiGenerated);
-        var rejected = artifacts.Count(a => a.Status == ArtifactStatus.Rejected);
+        var reviewed = stages
+            .Where(s => (s.Stage == current || Gates.Contains(s.Stage)) && s.Checks.Count > 0)
+            .ToList();
+        var gaps = stages
+            .Where(s => ProjectLifecyclePolicy.IndexOf(s.Stage) < currentIndex && !s.Passed && !Gates.Contains(s.Stage))
+            .ToList();
 
         var findings = new List<string>();
-        if (openQuestions > 0) findings.Add($"{openQuestions} clarification question(s) are still open.");
-        findings.AddRange(unplannedFrs.Select(f => $"{f.Code} has no implementation task."));
-        findings.AddRange(untestedFrs.Select(f => $"{f.Code} has no test case."));
-        findings.AddRange(storiesMissingCriteria.Select(s => $"{s.Code} has no acceptance criteria."));
-        if (openConflicts > 0) findings.Add($"{openConflicts} conflict/duplicate link(s) still need human resolution.");
-        if (awaitingReview > 0) findings.Add($"{awaitingReview} AI-generated artifact(s) have not yet been approved or rejected by a human.");
-        if (rejected > 0) findings.Add($"{rejected} artifact(s) were rejected and may need regeneration or rework.");
+        foreach (var stage in reviewed)
+        {
+            findings.AddRange(stage.Checks.Where(c => !c.Passed).Select(c => $"{Move(stage)}: {c.Label} — {c.Detail}"));
+        }
 
+        findings.AddRange(gaps.Select(g => $"Evidence gap: {g.Label} has {Failing(g)} failing check(s) although the project has moved past it."));
+
+        StageEvidence Of(ProjectStatus status) => stages.Single(s => s.Stage == status);
         var metrics = new Dictionary<string, int>
         {
-            ["artifacts"] = artifacts.Count,
-            ["awaitingHumanReview"] = awaitingReview,
-            ["rejected"] = rejected,
-            ["openQuestions"] = openQuestions,
-            ["requirementsWithoutTasks"] = unplannedFrs.Count,
-            ["requirementsWithoutTests"] = untestedFrs.Count,
-            ["storiesWithoutCriteria"] = storiesMissingCriteria.Count,
-            ["openConflicts"] = openConflicts
+            ["currentStageChecksFailing"] = Failing(Of(current)),
+            ["designGateChecksFailing"] = Failing(Of(ProjectStatus.Design)),
+            ["testingGateChecksFailing"] = Failing(Of(ProjectStatus.Testing)),
+            ["earlierStagesWithEvidenceGaps"] = stages.Count(s => ProjectLifecyclePolicy.IndexOf(s.Stage) < currentIndex && !s.Passed),
+            ["checksPassing"] = reviewed.Sum(s => s.Checks.Count(c => c.Passed)),
+            ["checksReviewed"] = reviewed.Sum(s => s.Checks.Count)
         };
 
         var summary = await NarrateAsync(context, metrics, findings.Count, cancellationToken);
@@ -104,25 +104,31 @@ public class ReviewAgent : IAgent
             metrics,
             Array.Empty<AgentArtifactRef>(),
             findings,
-            findings.Count == 0
-                ? "No structural gaps found. Approving completes the run; individual artifacts still need their own human approval."
-                : "Resolve the findings (or accept them knowingly) before approving. Approving completes the run — it does not approve individual artifacts and nothing is deployed.");
+            "This report supports the Reviewer's own decision at the Design → Approved and Testing → Completed gates (QA's sign-off is given when QA submits Testing). "
+            + "Approving this step only completes the agent run: it does not approve the project stage, move the project, or approve any artifact, and nothing is deployed.");
     }
 
     private async Task<string> NarrateAsync(AgentContext context, Dictionary<string, int> metrics, int findingCount, CancellationToken cancellationToken)
     {
         var fallback = findingCount == 0
-            ? "The artifact set is structurally complete: every requirement has tasks and tests."
-            : $"{findingCount} gap(s) were found in the artifact set; see the findings below.";
+            ? "Every lifecycle exit check reviewed here passes."
+            : $"{findingCount} lifecycle check(s) are not met; see the findings below.";
 
         _logger.LogInformation(
             "AI call starting: {OperationType} model={Model} input={InputReference}",
             "AgentReviewSummary", _chatClient.ModelName, context.RequirementSourceId);
 
+        // P0-5 — sent whole or not at all: a request the serving provider's budget cannot take is refused
+        // before it is sent (AiStageOverBudgetException; the run stage fails with its safe message),
+        // never condensed. Providers without a budget (Gemini) are called exactly as before.
         string rawResponse;
         try
         {
-            rawResponse = await _chatClient.CompleteAsync(SystemPrompt, JsonSerializer.Serialize(metrics), cancellationToken);
+            rawResponse = await _chatClient.CompleteUncondensedAsync(SystemPrompt, JsonSerializer.Serialize(metrics), cancellationToken);
+        }
+        catch (AiRequestOverBudgetException ex)
+        {
+            throw GenerationSupport.RefuseOverBudget(_logger, "AgentReviewSummary", context.RequirementSourceId.ToString(), ex);
         }
         catch (Exception ex)
         {
@@ -149,7 +155,7 @@ public class ReviewAgent : IAgent
         catch (AiOutputValidationException ex)
         {
             // The gap list is deterministic and already authoritative; a malformed narrative
-            // shouldn't fail the whole stage - but it's still worth knowing about in production.
+            // shouldn't fail the whole step - but it's still worth knowing about in production.
             _logger.LogWarning(ex,
                 "AI response failed JSON validation, falling back to a deterministic narrative: {OperationType} input={InputReference}",
                 "AgentReviewSummary", context.RequirementSourceId);

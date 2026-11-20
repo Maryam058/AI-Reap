@@ -6,5 +6,6 @@ namespace AiReap.Application.Ai.Pipeline;
 // ArtifactRelationship(TestedBy): Source = the FR, Target = the generated TestCase.
 public interface ITestGenerationService
 {
-    Task<IReadOnlyList<ArtifactResponse>?> GenerateAsync(Guid functionalRequirementArtifactId, CancellationToken cancellationToken = default);
+    // For a functional or non-functional requirement; null when the id is neither.
+    Task<IReadOnlyList<ArtifactResponse>?> GenerateAsync(Guid requirementArtifactId, CancellationToken cancellationToken = default);
 }

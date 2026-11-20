@@ -4,22 +4,13 @@ import { useAuth } from '../auth/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useSidebar } from '../context/SidebarContext';
 import { ProjectProvider, useProjectContext } from '../context/ProjectContext';
-import { SDLC_PHASES } from '../lib/sdlc';
+import { stageBySegment } from '../lib/stages';
+import { stageLabel } from '../lib/lifecycle';
 import { Sidebar } from './Sidebar';
+import { NotificationBell } from './NotificationBell';
 import { Breadcrumbs, type Crumb } from './Breadcrumbs';
 import { Avatar } from './ui/Avatar';
 import { IconFolder, IconLogout, IconMenu, IconMoon, IconSearch, IconSun } from './icons';
-
-const SEGMENT_GROUP: Record<string, string> = {
-  gathering: 'Project',
-  design: 'SDLC',
-  development: 'SDLC',
-  testing: 'SDLC',
-  analysis: 'SDLC',
-  validation: 'AI & Automation',
-  traceability: 'AI & Automation',
-  copilot: 'AI & Automation',
-};
 
 function useCrumbs(pathname: string, projectName: string | undefined): Crumb[] {
   const m = matchPath({ path: '/projects/:id/*', end: true }, pathname);
@@ -30,17 +21,16 @@ function useCrumbs(pathname: string, projectName: string | undefined): Crumb[] {
     if (!segment) return [...base, { label: projectName ?? 'Project' }];
     const project: Crumb = { label: projectName ?? 'Project', to: `/projects/${id}` };
     if (segment === 'edit') return [...base, project, { label: 'Edit' }];
-    const phase = SDLC_PHASES.find((p) => p.segment === segment);
-    const label = phase ? phase.navLabel.replace(/^Requirements /, '') : segment === 'copilot' ? 'AI Assistant' : segment;
-    return [...base, project, { label: SEGMENT_GROUP[segment] ?? 'Project' }, { label }];
+    const stage = stageBySegment(segment);
+    return [...base, project, { label: stage ? `${stage.number}. ${stage.name}` : segment }];
   }
   if (pathname === '/projects/new') return [{ label: 'Projects', to: '/projects' }, { label: 'New Project' }];
   if (pathname.startsWith('/projects')) return [{ label: 'Workspace' }, { label: 'Projects' }];
   if (pathname.startsWith('/dashboard')) return [{ label: 'Workspace' }, { label: 'Dashboard' }];
-  if (pathname.startsWith('/admin/users')) return [{ label: 'Management' }, { label: 'Users' }];
-  if (pathname.startsWith('/admin/roles')) return [{ label: 'Management' }, { label: 'Users', to: '/admin/users' }, { label: 'Roles & Permissions' }];
-  if (pathname.startsWith('/admin/audit')) return [{ label: 'Management' }, { label: 'Users', to: '/admin/users' }, { label: 'Audit Logs' }];
-  if (pathname.startsWith('/settings')) return [{ label: 'Management' }, { label: 'Settings' }];
+  if (pathname.startsWith('/admin/users')) return [{ label: 'Administration' }, { label: 'Users' }];
+  if (pathname.startsWith('/admin/roles')) return [{ label: 'Administration' }, { label: 'Users', to: '/admin/users' }, { label: 'Roles & Permissions' }];
+  if (pathname.startsWith('/admin/audit')) return [{ label: 'Administration' }, { label: 'Users', to: '/admin/users' }, { label: 'Audit Logs' }];
+  if (pathname.startsWith('/settings')) return [{ label: 'Administration' }, { label: 'Settings' }];
   return [];
 }
 
@@ -96,10 +86,20 @@ function Shell({ children }: { children: ReactNode }) {
             <IconMenu />
           </button>
           {projectId && (
-            <Link to={`/projects/${projectId}`} className="topbar-project" title={project?.name}>
+            <Link
+              to={`/projects/${projectId}`}
+              className="topbar-project"
+              title={project ? `${project.name} · current stage: ${stageLabel(project.status)}` : undefined}
+            >
               <IconFolder width={14} height={14} />
               <span className="topbar-project-label">Project</span>
               <strong>{project?.name ?? '…'}</strong>
+              {project && (
+                <span className="topbar-project-stage">
+                  <span className="sr-only">, current stage: </span>
+                  {stageLabel(project.status)}
+                </span>
+              )}
             </Link>
           )}
           <div className="topbar-spacer">
@@ -107,6 +107,7 @@ function Shell({ children }: { children: ReactNode }) {
           </div>
           <GlobalSearch />
           <div className="topbar-actions">
+            <NotificationBell />
             <button
               className="icon-btn"
               onClick={toggleTheme}

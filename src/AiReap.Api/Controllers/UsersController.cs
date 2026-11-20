@@ -75,7 +75,7 @@ public class UsersController : ControllerBase
     }
 
     [HttpPut("{id}/role")]
-    public async Task<ActionResult<UserResponse>> ChangeRole(string id, UpdateUserRoleRequest request)
+    public async Task<ActionResult<UserResponse>> ChangeRole(string id, UpdateUserRoleRequest request, [FromServices] AiReap.Infrastructure.Persistence.AiReapDbContext db)
     {
         if (!Roles.All.Contains(request.Role))
         {
@@ -96,9 +96,16 @@ public class UsersController : ControllerBase
         var current = await _userManager.GetRolesAsync(user);
         if (!current.SequenceEqual(new[] { request.Role }))
         {
-            await _userManager.RemoveFromRolesAsync(user, current);
-            await _userManager.AddToRoleAsync(user, request.Role);
-            await _userManager.UpdateSecurityStampAsync(user); // sign the user out of their old-role tokens
+            // One transaction: the user never ends up with no role, or with both, if a step fails.
+            var failure = await InTransactionAsync(db,
+                () => _userManager.RemoveFromRolesAsync(user, current),
+                () => _userManager.AddToRoleAsync(user, request.Role),
+                () => _userManager.UpdateSecurityStampAsync(user)); // sign the user out of their old-role tokens
+            if (failure is not null)
+            {
+                return failure;
+            }
+
             _logger.LogInformation("Administrator {Admin} changed role of {UserId} from [{Old}] to {New}.",
                 CallerId, id, string.Join(",", current), request.Role);
         }
@@ -106,8 +113,31 @@ public class UsersController : ControllerBase
         return Ok(await ToResponseAsync(user));
     }
 
+    // Runs the Identity steps in one database transaction, stopping at the first that fails; on any
+    // failure nothing is kept and the caller gets a problem response naming it.
+    private async Task<ActionResult?> InTransactionAsync(Infrastructure.Persistence.AiReapDbContext db, params Func<Task<IdentityResult>>[] steps)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        foreach (var step in steps)
+        {
+            var result = await step();
+            if (!result.Succeeded)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogWarning("User update by {Admin} rolled back: {Errors}", CallerId, string.Join("; ", result.Errors.Select(e => e.Code)));
+                return Problem(
+                    statusCode: StatusCodes.Status409Conflict,
+                    title: "The user was not changed.",
+                    detail: string.Join(" ", result.Errors.Select(e => e.Description)));
+            }
+        }
+
+        await transaction.CommitAsync();
+        return null;
+    }
+
     [HttpPut("{id}/status")]
-    public async Task<ActionResult<UserResponse>> SetStatus(string id, UpdateUserStatusRequest request)
+    public async Task<ActionResult<UserResponse>> SetStatus(string id, UpdateUserStatusRequest request, [FromServices] AiReap.Infrastructure.Persistence.AiReapDbContext db)
     {
         var user = await _userManager.FindByIdAsync(id);
         if (user is null)
@@ -120,10 +150,17 @@ public class UsersController : ControllerBase
             return Conflict("You cannot deactivate your own account.");
         }
 
-        // Deactivation = Identity lockout with no end date (no separate flag/column needed).
-        await _userManager.SetLockoutEnabledAsync(user, true);
-        await _userManager.SetLockoutEndDateAsync(user, request.IsActive ? null : DateTimeOffset.MaxValue);
-        await _userManager.UpdateSecurityStampAsync(user);
+        // Deactivation = Identity lockout with no end date (no separate flag/column needed). One
+        // transaction, so a user is never left deactivated with old tokens still valid, or half-changed.
+        var failure = await InTransactionAsync(db,
+            () => _userManager.SetLockoutEnabledAsync(user, true),
+            () => _userManager.SetLockoutEndDateAsync(user, request.IsActive ? null : DateTimeOffset.MaxValue),
+            () => _userManager.UpdateSecurityStampAsync(user));
+        if (failure is not null)
+        {
+            return failure;
+        }
+
         _logger.LogInformation("Administrator {Admin} set user {UserId} active={Active}.", CallerId, id, request.IsActive);
 
         return Ok(await ToResponseAsync(user));

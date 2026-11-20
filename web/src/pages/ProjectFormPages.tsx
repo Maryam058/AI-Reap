@@ -8,7 +8,7 @@ import { apiErrorText } from '../lib/errors';
 import { PageHeader } from '../components/ui/PageHeader';
 import { EmptyState } from '../components/ui/EmptyState';
 import { EMPTY_VALUES, ProjectEditor, ProjectWizard, toRequest, valuesFromProject, type FieldKey, type ProjectValues } from '../components/ProjectForm';
-import { IconLock } from '../components/icons';
+import { IconCheckCircle, IconDocument, IconInfo, IconLock } from '../components/icons';
 
 function useCanManage() {
   const { hasRole } = useAuth();
@@ -56,8 +56,33 @@ export function NewProjectPage() {
 
   return (
     <>
-      <PageHeader eyebrow="New project" title="Create a new SDLC project" subtitle="Describe the project once. AI-REAP carries this context through every phase, from requirements to traceability." />
-      <ProjectWizard values={values} onChange={(k: FieldKey, v: string) => setValues((s) => ({ ...s, [k]: v }))} onSubmit={onSubmit} onCancel={() => navigate('/projects')} busy={busy} error={error} />
+      <PageHeader eyebrow="New project" title="Create a new project" subtitle="Describe the project once. AI-REAP carries this context through all nine stages, from gathering requirements to the final review." />
+      <div className="pf-create">
+        <ProjectWizard values={values} onChange={(k: FieldKey, v: string) => setValues((s) => ({ ...s, [k]: v }))} onSubmit={onSubmit} onCancel={() => navigate('/projects')} busy={busy} error={error} />
+        <aside className="pf-guide" aria-label="Before you start">
+          <h2>
+            <IconInfo width={16} height={16} aria-hidden="true" /> Before you start
+          </h2>
+          <ul>
+            <li>
+              <IconCheckCircle width={15} height={15} aria-hidden="true" />
+              <span>
+                Only the <strong>project name</strong> is required. Everything else is optional and can be completed later in the Gathering stage.
+              </span>
+            </li>
+            <li>
+              <IconCheckCircle width={15} height={15} aria-hidden="true" />
+              <span>The more context you give, the better the AI’s analysis will be.</span>
+            </li>
+            <li>
+              <IconDocument width={15} height={15} aria-hidden="true" />
+              <span>
+                You will upload your requirements document (SRS) <strong>after</strong> creating the project. Supported formats: PDF, Word (.docx) and plain text (.txt).
+              </span>
+            </li>
+          </ul>
+        </aside>
+      </div>
     </>
   );
 }

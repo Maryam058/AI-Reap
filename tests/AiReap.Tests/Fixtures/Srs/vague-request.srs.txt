@@ -1,0 +1,6 @@
+SYNTHETIC TEST FIXTURE - invented content for automated tests only.
+
+We are a small community clinic. We need an app so staff can book rooms quickly.
+It must be fast and easy to use.
+Managers should be able to see how busy the rooms are.
+It should work on the computers we already have.

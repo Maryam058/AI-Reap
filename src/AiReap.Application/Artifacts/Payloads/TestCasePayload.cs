@@ -6,5 +6,5 @@ public class TestCasePayload
     public string? Preconditions { get; set; }
     public List<string> Steps { get; set; } = new();
     public string ExpectedResult { get; set; } = string.Empty;
-    public string TestKind { get; set; } = "positive"; // positive|negative|boundary|permission|validation
+    public string TestKind { get; set; } = "positive"; // positive|negative|boundary|permission|validation; for an NFR also AiVocabulary.NfrTestKinds
 }

@@ -4,7 +4,8 @@ import { ApiError } from '../api/client';
 import { projectsApi } from '../api/projects';
 import type { ConflictFinding } from '../api/types';
 
-export function ConflictsPanel({ projectId }: { projectId: string }) {
+/** `onChange` fires after a detection run, which records conflicts and counts towards phase progress. */
+export function ConflictsPanel({ projectId, onChange }: { projectId: string; onChange?: () => void }) {
   const { token, hasRole } = useAuth();
   const canRun = hasRole('Administrator') || hasRole('BusinessAnalyst') || hasRole('Reviewer');
 
@@ -19,6 +20,7 @@ export function ConflictsPanel({ projectId }: { projectId: string }) {
     setError(null);
     try {
       setFindings(await projectsApi.detectConflicts(projectId, token));
+      onChange?.();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Conflict detection failed.');
     } finally {
@@ -29,8 +31,10 @@ export function ConflictsPanel({ projectId }: { projectId: string }) {
   return (
     <div className="card" id="sec-consistency">
       <h2>Duplicate &amp; Conflict Detection</h2>
-      <p className="hint">Scans all functional requirements in the project. Conflicts are never auto-resolved.</p>
-      <button type="button" disabled={busy} onClick={run}>
+      <p className="hint">
+        Finds requirements that repeat each other or cannot both be true as written. Scans all functional requirements in the project. Conflicts are never auto-resolved.
+      </p>
+      <button type="button" className="btn btn-secondary" disabled={busy} onClick={run}>
         {busy ? 'Scanning…' : 'Detect conflicts'}
       </button>
 

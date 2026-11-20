@@ -3,6 +3,7 @@ import { useAuth } from '../auth/AuthContext';
 import { projectsApi } from '../api/projects';
 import type { ProjectMember } from '../api/types';
 import { apiErrorText } from '../lib/errors';
+import { roleLabel } from '../lib/lifecycle';
 import { useToast } from '../context/ToastContext';
 import { Avatar } from './ui/Avatar';
 import { ConfirmDialog, Dialog } from './ui/Dialog';
@@ -51,8 +52,8 @@ export function MembersPanel({ projectId }: { projectId: string }) {
     setSaving(true);
     setFormError(null);
     try {
-      await projectsApi.addMember(projectId, { email: email.trim() }, token);
-      toast(`${email.trim()} added to the project.`);
+      const added = await projectsApi.addMember(projectId, { email: email.trim() }, token);
+      toast(added.isActive ? `${added.displayName} added to the project.` : `${added.displayName} added, but their account is deactivated - they can't sign in until an administrator reactivates it.`);
       setAdding(false);
       setEmail('');
       await load();
@@ -84,7 +85,7 @@ export function MembersPanel({ projectId }: { projectId: string }) {
       <header className="panel-head">
         <div>
           <h2 id="members-title">Members</h2>
-          <p>Who has access to this project. Everyone else with a role is refused, even Administrators' bypass aside.</p>
+          <p>Who has access to this project. Only members (and Administrators) can open it; add a Business Analyst or teammate here to give them access. Stakeholders are recorded separately and don't get access.</p>
         </div>
         {canManage && items && items.length > 0 && (
           <button type="button" className="btn btn-primary" onClick={() => { setFormError(null); setEmail(''); setAdding(true); }}>
@@ -117,6 +118,8 @@ export function MembersPanel({ projectId }: { projectId: string }) {
               <tr>
                 <th scope="col">Name</th>
                 <th scope="col">Email</th>
+                <th scope="col">Role</th>
+                <th scope="col">Status</th>
                 <th scope="col">Added</th>
                 {canManage && (
                   <th scope="col" className="col-actions">
@@ -138,6 +141,15 @@ export function MembersPanel({ projectId }: { projectId: string }) {
                       </div>
                     </td>
                     <td>{m.email}</td>
+                    <td>{roleLabel(m.role)}</td>
+                    <td>
+                      <span
+                        className={`status-pill tone-${m.isActive ? 'success' : 'danger'}`}
+                        title={m.isActive ? undefined : 'This account is deactivated and cannot sign in.'}
+                      >
+                        {m.isActive ? 'Active' : 'Deactivated'}
+                      </span>
+                    </td>
                     <td>{new Date(m.addedAt).toLocaleDateString()}</td>
                     {canManage && (
                       <td className="col-actions">

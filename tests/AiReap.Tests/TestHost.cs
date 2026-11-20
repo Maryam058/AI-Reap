@@ -1,12 +1,12 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Runtime.ExceptionServices;
 using System.Text.Json.Nodes;
 using AiReap.Application.Ai;
 using AiReap.Infrastructure.Ai;
 using AiReap.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.Json;
@@ -60,71 +60,151 @@ public class ControllableAiChatClient : IAiChatClient
     }
 }
 
-// One throwaway SQL Server database per instance, created by applying the real EF migrations
-// (so the migrations themselves are under test). Two hosts can share one database to simulate a restart.
+// Offline-test seams for TestHost's own construction and disposal paths.
+internal sealed record TestHostSeams(Action? AfterConstruction = null, Func<ValueTask>? DisposeFactory = null);
+
+// One throwaway SQL Server database per instance, created by the SQL test guard (TestSqlServer) and then
+// migrated with the real EF migrations (so the migrations themselves are under test). Two hosts can share
+// one database to simulate a restart: the second holds a lease and never drops it.
+//
+// The server comes only from AIREAP_TEST_SQL_CONNECTION and AIREAP_TEST_SQL_EXPECTED_SERVER; there is no
+// fallback to the developer's user-secrets (see TestSqlSettings).
 public class TestHost : IAsyncDisposable
 {
-    // No credentials in source. CI sets AIREAP_TEST_SQL_CONNECTION (server-level, no Database=).
-    // Locally, if that isn't set, the developer's own `dotnet user-secrets` connection string for
-    // AiReap.Api is reused with its database name removed - the same SQL Server the app runs against.
-    public static readonly string ServerConnection = ResolveServerConnection();
-
-    private static string ResolveServerConnection()
-    {
-        var fromEnvironment = Environment.GetEnvironmentVariable("AIREAP_TEST_SQL_CONNECTION");
-        if (!string.IsNullOrWhiteSpace(fromEnvironment))
-        {
-            return fromEnvironment;
-        }
-
-        var fromUserSecrets = new ConfigurationBuilder()
-            .AddUserSecrets("AiReap.Api")
-            .Build()
-            .GetConnectionString("Default");
-        if (!string.IsNullOrWhiteSpace(fromUserSecrets))
-        {
-            var builder = new SqlConnectionStringBuilder(fromUserSecrets);
-            builder.Remove("Initial Catalog");
-            return builder.ConnectionString;
-        }
-
-        throw new InvalidOperationException(
-            "No SQL Server for integration tests. Set AIREAP_TEST_SQL_CONNECTION (e.g. \"Server=127.0.0.1,14330;User Id=sa;Password=<your password>;TrustServerCertificate=True\") " +
-            "or configure ConnectionStrings:Default in the AiReap.Api user-secrets.");
-    }
+    private readonly TestSqlServer _sql;
+    private readonly TestDatabase? _owned;
+    private readonly TestDatabaseLease? _lease;
+    private readonly Func<ValueTask>? _disposeFactory;
+    private Task? _disposal;
 
     public string DatabaseName { get; }
-    public string ConnectionString => $"{ServerConnection};Database={DatabaseName}";
+
+    // The string the API host and the raw-connection tests use. Content comes only from the validated
+    // settings plus this guard-created database, and no new string is handed out once the database is no
+    // longer Ready. But a string, once handed out, cannot be revoked (the API's configuration, test
+    // variables and SqlClient pools may hold copies), and connections opened from it are not re-verified
+    // on every open - only the guard's own connections (OpenVerifiedConnectionAsync, ScalarAsync,
+    // ExecuteAsync, migrations) are. A stale or misrouted open fails at login (4060) unless the target
+    // happens to hold a database with the same random name.
+    public string ConnectionString => _sql.ConnectionStringFor(DatabaseName);
     public ControllableAiChatClient Ai { get; } = new();
     public WebApplicationFactory<Program> Factory { get; private set; }
-    private readonly bool _ownsDatabase;
 
     public const string AdminEmail = "admin@bootstrap.test";
     public const string AdminPassword = "B00tstrap!Admin";
     public const string UserPassword = "Passw0rd!123";
 
     private readonly bool _bootstrap;
+    private readonly IAiChatClient? _chatClient;
+    private readonly IReadOnlyDictionary<string, string> _settings;
     private ApiUser? _admin;
 
-    public TestHost(string? existingDatabase = null, bool bootstrapAdmin = true)
+    // chatClient replaces the scripted stub, for tests that need the real provider stack (over fake HTTP).
+    // settings: extra configuration for this host only (e.g. Ai:Groq:MaxBatchedRunParts).
+    public TestHost(string? existingDatabase = null, bool bootstrapAdmin = true, IAiChatClient? chatClient = null,
+        IReadOnlyDictionary<string, string>? settings = null)
+        : this(() => TestSqlServer.Default, existingDatabase, bootstrapAdmin, chatClient, settings, seams: null)
     {
+    }
+
+    internal TestHost(Func<TestSqlServer> sqlServer, string? existingDatabase, bool bootstrapAdmin, IAiChatClient? chatClient,
+        IReadOnlyDictionary<string, string>? settings, TestHostSeams? seams)
+    {
+        _settings = settings ?? new Dictionary<string, string>();
         _bootstrap = bootstrapAdmin;
-        _ownsDatabase = existingDatabase is null;
-        DatabaseName = existingDatabase ?? $"AiReapTests_{Guid.NewGuid():N}";
-        if (_ownsDatabase)
+        _chatClient = chatClient;
+        _disposeFactory = seams?.DisposeFactory;
+        _sql = sqlServer(); // missing or unsafe settings throw here, before any connection is attempted
+
+        if (existingDatabase is null)
         {
-            // Must precede host start: the API seeds roles on startup in Development.
-            using var db = new AiReapDbContext(
-                new DbContextOptionsBuilder<AiReapDbContext>().UseSqlServer(ConnectionString).Options);
-            db.Database.Migrate();
+            _owned = _sql.CreateDatabaseAsync().GetAwaiter().GetResult();
+            DatabaseName = _owned.Name;
+            try
+            {
+                // Must precede host start: the API seeds roles on startup in Development.
+                RunOnVerifiedConnection(connection =>
+                {
+                    using var db = new AiReapDbContext(connection.CreateMigrationOptions());
+                    db.Database.Migrate();
+                });
+                Factory = Build();
+                seams?.AfterConstruction?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                // A constructor that throws never reaches DisposeAsync: drop (guarded) here.
+                CleanUpAfterFailedConstruction(ex, _owned.Dispose);
+                throw;
+            }
+        }
+        else
+        {
+            _lease = _sql.AcquireLease(existingDatabase);
+            DatabaseName = existingDatabase;
+            try
+            {
+                // Fail now, not mid-test, if the shared database is no longer the one this run created.
+                RunOnVerifiedConnection(static _ => { });
+                Factory = Build();
+                seams?.AfterConstruction?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                CleanUpAfterFailedConstruction(ex, _lease.Dispose);
+                throw;
+            }
+        }
+    }
+
+    // The verified connection is always disposed before this returns, so its reservation is gone before any
+    // owner cleanup. A failure to dispose it is reported together with the work's own failure, never instead.
+    private void RunOnVerifiedConnection(Action<VerifiedConnection> work)
+    {
+        var connection = _sql.OpenVerifiedAsync(DatabaseName).GetAwaiter().GetResult();
+        Exception? failure = null;
+        try
+        {
+            work(connection);
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
         }
 
-        Factory = Build();
+        try
+        {
+            connection.Dispose();
+        }
+        catch (Exception disposeFailure) when (failure is not null)
+        {
+            throw new AggregateException(failure, disposeFailure);
+        }
+
+        if (failure is not null)
+        {
+            ExceptionDispatchInfo.Capture(failure).Throw();
+        }
+    }
+
+    private static void CleanUpAfterFailedConstruction(Exception failure, Action cleanup)
+    {
+        try
+        {
+            cleanup();
+        }
+        catch (Exception cleanupFailure)
+        {
+            throw new AggregateException(failure, cleanupFailure);
+        }
     }
 
     private WebApplicationFactory<Program> Build() =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
+            // Read when the host is built: throws if the database is no longer Ready.
+            var connectionString = ConnectionString;
+
             b.UseEnvironment("Development"); // seeds roles, same as a real dev run
 
             // The "Development" environment auto-loads the developer's own `dotnet user-secrets`
@@ -140,16 +220,29 @@ public class TestHost : IAsyncDisposable
                     .Where(s => s.Path?.Contains("UserSecrets", StringComparison.OrdinalIgnoreCase) == true)
                     .ToList();
                 foreach (var source in userSecretsSources) config.Sources.Remove(source);
+
+                // Last source wins: nothing earlier (appsettings, a ConnectionStrings__Default environment
+                // variable) can point the API at another database. Checked again in ConfigureServices.
+                config.AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:Default"] = connectionString });
             });
 
-            b.UseSetting("ConnectionStrings:Default", ConnectionString);
+            b.UseSetting("ConnectionStrings:Default", connectionString);
 
-            // Automated tests never call a live AI API, even if a developer has Ai__Gemini__ApiKey
+            // Automated tests never call a live AI API, even if a developer has Ai__Anthropic__ApiKey
             // (or another provider key) in their environment: chat is the stub (replaced below),
             // and blank keys keep embeddings on the deterministic stub too.
-            b.UseSetting("Ai:Provider", "Gemini");
+            b.UseSetting("Ai:Provider", "Anthropic");
+            b.UseSetting("Ai:EmbeddingProvider", "");
             b.UseSetting("Ai:Gemini:ApiKey", "");
+            b.UseSetting("Ai:Groq:ApiKey", "");
+            b.UseSetting("GROQ_API_KEY", ""); // the machine-level key must not reach tests either
             b.UseSetting("Ai:Anthropic:ApiKey", "");
+            // No background read of every clarification question at start: tests read what they seed.
+            b.UseSetting("ClarificationVisibility:WarmOnStartup", "false");
+            // Kept original uploads go to a throwaway directory of this test database, never the
+            // developer's own store (docs/SOURCE_DOCUMENT_RETENTION.md). A test can still override it.
+            b.UseSetting("OriginalDocuments:RootPath", Path.Combine(Path.GetTempPath(), "aireap-test-originals", DatabaseName));
+            foreach (var (key, value) in _settings) b.UseSetting(key, value);
             b.UseSetting("Ai:OpenAI:ApiKey", "");
             if (_bootstrap)
             {
@@ -164,10 +257,17 @@ public class TestHost : IAsyncDisposable
                 b.UseSetting("Bootstrap:AdminEmail", "");
                 b.UseSetting("Bootstrap:AdminPassword", "");
             }
-            b.ConfigureServices(s =>
+            b.ConfigureServices((ctx, s) =>
             {
+                // Runs inside the host build, before RoleSeeder sends anything to the database.
+                if (!string.Equals(ctx.Configuration.GetConnectionString("Default"), connectionString, StringComparison.Ordinal))
+                {
+                    throw new TestSqlGuardException(
+                        $"The API host's ConnectionStrings:Default does not resolve to the guard-issued string for '{DatabaseName}'; refusing to start it.");
+                }
+
                 s.RemoveAll<IAiChatClient>();
-                s.AddSingleton<IAiChatClient>(Ai);
+                s.AddSingleton<IAiChatClient>(_chatClient ?? Ai);
             });
         });
 
@@ -199,31 +299,73 @@ public class TestHost : IAsyncDisposable
     public Task<(int Status, JsonNode? Body)> AddMemberAsync(ApiUser owner, string projectId, ApiUser member) =>
         owner.PostAsync($"/api/projects/{projectId}/members", new { email = member.Email });
 
+    // A connection whose server, database and run token were verified on the same session. Each call is a
+    // fresh non-pooled login; dispose it promptly (it holds a reservation that blocks the owner's DROP).
+    public Task<VerifiedConnection> OpenVerifiedConnectionAsync() => _sql.OpenVerifiedAsync(DatabaseName);
+
     public async Task<int> ScalarAsync(string sql)
     {
-        await using var conn = new SqlConnection(ConnectionString);
-        await conn.OpenAsync();
-        await using var cmd = new SqlCommand(sql, conn);
+        await using var conn = await OpenVerifiedConnectionAsync();
+        await using var cmd = conn.CreateCommand(sql);
         return Convert.ToInt32(await cmd.ExecuteScalarAsync());
     }
 
     public async Task ExecuteAsync(string sql)
     {
-        await using var conn = new SqlConnection(ConnectionString);
-        await conn.OpenAsync();
-        await using var cmd = new SqlCommand(sql, conn);
+        await using var conn = await OpenVerifiedConnectionAsync();
+        await using var cmd = conn.CreateCommand(sql);
         await cmd.ExecuteNonQueryAsync();
     }
 
-    public async ValueTask DisposeAsync()
+    // Concurrent and repeated calls await the same disposal. The API host goes first; the lease release or
+    // the guarded drop always runs afterwards, even if disposing the host failed, and every failure is
+    // reported.
+    public ValueTask DisposeAsync()
     {
-        await Factory.DisposeAsync();
-        if (!_ownsDatabase) return;
-        await using var conn = new SqlConnection(ServerConnection);
-        await conn.OpenAsync();
-        await using var cmd = new SqlCommand(
-            $"IF DB_ID('{DatabaseName}') IS NOT NULL BEGIN ALTER DATABASE [{DatabaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{DatabaseName}]; END", conn);
-        await cmd.ExecuteNonQueryAsync();
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var existing = Interlocked.CompareExchange(ref _disposal, completion.Task, null);
+        if (existing is not null)
+        {
+            return new ValueTask(existing);
+        }
+
+        _ = DisposeOnceAsync(completion);
+        return new ValueTask(completion.Task);
+    }
+
+    private async Task DisposeOnceAsync(TaskCompletionSource completion)
+    {
+        var failures = new List<Exception>();
+        try
+        {
+            await (_disposeFactory is not null ? _disposeFactory() : Factory.DisposeAsync()).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            failures.Add(ex);
+        }
+
+        try
+        {
+            _lease?.Dispose();
+            if (_owned is not null)
+            {
+                await _owned.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            failures.Add(ex);
+        }
+
+        if (failures.Count == 0)
+        {
+            completion.SetResult();
+        }
+        else
+        {
+            completion.SetException(failures.Count == 1 ? failures[0] : new AggregateException(failures));
+        }
     }
 }
 

@@ -8,6 +8,8 @@ import { apiErrorText } from '../lib/errors';
 import {
   ARTIFACT_STATUS,
   ARTIFACT_TYPE_VALUES,
+  FUNCTIONAL_TEST_KINDS,
+  NON_FUNCTIONAL_TEST_KINDS,
   type AcceptanceCriterionData,
   type ApiSpecificationData,
   type ArtifactSummary,
@@ -131,7 +133,7 @@ function TypeFields({
             label="Target value"
             value={d.targetValue ?? ''}
             onChange={(v) => set('targetValue', v)}
-            hint="A target value here always stays marked as a proposed assumption (§10, server-enforced) until confirmed elsewhere - editing this text does not change that flag."
+            hint="Changing the target makes it a proposed assumption again, even if it was confirmed; another Business Analyst or Reviewer must confirm it (server-enforced)."
           />
         </>
       );
@@ -261,11 +263,20 @@ function TypeFields({
           <label className="field">
             <span className="field-label">Kind</span>
             <select className="select-input" value={d.testKind ?? 'positive'} onChange={(e) => set('testKind', e.target.value)}>
-              <option value="positive">Positive</option>
-              <option value="negative">Negative</option>
-              <option value="boundary">Boundary</option>
-              <option value="permission">Permission</option>
-              <option value="validation">Validation</option>
+              <optgroup label="Functional">
+                {FUNCTIONAL_TEST_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {k[0].toUpperCase() + k.slice(1)}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="Non-functional (quality)">
+                {NON_FUNCTIONAL_TEST_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {k[0].toUpperCase() + k.slice(1)}
+                  </option>
+                ))}
+              </optgroup>
             </select>
           </label>
         </>
