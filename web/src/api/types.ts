@@ -650,6 +650,23 @@ export interface AnalyzeRequirementResult {
   rejectedCandidates?: RejectedClarification[] | null;
   retrieval?: AnalysisRetrievalReport | null;
   reconciliation?: AnalysisReconciliation | null;
+  // Proposed questions not asked because they assume something the source denies, whose gap no saved
+  // question covers; kept for a reviewer, never saved as questions. Absent on older analyses.
+  heldForReview?: HeldClarification[] | null;
+}
+
+// One held item (HeldClarification in ClarificationCandidateValidator.cs). evidence: the passages the
+// question cited (line -1 when not placed in the source); denialLine (0-based) / denialText: the source
+// passage that contradicts the question's assumption; location: where that is; note: why it was held.
+export interface HeldClarification {
+  topic: string;
+  question: string;
+  kind?: string | null;
+  evidence: SourceReference[];
+  denialLine: number;
+  denialText: string;
+  location: string;
+  note: string;
 }
 
 // Whether every line and section of the source was sent to the AI (AnalysisCoverage.cs).

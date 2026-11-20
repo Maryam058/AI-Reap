@@ -47,13 +47,20 @@ function modelsLine(c: RequirementCompleteness): string | null {
 // Analysis also reports (when the API sends them) whether the stored analysis was reused rather than
 // re-run, why it may be stale, and whether every section of the source was sent. Incomplete coverage
 // or staleness makes the notice a warning; coverage that was not verified is said so, never implied.
+const RULES_CHANGED = /^The analysis rules have changed\b/;
+
 export function analysisCompletenessNotice(result: AnalyzeRequirementResult | null | undefined): CompletenessNotice | null {
   if (!result) return null;
   const c = result.completeness;
-  const stale = result.staleReasons ?? [];
+  // A change of the analysis rules alone (a new prompt/validator version) is not shown: the stored
+  // analysis still matches its source, and regenerating is the reviewer's choice. Source changes and
+  // incomplete coverage are still reported.
+  const stale = (result.staleReasons ?? []).filter((r) => !RULES_CHANGED.test(r));
   const coverage = result.coverage;
   const incomplete = coverage?.status === 'incomplete';
   if (!c && stale.length === 0 && !incomplete) return null;
+  // A stored analysis with nothing to warn about needs no notice; one is shown only after a fresh run.
+  if (result.reused && stale.length === 0 && !incomplete) return null;
 
   const details = c ? [processingLine(c, 'Analysed'), modelsLine(c)].filter((l): l is string => l !== null) : [];
   if (coverage?.status === 'complete' && coverage.sectionCount > 0) {

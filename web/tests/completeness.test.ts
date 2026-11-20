@@ -185,12 +185,15 @@ const coverage = (status: 'complete' | 'incomplete' | 'unverified', missingSecti
   parts: [],
 });
 
-test('a reused, current analysis says the AI was not called again and stays informational', () => {
-  const notice = analysisCompletenessNotice({ ...analysis(flags()), reused: true, staleReasons: [], coverage: coverage('complete') })!;
+test('a reused, current analysis shows no notice', () => {
+  assert.equal(analysisCompletenessNotice({ ...analysis(flags()), reused: true, staleReasons: [], coverage: coverage('complete') }), null);
+});
+
+test('a fresh analysis still shows its informational notice', () => {
+  const notice = analysisCompletenessNotice({ ...analysis(flags()), reused: false, staleReasons: [], coverage: coverage('complete') })!;
   assert.equal(notice.tone, 'info');
   assert.equal(notice.title, 'Source analysed whole');
   assert.ok(notice.details.includes('All 12 sections were sent to the AI.'));
-  assert.ok(notice.details.some((d) => d.startsWith('Showing the stored analysis') && d.endsWith('the AI was not called again.')));
 });
 
 test('a stale analysis is a warning that lists why and asks for an explicit regenerate', () => {
@@ -200,6 +203,20 @@ test('a stale analysis is a warning that lists why and asks for an explicit rege
   assert.equal(notice.title, 'Stored analysis may be out of date');
   assert.ok(notice.details.includes(reason));
   assert.ok(notice.details.includes('Regenerate the analysis to refresh it.'));
+});
+
+test('a change of analysis rules alone is not shown as a stale analysis', () => {
+  const rules = 'The analysis rules have changed (RequirementAnalysis-v3+CqValidation-v1 -> RequirementAnalysis-v6+CqValidation-v5).';
+  assert.equal(analysisCompletenessNotice({ ...analysis(flags()), reused: true, staleReasons: [rules], coverage: coverage('complete') }), null);
+});
+
+test('a rules change does not hide a real stale reason', () => {
+  const rules = 'The analysis rules have changed (a -> b).';
+  const source = 'The requirement source text has changed since this analysis ran.';
+  const notice = analysisCompletenessNotice({ ...analysis(flags()), reused: true, staleReasons: [rules, source] })!;
+  assert.equal(notice.tone, 'warning');
+  assert.ok(notice.details.includes(source));
+  assert.ok(!notice.details.includes(rules));
 });
 
 test('incomplete coverage is never presented as a complete analysis', () => {

@@ -21,7 +21,7 @@ namespace AiReap.Application.Ai.Pipeline;
 //     and no saved question, answer or review is changed or removed.
 public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRunOperation
 {
-    internal const string PromptTemplateVersion = "RequirementAnalysis-v5";
+    internal const string PromptTemplateVersion = "RequirementAnalysis-v6";
 
     // Project-document retrieval per accepted question (KnowledgeRetriever): at most this many queries per
     // run, and only passages at or above the score are attached - as material a reviewer may want to see,
@@ -94,6 +94,10 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
           - questions whose answer would not change a requirement, design, implementation or acceptance;
           - questions that restate a requirement, or ask for information the text already gives;
           - two questions about the same issue (even worded differently), or several questions in one.
+            Options the text lists for one open decision ("Option 1: ... Option 2: ...") are ONE
+            question about that decision, whichever option it names.
+        An open note in the text ("Consider how ...", "Unsure how this will be done", "TBD", "to discuss")
+        is the gap itself, never an answer to it.
         An empty missingInformation list is the correct answer when nothing material is unresolved.
         Never invent a confirmed detail (a number, a rule, a permission) that was not stated, and never
         build a question on an assumption the text does not support.
@@ -107,7 +111,10 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
           "evidence" - one to four passages copied word for word from the text that show the issue,
                        each at least four words and without ellipses, the primary passage first. A
                        contradiction or an unresolved interaction must quote EVERY passage involved,
-                       each passage's condition included.
+                       each passage's condition included. Each passage must on its own show a reader
+                       why THIS question is asked: never quote a passage only because it mentions the
+                       same system, actor or word, and never reuse another question's passage unless
+                       it independently supports this one.
 
         When a reason refers to a place in the requirement text, list it in that item's
         sourceRefs: "label" is the exact words of the reason that refer to it (e.g. "Section 3.2"),
@@ -284,7 +291,8 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
                 }
 
                 if (reasons.Any(r => r.Code is "duplicate" or "already-answered")) skipped++;
-                rejected.Add(new RejectedClarification(verdict.Candidate.Topic, verdict.Candidate.Question, verdict.Kind, reasons));
+                rejected.Add(new RejectedClarification(verdict.Candidate.Topic, verdict.Candidate.Question, verdict.Kind, reasons,
+                    ClarificationOutcomes.Of(reasons)));
             }
 
             var codes = await ArtifactCodeGenerator.ReserveCodesAsync(
@@ -347,6 +355,11 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
             }
 
             var created = questionArtifacts.Select(a => a.Id).ToList();
+            var held = ClarificationCandidateValidator.HeldForReview(context, verdicts);
+            var heldQuestions = held.Select(h => h.Question).ToHashSet(StringComparer.Ordinal);
+            rejected = rejected
+                .Select(r => heldQuestions.Contains(r.Question.Trim()) ? r with { Outcome = ClarificationOutcomes.NeedsReview } : r)
+                .ToList();
             record = new RequirementAnalysisRecord
             {
                 AnalysisVersion = RequirementAnalysisRecords.AnalysisVersion,
@@ -366,7 +379,7 @@ public class RequirementAnalysisService : IRequirementAnalysisService, IChunkRun
                 AcceptedQuestionIds = created,
                 Rejected = rejected,
                 SkippedDuplicates = skipped,
-                HeldForReview = ClarificationCandidateValidator.HeldForReview(context, verdicts) is { Count: > 0 } held ? held : null
+                HeldForReview = held.Count > 0 ? held : null
             };
 
             GenerationSupport.AddExecutions(

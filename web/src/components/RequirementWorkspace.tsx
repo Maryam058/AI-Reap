@@ -32,6 +32,8 @@ import { nextStamp, type DisclosureRequest } from '../lib/disclosure';
 import { apiResourceOf, byField, groupByRequirement, groupByValue, plural, statusSummary, type ArtifactGroup } from '../lib/grouping';
 import { decisionRequest } from '../lib/artifactDecision';
 import { ClarificationQuestionCard } from './ClarificationQuestionCard';
+import { HeldForReviewSection } from './HeldForReviewSection';
+import { heldForReviewItems } from '../lib/heldForReview';
 import { ArtifactCard } from './ArtifactCard';
 import { CollectionGroup, CollectionGroups, CollectionSection, GeneratedOverview, type OverviewItem } from './GeneratedCollection';
 import { EmptyState } from './ui/EmptyState';
@@ -839,6 +841,10 @@ export function RequirementWorkspace({
 
           {view === 'validation' && questions.length > 0 && (
             <ClarificationSection questions={questions} openCount={openQuestionCount} canAnswer={canWrite} onAnswer={onAnswer} />
+          )}
+
+          {view === 'validation' && analysis && showRawInput && selectedId && (
+            <HeldForReviewSection items={heldForReviewItems(analysis, selectedId)} />
           )}
 
           {view === 'analysis' && (

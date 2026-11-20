@@ -148,6 +148,16 @@ export function sourceFormatNote(fileName: string | null | undefined): string {
 // Whether an evidence passage can be opened and highlighted: it was placed in the source by the server.
 export const isLocatedEvidence = (reference: unknown): reference is SourceReference => isUsable(reference);
 
+// How a question's kind reads to a person (ClarificationQuestionCard, HeldForReviewSection).
+const KIND_LABELS: Record<string, string> = {
+  missing: 'Missing information',
+  ambiguous: 'Ambiguity',
+  contradiction: 'Contradiction',
+  'undefined-rule': 'Undefined rule',
+};
+
+export const clarificationKindLabel = (kind: string): string => KIND_LABELS[kind] ?? kind;
+
 // What the viewer calls the highlighted passage, by the same rule.
 export function evidencePurpose(kind: string | null | undefined): string {
   switch (kind) {
@@ -320,4 +330,73 @@ export function findMatches(segments: readonly string[], query: string, joiner: 
     matches.push({ start: from[at], end: { segment: last.segment, offset: last.offset + 1 } });
   }
   return matches;
+}
+
+// ---- what the viewer marks in yellow (SourceDocumentViewer, OriginalDocumentViews) -------------------
+
+// The exact text a passage is highlighted by, the same in the PDF, the Word document and the extracted
+// text: a quote's own words, or - for a section reference - its heading. The rest of the cited range
+// gets only a location bar, so a paragraph or page is never painted for a passage inside it. Null when
+// the passage was not located: nothing is then highlighted rather than a guess.
+export interface HighlightTarget {
+  kind: 'quote' | 'heading';
+  line: number; // the extracted line the text starts on
+  endLine: number; // exclusive: the text lies within lines [line, endLine)
+  text: string;
+}
+
+export function highlightTarget(lines: readonly string[], reference: SourceReference, location: ReferenceLocation): HighlightTarget | null {
+  if (location.status !== 'located') return null;
+  if (reference.excerptIsQuote) {
+    const quote = reference.excerpt?.trim();
+    return quote ? { kind: 'quote', line: location.line, endLine: Math.max(location.endLine, location.line + 1), text: quote } : null;
+  }
+  const at = location.headingLine;
+  const heading = at === null ? '' : (lines[at] ?? '').trim();
+  return at !== null && heading ? { kind: 'heading', line: at, endLine: at + 1, text: heading } : null;
+}
+
+export interface RelatedPassage {
+  reference: SourceReference;
+  location: ReferenceLocation & { status: 'located' };
+  target: HighlightTarget;
+}
+
+// The question's other passages to mark, more lightly, beside the one shown: only those in this same
+// source (a passage of another document is never searched for here, where its heading or words could
+// match something unrelated), only those located in it, and not the shown passage again.
+export function relatedPassages(
+  lines: readonly string[],
+  shown: SourceReference,
+  others: readonly SourceReference[],
+): RelatedPassage[] {
+  const key = (t: HighlightTarget) => `${t.line}\u0000${normalize(t.text)}`;
+  const shownTarget = highlightTarget(lines, shown, locateReference(lines, shown));
+  const seen = new Set(shownTarget ? [key(shownTarget)] : []);
+  const related: RelatedPassage[] = [];
+  for (const reference of others) {
+    if (reference === shown || reference.sourceId !== shown.sourceId) continue;
+    const location = locateReference(lines, reference);
+    if (location.status !== 'located') continue;
+    const target = highlightTarget(lines, reference, location);
+    if (!target || seen.has(key(target))) continue;
+    seen.add(key(target));
+    related.push({ reference, location, target });
+  }
+  return related;
+}
+
+// Where a target's text falls on the extracted lines: for each line it touches, the [start, end) to
+// mark. A quote may run over several lines. Empty when the text is not there.
+export function lineHighlights(lines: readonly string[], target: HighlightTarget): Map<number, [number, number]> {
+  const spans = new Map<number, [number, number]>();
+  const segments = lines.slice(target.line, target.endLine);
+  const [match] = findMatches(segments, target.text, ' ');
+  if (!match) return spans;
+  for (let s = match.start.segment; s <= match.end.segment; s++) {
+    const from = s === match.start.segment ? match.start.offset : 0;
+    const to = s === match.end.segment ? match.end.offset : segments[s].length;
+    if (to > from) spans.set(target.line + s, [from, to]);
+  }
+  return spans;
 }

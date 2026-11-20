@@ -32,8 +32,14 @@ public sealed class ClarificationEvidenceLocator
         _evidence = evidence;
         _sourceText = sourceText ?? string.Empty;
         _normalized = new Lazy<string>(() => SourceEvidence.Normalize(_sourceText));
+        _common = new Lazy<HashSet<string>>(() => EvidenceSupport.CommonTerms(_sourceText));
         _sourceLength = _sourceText.Length;
     }
+
+    private readonly Lazy<HashSet<string>> _common;
+
+    // The terms the source uses throughout (EvidenceSupport), computed once, only when asked for.
+    public IReadOnlySet<string> CommonTerms => _common.Value;
 
     // For reading saved questions: the word index of the source is built only if a quote has to be
     // placed, so a read where every stored passage still holds costs no more than resolving its links.

@@ -34,6 +34,7 @@ public sealed record HeldClarification(
 
 // Outcome for one candidate: Accepted with its located evidence, or the reasons it was rejected.
 // Assessment: what each check found, for traceability (never a substitute for the checks).
+// DuplicateOfRun: the index of the verdict (in the same Validate run) it duplicates, if any.
 public sealed record CandidateVerdict(
     ClarificationCandidate Candidate,
     string? Kind,
@@ -41,9 +42,40 @@ public sealed record CandidateVerdict(
     IReadOnlyList<string> RequirementRefs,
     IReadOnlyList<CandidateRejection> Rejections,
     RuleRelation? Relation = null,
-    IReadOnlyList<QualityCheck>? Assessment = null)
+    IReadOnlyList<QualityCheck>? Assessment = null,
+    int? DuplicateOfRun = null)
 {
     public bool Accepted => Rejections.Count == 0;
+
+    // The candidate's validation result (ClarificationOutcomes); "needs-review" is set by the caller for
+    // a candidate it holds for review (ClarificationCandidateValidator.HeldForReview).
+    public string Outcome => ClarificationOutcomes.Of(Rejections);
+}
+
+// The validation result of a candidate question, in the terms a reviewer uses:
+//   valid             a genuine clarification need with evidence about it - the only result that is
+//                     saved as an Open question;
+//   duplicate         the same decision is already asked (in this run or before);
+//   already-answered  the source, or an earlier answer, already gives the information;
+//   unsupported       no verified passage of the source is about it, or what it rests on is not a
+//                     genuine gap (rules that coexist, a generic or malformed question);
+//   needs-review      held for a reviewer (HeldForReview): it may point at a genuine gap that could not
+//                     be asked neutrally as written. Never shown as a confirmed question.
+public static class ClarificationOutcomes
+{
+    public const string Valid = "valid";
+    public const string Duplicate = "duplicate";
+    public const string AlreadyAnswered = "already-answered";
+    public const string Unsupported = "unsupported";
+    public const string NeedsReview = "needs-review";
+
+    public static string Of(IReadOnlyList<CandidateRejection> rejections)
+    {
+        if (rejections.Count == 0) return Valid;
+        if (rejections.Any(r => r.Code is "answered-in-source" or "resolved-in-source" or "already-answered")) return AlreadyAnswered;
+        if (rejections.Any(r => r.Code == "duplicate")) return Duplicate;
+        return Unsupported;
+    }
 }
 
 // Deterministic acceptance of AI-proposed clarification questions (no AI call, no I/O). The model that
@@ -153,7 +185,7 @@ public sealed record CandidateVerdict(
 // questions are only compared against, never changed.
 public static partial class ClarificationCandidateValidator
 {
-    public const string Version = "CqValidation-v4";
+    public const string Version = "CqValidation-v5";
 
     public const double DuplicateSimilarity = 0.6;
     public const double TopicDuplicateSimilarity = 0.4;
@@ -183,6 +215,8 @@ public static partial class ClarificationCandidateValidator
             _frequency = new Lazy<Dictionary<string, int>>(() => Sentences.Where(s => !s.Heading)
                 .SelectMany(s => s.Terms).GroupBy(t => t, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal));
             NormalizedSource = SourceEvidence.Normalize(SourceText);
+            _common = new Lazy<HashSet<string>>(() => EvidenceSupport.CommonTerms(Sentences.Where(s => !s.Heading).Select(s => s.Terms).ToList()));
+            _decisions = new Lazy<List<DecisionBlock>>(() => DecisionBlocks(Lines));
             foreach (var e in existing)
             {
                 var kind = NormalizeKind(e.Kind);
@@ -230,6 +264,17 @@ public static partial class ClarificationCandidateValidator
         // general subject ("referral", "Careway").
         internal bool Specific(string term) => Frequency(term) <= Math.Max(2, Sentences.Count / 20);
 
+        // The terms the document uses throughout (EvidenceSupport): sharing only these with a passage
+        // does not make it evidence for a question.
+        private readonly Lazy<HashSet<string>> _common;
+
+        public IReadOnlySet<string> CommonTerms => _common.Value;
+
+        // Places where the source lists options for one open decision (DecisionBlocks).
+        private readonly Lazy<List<DecisionBlock>> _decisions;
+
+        internal IReadOnlyList<DecisionBlock> Decisions => _decisions.Value;
+
         public string SourceText { get; }
         public SourceReferenceIndex References { get; }
         public SourceEvidenceIndex Evidence { get; }
@@ -244,14 +289,32 @@ public static partial class ClarificationCandidateValidator
 
         internal IEnumerable<Known> KnownQuestions => _known;
 
-        internal void Remember(ClarificationCandidate candidate, string? kind, IEnumerable<SourceReferencePayload> evidence)
+        // How many candidates this context has validated (Validate): the next run index.
+        internal int RunCounter { get; set; }
+
+        internal void Remember(ClarificationCandidate candidate, string? kind, IEnumerable<SourceReferencePayload> evidence, int runIndex = -1)
         {
             var lines = LinesOf(evidence);
             var context = TermsOf(candidate.Question);
             context.UnionWith(TermsOf(candidate.Topic));
             _known.Add(new Known(AiResultMerge.Key(candidate.Question), TermsOf(candidate.Question), TopicKey(candidate.Topic),
                 lines, kind, null, "Accepted in this run", context, null, SectionsOfLines(lines), QuestionFocus(candidate.Question), false, Runs(lines),
-                candidate.Question));
+                candidate.Question, runIndex));
+        }
+
+        // A question accepted in this run took over a duplicate's passages: later candidates are compared
+        // with all of them.
+        internal void Extend(int runIndex, IEnumerable<SourceReferencePayload> evidence)
+        {
+            var i = _known.FindIndex(k => k.RunIndex == runIndex);
+            if (i < 0)
+            {
+                return;
+            }
+
+            var lines = new HashSet<int>(_known[i].Lines);
+            lines.UnionWith(LinesOf(evidence));
+            _known[i] = _known[i] with { Lines = lines, Places = SectionsOfLines(lines), Passages = Runs(lines) };
         }
 
         // The innermost sections (table of contents left out) the lines sit in.
@@ -266,11 +329,93 @@ public static partial class ClarificationCandidateValidator
     // its question and topic; AnsweredTerms: those and its answer, when it is closed with one; Places: the
     // sections it is located in (empty when not known); Legacy: saved before v3, without kind or evidence;
     // Passages: its evidence lines as separate passages (runs of consecutive lines); Question: as written,
-    // for the condition comparison (QuestionConditions).
+    // for the condition comparison (QuestionConditions); RunIndex: its verdict's index when it was
+    // accepted in this run, else -1.
     internal sealed record Known(
         string Key, HashSet<string> Terms, string? TopicKey, HashSet<int> Lines, string? Kind, string? Code, string Status,
         HashSet<string> ContextTerms, HashSet<string>? AnsweredTerms, IReadOnlyList<SourceSection> Places,
-        IReadOnlySet<string> Focus, bool Legacy, IReadOnlyList<HashSet<int>> Passages, string Question);
+        IReadOnlySet<string> Focus, bool Legacy, IReadOnlyList<HashSet<int>> Passages, string Question, int RunIndex = -1);
+
+    // Where the source lists options for one open decision: the line that raises it (when it reads as
+    // one - "need consideration as to how ...", "Unsure how this will be done"), each "Option 1:",
+    // "Option 2:" (or Alternative / Approach) line and the lines that continue the last option, up to a
+    // new point ("Consider how ...", "Note: ...", a numbered step that starts another consideration) or
+    // the end of the section. Start inclusive, End exclusive, 0-based lines.
+    internal sealed record DecisionBlock(int Start, int End)
+    {
+        public bool Contains(int line) => line >= Start && line < End;
+    }
+
+    internal const int MaxOptionContinuation = 20;
+
+    internal static List<DecisionBlock> DecisionBlocks(string[] lines)
+    {
+        var blocks = new List<DecisionBlock>();
+        var i = 0;
+        while (i < lines.Length)
+        {
+            if (!OptionLine().IsMatch(lines[i]))
+            {
+                i++;
+                continue;
+            }
+
+            var first = i;
+            var last = i;
+            var end = i + 1;
+            for (var k = i + 1; k < lines.Length && k - last <= MaxOptionContinuation; k++)
+            {
+                var line = lines[k].Trim();
+                if (OptionLine().IsMatch(line))
+                {
+                    last = k;
+                    end = k + 1;
+                    continue;
+                }
+
+                if (NewPoint().IsMatch(line) || SourceChunker.IsSectionHeading(line) && !line.EndsWith(':') && line.Length > 0 && !TemplateLine().IsMatch(line))
+                {
+                    break;
+                }
+
+                end = k + 1;
+            }
+
+            if (last > first)
+            {
+                var start = first;
+                var previous = first - 1;
+                while (previous >= 0 && lines[previous].Trim().Length == 0) previous--;
+                if (previous >= 0 && DecisionIntro().IsMatch(lines[previous]))
+                {
+                    start = previous;
+                }
+
+                while (end > last + 1 && lines[end - 1].Trim().Length == 0) end--;
+                blocks.Add(new DecisionBlock(start, end));
+            }
+
+            i = Math.Max(end, i + 1);
+        }
+
+        return blocks;
+    }
+
+    // "i)\tOption 1: ...", "Option B -", "Alternative 2.", "Approach A:".
+    [GeneratedRegex(@"^\s*(?:[\(\[]?(?:\d{1,3}|[a-z]|[ivx]{1,4})[\.\)\]]\s*)?(?i:option|alternative|approach)\s+(?:\d{1,2}|[a-zA-Z])\b\s*[:.\-\u2013\u2014)]")]
+    private static partial Regex OptionLine();
+
+    // A line that starts another point after a list of options.
+    [GeneratedRegex(@"^\s*(?:[\(\[]?(?:\d{1,3}|[a-z]|[ivx]{1,4})[\.\)\]]\s*)?(?i:consider\b|consideration\b|note\b|nb\b|special case\b|process flow\b|business rules?\b)")]
+    private static partial Regex NewPoint();
+
+    // A placeholder line of a template or example inside an option ("#Date#", "Cc: ...", "e.g.").
+    [GeneratedRegex(@"^\s*(?:#[^#]+#|(?i:cc|re|e\.g\.|dear)\b)")]
+    private static partial Regex TemplateLine();
+
+    // The line before a list of options that raises the decision.
+    [GeneratedRegex(@"(?i:\bconsider\w*|\bdecide\b|\bdecision\b|\bhow\b|\bwhether\b|\boptions?\b|\bunsure\b|\bundecided\b|\?)")]
+    private static partial Regex DecisionIntro();
 
     // Lines grouped into passages: each run of consecutive line numbers is one.
     internal static List<HashSet<int>> Runs(IEnumerable<int> lines)
@@ -291,22 +436,79 @@ public static partial class ClarificationCandidateValidator
         return runs;
     }
 
-    // Validates candidates in order; an accepted one counts for the duplicate check of later ones.
+    // Validates candidates in order; an accepted one counts for the duplicate check of later ones. A
+    // candidate rejected only as a duplicate of one accepted earlier in the run hands that question its
+    // own passages that support it too (EvidenceSupport), up to MaxEvidenceQuotes, so the question kept
+    // shows all the evidence for the decision; nothing else of the duplicate is kept.
     public static List<CandidateVerdict> Validate(Context context, IEnumerable<ClarificationCandidate> candidates)
     {
+        // Run indexes are unique per context, so a context validated more than once never mixes runs.
+        var start = context.RunCounter;
         var verdicts = new List<CandidateVerdict>();
         foreach (var candidate in candidates)
         {
             var verdict = ValidateOne(context, candidate);
             if (verdict.Accepted)
             {
-                context.Remember(candidate, verdict.Kind, verdict.Evidence);
+                context.Remember(candidate, verdict.Kind, verdict.Evidence, start + verdicts.Count);
+            }
+            else if (verdict.DuplicateOfRun is int run && run >= start && run - start < verdicts.Count
+                     && verdict.Rejections.All(r => r.Code == "duplicate")
+                     && MergeInto(context, run, verdicts[run - start], verdict) is { } merged)
+            {
+                verdicts[run - start] = merged.Kept;
+                verdict = verdict with { Rejections = merged.Rejections };
             }
 
             verdicts.Add(verdict);
+            context.RunCounter = start + verdicts.Count;
         }
 
         return verdicts;
+    }
+
+    // The kept question with the duplicate's supporting passages added, and the duplicate's rejection
+    // saying so; null when none of its passages adds anything (or the kept one is a contradiction, whose
+    // evidence is exactly its two conflicting statements).
+    private static (CandidateVerdict Kept, IReadOnlyList<CandidateRejection> Rejections)? MergeInto(
+        Context context, int keptIndex, CandidateVerdict kept, CandidateVerdict duplicate)
+    {
+        if (kept.Kind == "contradiction")
+        {
+            return null;
+        }
+
+        var keptTerms = context.TermsOf(kept.Candidate.Question);
+        var lines = LinesOf(kept.Evidence);
+        var added = new List<SourceReferencePayload>();
+        foreach (var e in duplicate.Evidence.Where(e => e.Line >= 0))
+        {
+            if (kept.Evidence.Count + added.Count >= MaxEvidenceQuotes)
+            {
+                break;
+            }
+
+            var passage = Enumerable.Range(e.Line, Math.Max(e.EndLine - e.Line, 1));
+            if (!passage.Any(lines.Contains) && EvidenceSupport.Assess(keptTerms, context.TermsOf(e.Excerpt), context.CommonTerms).Supports)
+            {
+                added.Add(e);
+                lines.UnionWith(passage);
+            }
+        }
+
+        if (added.Count == 0)
+        {
+            return null;
+        }
+
+        var evidence = kept.Evidence.Concat(added).ToList();
+        context.Extend(keptIndex, added);
+        var rejections = duplicate.Rejections
+            .Select(r => r.Code == "duplicate"
+                ? r with { Message = $"{r.Message} Its {added.Count} supporting passage(s) ({string.Join(", ", added.Select(a => $"line {a.Line + 1}"))}) were added to that question." }
+                : r)
+            .ToList();
+        return (kept with { Evidence = evidence, RequirementRefs = RequirementRefsOf(evidence) }, rejections);
     }
 
     public static CandidateVerdict ValidateOne(Context context, ClarificationCandidate candidate)
@@ -347,6 +549,35 @@ public static partial class ClarificationCandidateValidator
         }
 
         var (evidence, ambiguous) = LocateEvidence(context, candidate);
+        var questionTerms = context.TermsOf(question);
+
+        // Each passage must itself be about the question (EvidenceSupport); one that shares only the
+        // document's general vocabulary is not attached. When none is, the question has no evidence.
+        var (supporting, unsupported) = SplitBySupport(context, questionTerms, evidence, kind);
+        var irrelevant = evidence.Count > 0 && supporting.Count == 0 && Relevant(questionTerms, evidence, question);
+        if (supporting.Count > 0)
+        {
+            evidence = supporting;
+        }
+
+        if (irrelevant)
+        {
+            var words = evidence.SelectMany(e => EvidenceSupport.Assess(questionTerms, context.TermsOf(e.Excerpt), context.CommonTerms).Shared)
+                .Distinct().Take(4).ToList();
+            rejections.Add(new("irrelevant-evidence",
+                $"None of the cited passages is about what the question asks: they share only words the document uses throughout ({string.Join(", ", words)})."));
+        }
+
+        // A question that names what it is about in words the long document uses only in a few places
+        // ("ARTP", "logged in", "administrator") must cite at least one passage that says them; one that
+        // cites only passages about something else - a referral letter for a question about the ARTP -
+        // took its evidence from the wrong place.
+        if (!irrelevant && supporting.Count > 0 && MissedSubject(context, question, questionTerms, evidence) is { } missed)
+        {
+            rejections.Add(new("evidence-misses-subject",
+                $"The question is about {string.Join(", ", missed.Select(m => $"\"{m}\""))}, which the source writes elsewhere, but none of its passages mentions them."));
+        }
+
         if (evidence.Count == 0 && ambiguous > 0)
         {
             rejections.Add(new("ambiguous-location",
@@ -364,8 +595,7 @@ public static partial class ClarificationCandidateValidator
                 "A contradiction must quote both conflicting statements, found at different places in the source."));
         }
 
-        var questionTerms = context.TermsOf(question);
-        if (evidence.Count > 0 && !Relevant(questionTerms, evidence, question))
+        if (evidence.Count > 0 && !irrelevant && !Relevant(questionTerms, evidence, question))
         {
             rejections.Add(new("unrelated", "The question shares no content with the evidence it cites."));
         }
@@ -393,17 +623,79 @@ public static partial class ClarificationCandidateValidator
                 $"The source already states this at {found.Location}: \"{Shorten(found.Text)}\"", Location: found.Location));
         }
 
+        int? duplicateRun = null;
         if (question.Length > 0 && DuplicateOf(context, candidate, kind, questionTerms, evidence) is { } duplicate)
         {
             var closed = ClosedStatuses.Contains(duplicate.Status);
-            var name = duplicate.Code ?? "a question accepted earlier in this run";
+            var name = duplicate.Code ?? $"a question accepted earlier in this run (\"{Shorten(duplicate.Question)}\")";
             rejections.Add(closed
                 ? new("already-answered", $"Already asked and {duplicate.Status.ToLowerInvariant()} as {name}.", duplicate.Code)
                 : new("duplicate", $"Duplicate of {name}.", duplicate.Code));
+            duplicateRun = duplicate.RunIndex >= 0 ? duplicate.RunIndex : null;
         }
 
         return new CandidateVerdict(candidate, kind, evidence, RequirementRefsOf(evidence), rejections, relation,
-            Assess(context, candidate, kind, evidence, relation, rejections));
+            Assess(context, candidate, kind, evidence, relation, rejections, unsupported), duplicateRun);
+    }
+
+    // A term used in at most this many sentences of a long document names something particular in it.
+    internal const int RareFrequency = 5;
+
+    // The question's rare terms (see the evidence-misses-subject check) when it has at least two, the
+    // document is long (EvidenceSupport.MinSentences) and no passage (nor its section heading) holds any
+    // of them; else null. Each is shown as the question writes it.
+    private static List<string>? MissedSubject(Context context, string question, HashSet<string> questionTerms, IReadOnlyList<SourceReferencePayload> evidence)
+    {
+        if (context.Sentences.Count(s => !s.Heading) < EvidenceSupport.MinSentences)
+        {
+            return null;
+        }
+
+        var rare = questionTerms.Where(t => !t.Any(char.IsDigit) && context.Frequency(t) is >= 1 and <= RareFrequency).ToList();
+        if (rare.Count < 2)
+        {
+            return null;
+        }
+
+        var cited = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var e in evidence)
+        {
+            // The whole lines the passage is on: a quote may be part of a sentence whose other words say
+            // what the question is about.
+            cited.UnionWith(context.TermsOf(e.Line >= 0 ? PassageText(context, e) : e.Excerpt));
+            cited.UnionWith(context.TermsOf(e.Heading?.TrimStart('#', ' ')));
+        }
+
+        return rare.Any(cited.Contains) ? null : rare
+            .Select(t => Word().Matches(question).Select(m => m.Value).FirstOrDefault(w => context.TermsOf(w).Contains(t)) ?? t).ToList();
+    }
+
+    // The located passages that support the question (EvidenceSupport) and those that do not. For a
+    // question that sets passages against each other (a contradiction, or an ambiguity between passages)
+    // a passage is also kept when it is the other rule: it shares a term that is not common with a
+    // passage that supports the question ("cancel up to 24 hours ..." / "can be cancelled up to 48
+    // hours ..." for "Which window governs late withdrawals of leave?"). Whether the rules really
+    // relate is then the cross-reference check's to decide.
+    private static (List<SourceReferencePayload> Supporting, List<SourceReferencePayload> Unsupported) SplitBySupport(
+        Context context, HashSet<string> questionTerms, IReadOnlyList<SourceReferencePayload> evidence, string? kind)
+    {
+        var supporting = new List<SourceReferencePayload>();
+        var unsupported = new List<SourceReferencePayload>();
+        foreach (var e in evidence)
+        {
+            (EvidenceSupport.Assess(questionTerms, context.TermsOf(e.Excerpt), context.CommonTerms).Supports ? supporting : unsupported).Add(e);
+        }
+
+        if (kind is "contradiction" or "ambiguous" && supporting.Count > 0 && unsupported.Count > 0)
+        {
+            var anchor = supporting.SelectMany(e => context.TermsOf(e.Excerpt)).Where(t => !context.CommonTerms.Contains(t) && !t.Any(char.IsDigit))
+                .ToHashSet(StringComparer.Ordinal);
+            var counterparts = unsupported.Where(e => context.TermsOf(e.Excerpt).Overlaps(anchor)).ToList();
+            supporting = evidence.Where(e => supporting.Contains(e) || counterparts.Contains(e)).ToList();
+            unsupported = unsupported.Except(counterparts).ToList();
+        }
+
+        return (supporting, unsupported);
     }
 
     // ---- quality assessment ----------------------------------------------------------------------
@@ -412,7 +704,7 @@ public static partial class ClarificationCandidateValidator
     // score: a candidate is accepted only when none of them failed, whatever this says.
     private static List<QualityCheck> Assess(
         Context context, ClarificationCandidate candidate, string? kind, IReadOnlyList<SourceReferencePayload> evidence,
-        RuleRelation? relation, List<CandidateRejection> rejections)
+        RuleRelation? relation, List<CandidateRejection> rejections, IReadOnlyList<SourceReferencePayload>? unsupported = null)
     {
         string[] Failed(params string[] codes) => rejections.Where(r => codes.Contains(r.Code)).Select(r => $"{r.Code}: {r.Message}").ToArray();
         QualityCheck Check(string criterion, string passed, params string[] codes)
@@ -422,12 +714,14 @@ public static partial class ClarificationCandidateValidator
         }
 
         var located = evidence.Where(e => e.Line >= 0).Select(e => $"line {e.Line + 1}").Distinct().ToList();
+        var dropped = (unsupported ?? []).Where(e => e.Line >= 0).Select(e => $"line {e.Line + 1}").Distinct().ToList();
         var checks = new List<QualityCheck>
         {
             Check("question-form", "One specific question of a known kind, with a reason and an impact.",
                 "missing-fields", "not-a-question", "multiple-questions", "invalid-kind", "generic", "unrelated"),
-            Check("source-evidence", $"{located.Count} passage(s) found verbatim in the source ({string.Join(", ", located)}).",
-                "no-evidence", "ambiguous-location", "contradiction-needs-both-statements"),
+            Check("source-evidence", $"{located.Count} passage(s) found verbatim in the source ({string.Join(", ", located)}), each about what the question asks" +
+                    (dropped.Count > 0 ? $"; not attached, as they share only the document's general vocabulary with the question: {string.Join(", ", dropped)}." : "."),
+                "no-evidence", "ambiguous-location", "contradiction-needs-both-statements", "irrelevant-evidence"),
             Check("business-impact", "The impact on requirements, design, implementation or acceptance is stated.", "missing-fields"),
             kind == "contradiction"
                 ? new QualityCheck("information-gap", "not-applicable", "A contradiction is checked by cross-referencing its passages, not by searching for an answer.")
@@ -501,6 +795,12 @@ public static partial class ClarificationCandidateValidator
         var held = new List<HeldClarification>();
         foreach (var verdict in verdicts)
         {
+            if (HeldConflict(context, verdict, held) is { } conflict)
+            {
+                held.Add(conflict);
+                continue;
+            }
+
             if (verdict.Rejections.Count == 0 || verdict.Rejections.Any(r => r.Code != "unsupported-assumption"))
             {
                 continue;
@@ -524,6 +824,45 @@ public static partial class ClarificationCandidateValidator
         }
 
         return held;
+    }
+
+    // A contradiction whose passages genuinely clash - the cross-reference found a conflict, no condition
+    // that keeps the rules apart, no passage settling them, not the same rule, not different subjects -
+    // but which was rejected only for how it is asked (one-sided, or assuming one rule wins), is held
+    // rather than lost when no other question already sets the same two passages against each other.
+    // DenialLine/DenialText: the second conflicting passage.
+    private static HeldClarification? HeldConflict(Context context, CandidateVerdict verdict, List<HeldClarification> held)
+    {
+        if (verdict.Kind != "contradiction" || verdict.Relation is not { } relation || verdict.Rejections.Count == 0
+            || verdict.Rejections.Any(r => r.Code is not ("one-sided" or "unsupported-assumption"))
+            || relation.Conflict is null || relation.ExclusiveConditions is not null || relation.Resolution is not null
+            || relation.SameRule is not null || relation.DifferentSubjects is not null || relation.SharedSubject.Count == 0)
+        {
+            return null;
+        }
+
+        var located = verdict.Evidence.Where(e => e.Line >= 0).ToList();
+        var first = located.FirstOrDefault();
+        var second = located.FirstOrDefault(e => first is not null && !(e.Line < first.EndLine && first.Line < e.EndLine));
+        if (first is null || second is null)
+        {
+            return null;
+        }
+
+        bool Cites(HashSet<int> lines, SourceReferencePayload e) => Enumerable.Range(e.Line, Math.Max(e.EndLine - e.Line, 1)).Any(lines.Contains);
+        if (context.KnownQuestions.Any(k => Cites(k.Lines, first) && Cites(k.Lines, second))
+            || held.Any(h => h.DenialLine == second.Line && LinesOf(h.Evidence).Contains(first.Line)))
+        {
+            return null;
+        }
+
+        var section = context.SectionsOfLines([second.Line]).FirstOrDefault();
+        var location = section is not null ? $"{section.HeadingLine.TrimStart('#', ' ')} (line {second.Line + 1})" : $"line {second.Line + 1}";
+        return new HeldClarification(
+            verdict.Candidate.Topic, verdict.Candidate.Question.Trim(), verdict.Kind, verdict.Evidence, second.Line, second.Excerpt ?? string.Empty, location,
+            $"The passages at line {first.Line + 1} and {location} genuinely conflict ({relation.Conflict}), and nothing in the source " +
+            "settles it, but the question as written is not neutral (it concerns one passage or assumes which rule applies). " +
+            "A reviewer should ask it neutrally, presenting both passages.");
     }
 
     // ---- cross-reference -------------------------------------------------------------------------
@@ -943,7 +1282,7 @@ public static partial class ClarificationCandidateValidator
 
     // ---- duplicates ------------------------------------------------------------------------------
 
-    private static (string? Code, string Status)? DuplicateOf(
+    private static Known? DuplicateOf(
         Context context, ClarificationCandidate candidate, string? kind, HashSet<string> terms, IReadOnlyList<SourceReferencePayload> evidence)
     {
         var key = AiResultMerge.Key(candidate.Question);
@@ -956,7 +1295,7 @@ public static partial class ClarificationCandidateValidator
         {
             if (key.Length > 0 && key == known.Key)
             {
-                return (known.Code, known.Status);
+                return known;
             }
 
             // "Who approves ...?" and "When is ... approved?" share their words but not their question.
@@ -975,11 +1314,20 @@ public static partial class ClarificationCandidateValidator
                 continue;
             }
 
+            // Both rest on the options the source lists for one open decision ("How should the IDT
+            // physiotherapist be assigned?" / "Should a second referral letter or the Cc field be used?"):
+            // whichever option is asked about, the stakeholder makes one decision.
+            if (lines.Count > 0 && known.Lines.Count > 0
+                && context.Decisions.Any(d => lines.Any(d.Contains) && known.Lines.Any(d.Contains)))
+            {
+                return known;
+            }
+
             // The same two (or more) passages set against each other: one issue, however it is worded.
             if (passages.Count >= 2 && known.Passages.Count >= 2
                 && passages.All(p => p.Overlaps(known.Lines)) && known.Passages.All(p => p.Overlaps(lines)))
             {
-                return (known.Code, known.Status);
+                return known;
             }
 
             // Each qualifies what it asks about differently ("for contractors" / "for employees").
@@ -1002,7 +1350,7 @@ public static partial class ClarificationCandidateValidator
                 || (known.Legacy && Covers(known.ContextTerms, terms) && !(places.Count > 0 && known.Places.Count > 0 && !SamePlace(places, known.Places)))
                 || (known.AnsweredTerms is not null && similarity >= SameEvidenceSimilarity && Covers(known.AnsweredTerms, terms)))
             {
-                return (known.Code, known.Status);
+                return known;
             }
         }
 
@@ -1160,6 +1508,8 @@ public static partial class ClarificationCandidateValidator
 
     // ---- terms -----------------------------------------------------------------------------------
 
+    // "document" is a content word ("document type", "documents are sent via the API"), read the same as
+    // "documents" and "documentation"; "apply" only links a question to its subject ("which rule applies").
     private static readonly HashSet<string> StopWords = new(StringComparer.Ordinal)
     {
         "a", "an", "the", "and", "or", "but", "if", "of", "to", "in", "on", "at", "by", "for", "with", "from", "as", "into",
@@ -1169,7 +1519,8 @@ public static partial class ClarificationCandidateValidator
         "such", "other", "own", "same", "so", "too", "very", "also", "only", "just", "what", "which", "who", "whom", "whose",
         "when", "where", "why", "how", "whether", "exactly", "specific", "specifically", "clarify", "clarification", "please",
         "define", "defined", "definition", "mean", "means", "meant", "system", "requirement", "requirements", "section",
-        "document", "srs", "specification", "stated", "state", "states", "say", "says", "said", "expected", "expect", "need",
+        "srs", "specification", "stated", "state", "states", "say", "says", "said", "expected", "expect", "need",
+        "apply", "applies", "applied", "applying",
         "needs", "needed", "required", "require", "use", "used", "using", "via", "per", "up", "out", "over", "under", "within",
         "between", "after", "before", "more", "most", "less", "least", "one", "two", "both", "either", "neither", "our", "we",
         "you", "your", "he", "she", "his", "her", "i", "me", "my", "many", "much", "often"
@@ -1294,8 +1645,11 @@ public static partial class ClarificationCandidateValidator
     [GeneratedRegex(@"(?<=[.;!?])\s+")]
     private static partial Regex SentenceBreak();
 
-    // A sentence that itself leaves the point open answers nothing.
-    [GeneratedRegex(@"\b(?i:tbd|tbc|to be (?:decided|determined|confirmed|defined|agreed)|as required|as appropriate|as needed|as necessary|where applicable|if applicable|etc|and so on|unclear|not yet (?:decided|defined|known))\b")]
+    // A sentence that itself leaves the point open answers nothing - including an open consideration
+    // written as a note ("Consider how to send ARTP ...", "need consideration as to how ...", "Unsure how
+    // this will be done", "@Riz to discuss with Kim ..."), a rule still to be written ("then specify rules
+    // for different document types") or a suggestion ("suggest checkbox is added").
+    [GeneratedRegex(@"\b(?i:tbd|tbc|to be (?:decided|determined|confirmed|defined|agreed|discussed|specified)|then specify|specify (?:the )?rules|rules? (?:needs?|have|has) to be (?:specified|defined|agreed)|suggest(?:s|ed|ion)?|as required|as appropriate|as needed|as necessary|where applicable|if applicable|etc|and so on|unclear|not yet (?:decided|defined|known|agreed)|unsure|undecided|to discuss|consider (?:how|whether|if|what|which|ability)|consideration (?:for|as to|of) (?:how|whether|what|which)|needs? (?:further )?consideration|consideration needs to be given|open (?:question|point|issue))\b")]
     private static partial Regex Vague();
 
     // A passage that sends the reader elsewhere instead of answering ("see the HR policy").

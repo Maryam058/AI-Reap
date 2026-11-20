@@ -5,16 +5,19 @@ import type { RequirementSource, SourceReference } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import {
   headingTitle,
+  highlightTarget,
+  lineHighlights,
   locateReference,
-  markExcerpt,
   originalKind,
+  relatedPassages,
   sourceFormatNote,
   sourceLines,
   sourceLinkLabel,
   type ReferenceLocation,
+  type RelatedPassage,
 } from '../lib/sourceReferences';
 import { IconChevronLeft, IconChevronRight, IconPlus, IconX } from './icons';
-import { DocxOriginalView, PdfOriginalView, type NavigationResult } from './OriginalDocumentViews';
+import { DocxOriginalView, HIT, PdfOriginalView, RELATED_HIT, type NavigationResult } from './OriginalDocumentViews';
 import { Dialog } from './ui/Dialog';
 import { ErrorState } from './ui/ErrorState';
 
@@ -185,7 +188,7 @@ export function SourceDocumentViewer({ reference: opened, passages, purpose, que
         width={1040}
         footer={
           <>
-            {kind && entry.original.status === 'ready' && (
+            {kind && (entry.original.status === 'ready' || entry.original.status === 'failed') && (
               <button type="button" className="btn btn-ghost" onClick={() => update(panel.id, { showText: !panel.showText })} aria-pressed={panel.showText}>
                 {panel.showText ? `Show the original ${kind.toUpperCase()}` : 'Show the extracted text'}
               </button>
@@ -197,12 +200,15 @@ export function SourceDocumentViewer({ reference: opened, passages, purpose, que
         }
       >
         <SourcePanel
-          key={`${panel.index}:${entry.generation}`}
+          // Keyed by the source, not the passage: stepping to another passage of the same document moves
+          // the highlight in the open document instead of loading it again.
+          key={`${reference.sourceId}:${entry.generation}`}
           entry={entry}
           reference={reference}
           others={others(reference)}
           purpose={purpose}
           showText={panel.showText}
+          onShowText={() => update(panel.id, { showText: true })}
           canWrite={canWrite}
           token={token}
           onRetry={() => retry(reference.sourceId)}
@@ -212,6 +218,16 @@ export function SourceDocumentViewer({ reference: opened, passages, purpose, que
               {steps && (
                 <div className="src-viewer-toolbar">
                   <div className="src-viewer-steps" role="group" aria-label="Passages of this question">
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      onClick={() => update(panel.id, { index: panel.index - 1 })}
+                      disabled={panel.index === 0}
+                      aria-label="Previous passage"
+                      title="Previous passage"
+                    >
+                      <IconChevronLeft width={16} height={16} aria-hidden="true" />
+                    </button>
                     {steps.map((p, i) => (
                       <button
                         key={i}
@@ -224,6 +240,16 @@ export function SourceDocumentViewer({ reference: opened, passages, purpose, que
                         {p.heading ? ` (${sourceLinkLabel(p)})` : ''}
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      onClick={() => update(panel.id, { index: panel.index + 1 })}
+                      disabled={panel.index === steps.length - 1}
+                      aria-label="Next passage"
+                      title="Next passage"
+                    >
+                      <IconChevronRight width={16} height={16} aria-hidden="true" />
+                    </button>
                   </div>
                   {addButton}
                 </div>
@@ -270,7 +296,7 @@ export function SourceDocumentViewer({ reference: opened, passages, purpose, que
             const kind = source ? originalKind(source) : null;
             const n = position + 1;
             return (
-              <section key={`${panel.id}:${position}:${panel.index}:${entry.generation}`} className="src-panel" role="listitem" aria-label={`Panel ${n}: Passage ${panel.index + 1} of ${list.length}`}>
+              <section key={`${panel.id}:${position}:${reference.sourceId}:${entry.generation}`} className="src-panel" role="listitem" aria-label={`Panel ${n}: Passage ${panel.index + 1} of ${list.length}`}>
                 <div className="src-panel-head">
                   <select
                     className="select-input"
@@ -310,6 +336,7 @@ export function SourceDocumentViewer({ reference: opened, passages, purpose, que
                   others={others(reference)}
                   purpose={purpose}
                   showText={panel.showText}
+                  onShowText={() => update(panel.id, { showText: true })}
                   canWrite={canWrite}
                   token={token}
                   onRetry={() => retry(reference.sourceId)}
@@ -322,7 +349,7 @@ export function SourceDocumentViewer({ reference: opened, passages, purpose, que
                         {!onlyFile && <span className="src-panel-file">{source?.originalFileName || 'Requirement source'}</span>}
                         <span className="src-panel-ref">{whereOf(reference)}</span>
                       </p>
-                      {kind && entry.original.status === 'ready' && (
+                      {kind && (entry.original.status === 'ready' || entry.original.status === 'failed') && (
                         <button
                           type="button"
                           className="btn btn-ghost btn-sm"
@@ -389,6 +416,7 @@ function SourcePanel({
   others: otherPassages,
   purpose,
   showText,
+  onShowText,
   canWrite,
   token,
   lead,
@@ -401,6 +429,7 @@ function SourcePanel({
   others: SourceReference[];
   purpose?: string;
   showText: boolean;
+  onShowText: () => void;
   canWrite: boolean;
   token: string | null;
   lead?: ReactNode;
@@ -409,16 +438,25 @@ function SourcePanel({
   onRetry: () => void;
   onRenderFailed: () => void;
 }) {
-  const [navigation, setNavigation] = useState<NavigationResult | null>(null);
+  // Where the original view got to, for the passage it was for: after a step the previous passage's
+  // note is not shown while the view moves to the new one.
+  const [navigated, setNavigated] = useState<{ reference: SourceReference; result: NavigationResult } | null>(null);
+  const navigation = navigated?.reference === reference ? navigated.result : null;
+  const onNavigated = useCallback((result: NavigationResult) => setNavigated({ reference, result }), [reference]);
   const { state, original } = entry;
   const source = state.status === 'ready' ? state.source : null;
   const lines = useMemo(() => (source ? sourceLines(source.rawText) : []), [source]);
   const location = useMemo<ReferenceLocation | null>(() => (source ? locateReference(lines, reference) : null), [source, lines, reference]);
-  const others = useMemo(() => (source ? otherPassages.map((p) => locateReference(lines, p)) : []), [source, lines, otherPassages]);
+  // The question's other passages in this same source, highlighted more lightly beside this one.
+  const related = useMemo(() => (source ? relatedPassages(lines, reference, otherPassages) : []), [source, lines, reference, otherPassages]);
   const located = location?.status === 'located' ? location : null;
   const kind = source ? originalKind(source) : null;
   const canAttach = !!source && !kind && canWrite && /\.(pdf|docx)$/i.test(source.originalFileName ?? '');
   const showingOriginal = !!kind && !showText && (original.status === 'loading' || original.status === 'ready');
+  // A kept original that could not be loaded or drawn: said so, with Retry - the extracted text is never
+  // put in its place unless the reader asks for it.
+  const originalFailed = !!kind && !showText && original.status === 'failed' ? original : null;
+  const showingText = !kind || showText;
   const fileName = source?.originalFileName || 'Requirement source';
 
   return (
@@ -445,14 +483,14 @@ function SourcePanel({
 
       {source && location && (
         <div className="src-viewer">
-          {!(compact && showingOriginal) && (
+          {!originalFailed && !(compact && showingOriginal) && (
             <p className="src-viewer-note">
               {showingOriginal
                 ? `The original ${kind!.toUpperCase()} uploaded as ${fileName}.`
                 : compact
                   ? panelFormatNote(source.originalFileName)
                   : sourceFormatNote(source.originalFileName)}
-              {!showingOriginal && kind && <> {fallbackReason(original, showText)}</>}
+              {showingText && kind && <> {fallbackReason(original, showText)}</>}
             </p>
           )}
 
@@ -487,9 +525,10 @@ function SourcePanel({
               lines={lines}
               reference={reference}
               location={location}
+              related={related}
               pageLineStarts={source.originalDocument?.pageLineStarts}
               title={`${fileName}, original PDF`}
-              onNavigated={setNavigation}
+              onNavigated={onNavigated}
               onFailed={onRenderFailed}
             />
           )}
@@ -499,13 +538,18 @@ function SourcePanel({
               lines={lines}
               reference={reference}
               location={location}
+              related={related}
               title={`${fileName}, original Word document`}
-              onNavigated={setNavigation}
+              onNavigated={onNavigated}
               onFailed={onRenderFailed}
             />
           )}
 
-          {!showingOriginal && <ExtractedTextView lines={lines} reference={reference} location={location} others={others} />}
+          {originalFailed && (
+            <OriginalFailed kind={kind!} fileName={fileName} reason={originalFailed.reason} onRetry={onRetry} onShowText={onShowText} />
+          )}
+
+          {showingText && <ExtractedTextView lines={lines} reference={reference} location={location} related={related} />}
         </div>
       )}
     </>
@@ -576,12 +620,50 @@ function problemDetail(body: string): string | null {
   }
 }
 
+// The note above the extracted text of a source whose original is kept: the reader chose it.
 function fallbackReason(original: OriginalState, chosen: boolean): string {
-  if (chosen) return 'You are viewing the text extracted from it.';
-  if (original.status !== 'failed') return '';
-  if (original.reason === 'render') return 'The original could not be displayed, so its extracted text is shown.';
-  if (original.reason === 'network') return 'The original could not be loaded, so its extracted text is shown.';
-  return 'The original file is no longer available, so its extracted text is shown.';
+  if (!chosen) return '';
+  return original.status === 'failed'
+    ? 'The original could not be shown, so you are viewing the text extracted from it.'
+    : 'You are viewing the text extracted from it.';
+}
+
+// The kept original could not be shown. Retry loads it again; the extracted text is offered, not shown.
+function OriginalFailed({
+  kind,
+  fileName,
+  reason,
+  onRetry,
+  onShowText,
+}: {
+  kind: string;
+  fileName: string;
+  reason: 'unavailable' | 'render' | 'network';
+  onRetry: () => void;
+  onShowText: () => void;
+}) {
+  const format = kind.toUpperCase();
+  const text =
+    reason === 'unavailable'
+      ? `The original ${format} (${fileName}) is no longer stored, so it can’t be opened.`
+      : reason === 'render'
+        ? `The original ${format} (${fileName}) could not be displayed.`
+        : `The original ${format} (${fileName}) could not be loaded. Check your connection and try again.`;
+  return (
+    <div className="src-viewer-failed" role="alert">
+      <p>{text}</p>
+      <div className="src-viewer-failed-actions">
+        {reason !== 'unavailable' && (
+          <button type="button" className="btn btn-secondary btn-sm" onClick={onRetry}>
+            Try again
+          </button>
+        )}
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onShowText}>
+          Show the extracted text instead
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function NavigationNote({ navigation, reference }: { navigation: NavigationResult | null; reference: SourceReference }) {
@@ -591,7 +673,9 @@ function NavigationNote({ navigation, reference }: { navigation: NavigationResul
       ? `${navigation.page ? `Page ${navigation.page}: ` : ''}the cited ${reference.excerptIsQuote ? 'passage' : 'section'} is highlighted.`
       : navigation.status === 'page-only'
         ? `Opened at page ${navigation.page}, where “${reference.label}” is. Its text could not be matched on the page, so it is not highlighted.`
-        : `“${reference.label}” could not be matched in the original document, so it opens at the start and nothing is highlighted. “Show the extracted text” shows the cited section.`;
+        : navigation.status === 'paragraph-only'
+          ? `Opened at the paragraphs where “${reference.label}” is. Its exact words could not be matched there, so nothing is highlighted.`
+          : `“${reference.label}” could not be matched in the original document, so it opens at the start and nothing is highlighted. “Show the extracted text” shows the cited section.`;
   return (
     <p className={navigation.status === 'highlighted' ? 'src-viewer-status' : 'src-viewer-warning'} role="status">
       {text}
@@ -600,23 +684,37 @@ function NavigationNote({ navigation, reference }: { navigation: NavigationResul
 }
 
 // The text extracted at upload, as numbered lines with the cited range marked: for sources without a
-// kept original, and as the fallback when the original cannot be shown.
-// others: where the question's other passages are - marked too, more lightly, so a conflict's two
+// kept original, and as the fallback when the original cannot be shown. The cited range has a bar beside
+// it; only the passage's exact text (highlightTarget - a quote's words, else its heading) is yellow, as
+// in the original views.
+// related: the question's other passages in this source - marked too, more lightly, so a conflict's two
 // statements are both visible.
 function ExtractedTextView({
   lines,
   reference,
   location,
-  others = [],
+  related = [],
 }: {
   lines: string[];
   reference: SourceReference;
   location: ReferenceLocation;
-  others?: ReferenceLocation[];
+  related?: readonly RelatedPassage[];
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const targetRef = useRef<HTMLDivElement>(null);
   const located = location.status === 'located' ? location : null;
+  // Per line, the pieces to mark: the shown passage first, so a related passage never covers it.
+  const marks = useMemo(() => {
+    const byLine = new Map<number, LineMark[]>();
+    const add = (spans: Map<number, [number, number]>, className: string) =>
+      spans.forEach(([from, to], line) => byLine.set(line, [...(byLine.get(line) ?? []), { from, to, className }]));
+    const target = highlightTarget(lines, reference, location);
+    if (target) add(lineHighlights(lines, target), HIT);
+    for (const r of related) add(lineHighlights(lines, r.target), RELATED_HIT);
+    return byLine;
+  }, [lines, reference, location, related]);
+  // The first line the shown passage's yellow is on, else the cited line: where the pane opens.
+  const targetLine = located ? (Array.from(marks.entries()).find(([, m]) => m.some((x) => x.className === HIT))?.[0] ?? located.line) : -1;
 
   // Scroll only the document pane, so the page behind the dialog never moves.
   useLayoutEffect(() => {
@@ -630,36 +728,47 @@ function ExtractedTextView({
       {lines.map((text, i) => {
         const inRange = !!located && i >= located.line && i < located.endLine;
         const isHeading = !!located && i === located.headingLine;
-        const isOther = !inRange && others.some((o) => o.status === 'located' && i >= o.line && i < o.endLine);
-        const marked = inRange && reference.excerptIsQuote ? markExcerpt(text, reference.excerpt) : null;
+        const isOther = !inRange && related.some((r) => i >= r.location.line && i < r.location.endLine);
         const className = ['src-line', inRange && 'src-line-cited', isOther && 'src-line-related', isHeading && 'src-line-heading']
           .filter(Boolean)
           .join(' ');
+        const isTarget = i === targetLine;
         return (
-          <div
-            key={i}
-            className={className}
-            data-line={i}
-            ref={located && i === located.line ? targetRef : undefined}
-            aria-current={located && i === located.line ? 'location' : undefined}
-          >
+          <div key={i} className={className} data-line={i} ref={isTarget ? targetRef : undefined} aria-current={isTarget ? 'location' : undefined}>
             <span className="src-line-no" aria-hidden="true">
               {i + 1}
             </span>
-            <span className="src-line-text">
-              {marked ? (
-                <>
-                  {marked[0]}
-                  <mark>{marked[1]}</mark>
-                  {marked[2]}
-                </>
-              ) : (
-                text || ' '
-              )}
-            </span>
+            <span className="src-line-text">{marks.has(i) ? markedLine(text, marks.get(i)!) : text || ' '}</span>
           </div>
         );
       })}
     </div>
   );
+}
+
+interface LineMark {
+  from: number;
+  to: number;
+  className: string;
+}
+
+// A line's text with its marks, as React text (never HTML). Marks are taken in order of priority and a
+// later one overlapping an earlier one is left out.
+function markedLine(text: string, marks: readonly LineMark[]): ReactNode {
+  const kept: LineMark[] = [];
+  for (const m of marks) if (m.to > m.from && !kept.some((k) => m.from < k.to && k.from < m.to)) kept.push(m);
+  kept.sort((a, b) => a.from - b.from);
+  const out: ReactNode[] = [];
+  let at = 0;
+  kept.forEach((m, n) => {
+    if (m.from > at) out.push(text.slice(at, m.from));
+    out.push(
+      <mark key={n} className={m.className}>
+        {text.slice(m.from, m.to)}
+      </mark>,
+    );
+    at = m.to;
+  });
+  if (at < text.length) out.push(text.slice(at));
+  return out;
 }

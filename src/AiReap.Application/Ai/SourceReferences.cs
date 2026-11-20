@@ -330,12 +330,43 @@ public sealed partial class SourceReferenceIndex
 
     // ---- sections --------------------------------------------------------------------------
 
+    // A document with a table of contents whose entries are written again in its body (a Word file
+    // whose heading styles were flattened to plain lines: "Background", "Special Case") takes its
+    // headings from that table: a body line is a heading when it is one of the entries, and numbered
+    // list items, colon lead-ins and capitalised notes in the body ("2. Does Axis want a confirmation
+    // and error email?", "Fields:", "NOTE: ...") are not - they are text inside a section, so evidence
+    // under them is labelled with the section it is really in. Markdown headings ("## 3.2") stay
+    // headings. Without such a table (fewer than MinOutlineEntries entries, or fewer than
+    // MinOutlineMatches of them found in the body) every SourceChunker.IsSectionHeading line counts.
+    internal const int MinOutlineEntries = 3;
+    internal const int MinOutlineMatches = 2;
+
     private static List<SourceSection> BuildSections(string[] lines)
     {
+        var outline = Outline(lines);
         var headings = new List<(string? Number, string Title, string Line, int Index, bool Toc)>();
         for (var i = 0; i < lines.Length; i++)
         {
-            if (!SourceChunker.IsSectionHeading(lines[i]))
+            if (outline is not null)
+            {
+                var trimmedLine = lines[i].Trim();
+                var entry = outline.Entries.Contains(i);
+                // The Word extractor's own block for headers, footers and notes (DocxStructure.NotesHeading)
+                // is a section of its own too.
+                if (!entry && !outline.Titles.Contains(OutlineKey(trimmedLine)) && !MarkdownMarker().IsMatch(trimmedLine)
+                    && !trimmedLine.StartsWith("Headers, footers and notes (", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (!SourceChunker.IsSectionHeading(trimmedLine))
+                {
+                    var tocTitle = TableOfContentsTail().Replace(MarkdownMarker().Replace(trimmedLine, string.Empty), string.Empty).Trim();
+                    headings.Add((null, tocTitle.TrimEnd(':').Trim(), trimmedLine, i, entry));
+                    continue;
+                }
+            }
+            else if (!SourceChunker.IsSectionHeading(lines[i]))
             {
                 continue;
             }
@@ -376,6 +407,55 @@ public sealed partial class SourceReferenceIndex
         }
 
         return sections;
+    }
+
+    private sealed record DocumentOutline(HashSet<int> Entries, HashSet<string> Titles);
+
+    // The table of contents (see BuildSections), or null when there is none the body follows. Entries:
+    // lines ending in a page number after a tab, dot leaders or a wide gap ("Special Case\t16"),
+    // PAGEREF field text included. Titles: their keys (OutlineKey).
+    private static DocumentOutline? Outline(string[] lines)
+    {
+        var entries = new HashSet<int>();
+        var titles = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var trimmed = lines[i].Trim();
+            if (trimmed.Length is > 0 and <= 150 && TableOfContentsTail().IsMatch(trimmed) && OutlineKey(trimmed) is { Length: > 0 } key)
+            {
+                entries.Add(i);
+                titles.Add(key);
+            }
+        }
+
+        if (titles.Count < MinOutlineEntries)
+        {
+            return null;
+        }
+
+        var matched = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (!entries.Contains(i) && OutlineKey(lines[i].Trim()) is { Length: > 0 } key && titles.Contains(key))
+            {
+                matched.Add(key);
+            }
+        }
+
+        return matched.Count >= MinOutlineMatches ? new DocumentOutline(entries, titles) : null;
+    }
+
+    // A heading's title for comparing a body line with a table-of-contents entry: no Markdown marker,
+    // page number or section number, case and spacing ignored.
+    private static string OutlineKey(string line)
+    {
+        var text = TableOfContentsTail().Replace(MarkdownMarker().Replace(line, string.Empty), string.Empty).Trim();
+        if (NumberedHeading().Match(text) is { Success: true } m && m.Groups["title"].Value.Trim().Length > 0)
+        {
+            text = m.Groups["title"].Value;
+        }
+
+        return text.Length > 120 ? string.Empty : TitleKey(text);
     }
 
     // The first heading with this number outside a table of contents, else the first in one.

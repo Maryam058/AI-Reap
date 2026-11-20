@@ -1,7 +1,7 @@
 // The DOM helpers behind the original-document views: hostile document markup is made inert, and the
 // cited text is marked by moving existing text into <mark>, never by writing HTML.
 import { describe, expect, test, vi } from 'vitest';
-import { markOccurrence, sanitizeRenderedDocument } from '../../src/lib/documentHighlight';
+import { markAcross, markOccurrence, sanitizeRenderedDocument, unmarkAll } from '../../src/lib/documentHighlight';
 import { docxBlocks } from '../../src/lib/documentRenderers';
 
 // docx-preview stand-in that renders what a malicious DOCX could make it produce.
@@ -85,6 +85,49 @@ describe('markOccurrence', () => {
   });
 });
 
+describe('markAcross', () => {
+  const paragraphs = (...html: string[]) => {
+    const article = document.createElement('article');
+    article.innerHTML = html.map((h) => `<p style="font-size:11pt">${h}</p>`).join('');
+    return Array.from(article.querySelectorAll('p'));
+  };
+
+  test('marks only the quoted words inside one paragraph, keeping its formatting', () => {
+    const [p] = paragraphs('The eight <b>decline categories</b> are listed in the decline popup.');
+    const marks = markAcross([p], 'decline categories are listed');
+    expect(marks.map((m) => m.textContent)).toEqual(['decline categories', ' are listed']);
+    expect(p.textContent).toBe('The eight decline categories are listed in the decline popup.');
+    expect(p.querySelector('b mark')).not.toBeNull(); // the bold run is kept, the mark sits inside it
+    expect(p.getAttribute('style')).toBe('font-size:11pt');
+  });
+
+  test('a quote over two paragraphs marks its words in each, and nothing else of them', () => {
+    const blocks = paragraphs('12.7 Decline Categories', 'The eight decline categories are listed.');
+    const marks = markAcross(blocks, 'Decline Categories The eight decline');
+    expect(marks.map((m) => m.textContent)).toEqual(['Decline Categories', 'The eight decline']);
+    expect(marks.map((m) => m.parentElement)).toEqual(blocks);
+    expect(blocks.map((b) => b.textContent)).toEqual(['12.7 Decline Categories', 'The eight decline categories are listed.']);
+  });
+
+  test('marks nothing and leaves the paragraphs untouched when the words are not there', () => {
+    const blocks = paragraphs('Records are kept.', 'For seven years.');
+    const before = blocks.map((b) => b.innerHTML);
+    expect(markAcross(blocks, 'kept for ten years')).toEqual([]);
+    expect(markAcross([], 'anything')).toEqual([]);
+    expect(blocks.map((b) => b.innerHTML)).toEqual(before);
+  });
+
+  test('two marks on the same text keep their own classes (a related passage beside the shown one)', () => {
+    const [p] = paragraphs('Invoices are sent monthly. Passwords are stored hashed.');
+    markAcross([p], 'Invoices are sent monthly.', 'src-hit');
+    markAcross([p], 'Passwords are stored hashed.', 'src-hit src-hit-related');
+    expect(Array.from(p.querySelectorAll('mark')).map((m) => [m.className, m.textContent])).toEqual([
+      ['src-hit', 'Invoices are sent monthly.'],
+      ['src-hit src-hit-related', 'Passwords are stored hashed.'],
+    ]);
+  });
+});
+
 describe('docxBlocks', () => {
   test('reads each table row as one block of cells, line breaks as spaces, and keeps every paragraph for older sources', () => {
     const body = document.createElement('div');
@@ -100,5 +143,43 @@ describe('docxBlocks', () => {
     expect(blocks.map((b) => b.text)).toEqual(['Appendix B', 'Leave type | Approver', 'Annual leave | Line manager nested', 'After']);
     expect(blocks[2].element.tagName).toBe('TR');
     expect(paragraphs.map((p) => p.text)).toEqual(['Appendix B', 'Leave type', 'Approver', 'Annual', 'leave', 'Line manager', 'nested', 'After']);
+  });
+});
+
+describe('unmarkAll', () => {
+  const block = (html: string) => {
+    const p = document.createElement('p');
+    p.innerHTML = html;
+    return p;
+  };
+
+  test('takes the marks out again and leaves the text and formatting exactly as before', () => {
+    const p = block('The eight <b>decline categories</b> are listed in the decline popup.');
+    const before = p.innerHTML;
+    markAcross([p], 'decline categories are listed');
+    markOccurrence(p, 'popup', 0, 'src-hit src-hit-related');
+    expect(p.querySelectorAll('mark')).toHaveLength(3);
+
+    unmarkAll(p);
+
+    expect(p.querySelector('mark')).toBeNull();
+    expect(p.innerHTML).toBe(before);
+    expect(Array.from(p.childNodes).filter((n) => n.nodeType === 3).map((n) => (n as Text).data)).toEqual(['The eight ', ' are listed in the decline popup.']);
+  });
+
+  test('handles a mark inside another, and the same words can be marked again', () => {
+    const p = block('Passwords are stored hashed.');
+    markOccurrence(p, 'Passwords are stored hashed.', 0, 'src-hit src-hit-related');
+    markOccurrence(p, 'stored', 0);
+    unmarkAll(p);
+    expect(p.innerHTML).toBe('Passwords are stored hashed.');
+    expect(markOccurrence(p, 'are stored').map((m) => m.textContent)).toEqual(['are stored']);
+  });
+
+  test('leaves marks the document has of its own, and takes the heading underline out too', () => {
+    const p = block('<mark class="doc-own">Draft</mark> 3.2 User Roles');
+    markOccurrence(p, '3.2 User Roles', 0, 'src-heading-mark');
+    unmarkAll(p);
+    expect(p.innerHTML).toBe('<mark class="doc-own">Draft</mark> 3.2 User Roles');
   });
 });

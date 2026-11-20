@@ -1,15 +1,8 @@
 import { useState } from 'react';
 import type { ArtifactSummary, ClarificationQuestionData, SourceReference } from '../api/types';
-import { evidencePurpose, isLocatedEvidence, sourceLinkAriaLabel, sourceLinkLabel } from '../lib/sourceReferences';
+import { clarificationKindLabel, evidencePurpose, isLocatedEvidence, sourceLinkAriaLabel, sourceLinkLabel } from '../lib/sourceReferences';
 import { IconDocument } from './icons';
 import { SourceDocumentViewer } from './SourceDocumentViewer';
-
-const KIND_LABELS: Record<string, string> = {
-  missing: 'Missing information',
-  ambiguous: 'Ambiguity',
-  contradiction: 'Contradiction',
-  'undefined-rule': 'Undefined rule',
-};
 
 interface Props {
   artifact: ArtifactSummary;
@@ -50,7 +43,7 @@ export function ClarificationQuestionCard({ artifact, canAnswer, onAnswer }: Pro
       <div className="cq-header">
         <span className="code">{artifact.code}</span>
         <span className={`status-pill tone-${statusTone}`}>{statusLabel}</span>
-        {data.kind && <span className="cq-kind">{KIND_LABELS[data.kind] ?? data.kind}</span>}
+        {data.kind && <span className="cq-kind">{clarificationKindLabel(data.kind)}</span>}
       </div>
       <p className="cq-question">{data.question}</p>
       {passages.length > 0 && (

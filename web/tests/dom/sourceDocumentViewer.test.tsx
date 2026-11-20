@@ -30,16 +30,25 @@ const auth = vi.hoisted(() => ({ roles: [] as string[] }));
 vi.mock('../../src/api/requirementSources', () => ({ requirementSourcesApi: api }));
 vi.mock('../../src/auth/AuthContext', () => ({ useAuth: () => ({ token: 'test-token', hasRole: (r: string) => auth.roles.includes(r) }) }));
 
-const renderers = vi.hoisted(() => ({ failPdf: false, pdfRendered: [] as number[] }));
+const renderers = vi.hoisted(() => ({
+  failPdf: false,
+  pdfRendered: [] as number[],
+  docxParagraphs: null as string[] | null,
+  pdfOpened: 0,
+  docxRendered: 0,
+  pdfScales: [] as number[],
+}));
 vi.mock('../../src/lib/documentRenderers', () => ({
   // Each page's text layer holds that page's lines as spans, like pdf.js's.
   openPdf: async () => {
+    renderers.pdfOpened++;
     if (renderers.failPdf) throw new Error('bad pdf');
     return {
       pageCount: PAGE_STARTS.length,
       pageSize: async () => ({ width: 600, height: 800 }),
-      renderPage: async (n: number, container: HTMLElement) => {
+      renderPage: async (n: number, container: HTMLElement, scale: number) => {
         renderers.pdfRendered.push(n);
+        renderers.pdfScales.push(scale);
         const layer = document.createElement('div');
         layer.className = 'textLayer';
         for (const line of LINES.slice(PAGE_STARTS[n - 1], PAGE_STARTS[n] ?? LINES.length)) {
@@ -55,8 +64,9 @@ vi.mock('../../src/lib/documentRenderers', () => ({
   },
   // One paragraph per line, after a cover paragraph the extracted text does not have.
   renderDocx: async (_data: ArrayBuffer, body: HTMLElement) => {
+    renderers.docxRendered++;
     const article = body.ownerDocument.createElement('article');
-    for (const line of ['Cover', ...LINES]) {
+    for (const line of renderers.docxParagraphs ?? ['Cover', ...LINES]) {
       const p = body.ownerDocument.createElement('p');
       p.textContent = line;
       article.append(p);
@@ -134,6 +144,10 @@ const threeTwo = ref({ label: '§3.2', start: reason.indexOf('§3.2'), sectionNu
 beforeEach(() => {
   renderers.failPdf = false;
   renderers.pdfRendered = [];
+  renderers.docxParagraphs = null;
+  renderers.pdfOpened = 0;
+  renderers.docxRendered = 0;
+  renderers.pdfScales = [];
   api.getById.mockReset();
   api.getOriginal.mockReset();
   api.attachOriginal.mockReset();
@@ -182,8 +196,9 @@ describe('opening a source link', () => {
 
     await screen.findByText(/Page 3: the cited passage is highlighted/);
     const marks = Array.from(document.querySelectorAll('.src-pdf-page[data-page="3"] mark.src-hit')).map((m) => m.textContent);
-    expect(marks).toContain('listed in the decline popup');
-    expect(marks).toContain('12.7 Decline Categories'); // its heading, on the same page
+    expect(marks).toEqual(['listed in the decline popup']); // only the passage is yellow
+    // Its heading, on the same page, is underlined for context - not highlighted.
+    expect(document.querySelector('.src-pdf-page[data-page="3"] mark.src-heading-mark')!.textContent).toBe('12.7 Decline Categories');
   });
 
   test('opens the original DOCX at the cited paragraphs, telling a repeated heading apart', async () => {
@@ -274,16 +289,21 @@ describe('viewer states', () => {
     expect(api.getOriginal).not.toHaveBeenCalled();
   });
 
-  test('a missing original falls back to the extracted text and says why', async () => {
+  test('a missing original says so and offers the extracted text, without putting it in place of the original', async () => {
     api.getById.mockResolvedValue(source('pdf'));
     api.getOriginal.mockRejectedValue(new ApiError(404, '{"type":"urn:aireap:original-unavailable"}'));
     card(reason, [twelve]);
 
     openLink(/^Section 12\.7: open/);
 
-    expect(await screen.findByText(/The original file is no longer available, so its extracted text is shown/)).toBeTruthy();
-    expect(document.querySelector('.src-line-heading')!.textContent).toContain('12.7 Decline Categories');
+    expect((await screen.findByRole('alert')).textContent).toContain('The original PDF (Triage SRS.pdf) is no longer stored');
+    expect(document.querySelector('.src-viewer-doc')).toBeNull(); // no text in its place
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull(); // a stored file that is gone does not come back
     expect(screen.queryByRole('button', { name: /Attach the original/ })).toBeNull(); // not a writer
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show the extracted text instead' }));
+    expect(document.querySelector('.src-line-heading')!.textContent).toContain('12.7 Decline Categories');
+    expect(screen.getByText(/The original could not be shown, so you are viewing the text extracted from it/)).toBeTruthy();
   });
 
   test('a writer can attach the original of a legacy upload, and the viewer then shows it', async () => {
@@ -317,15 +337,37 @@ describe('viewer states', () => {
     expect(api.getById).toHaveBeenCalledTimes(1);
   });
 
-  test('a PDF that cannot be rendered falls back to the extracted text', async () => {
+  test('a PDF that cannot be rendered says so, with Try again, and shows the text only when asked', async () => {
     renderers.failPdf = true;
     api.getById.mockResolvedValue(source('pdf'));
     card(reason, [twelve]);
 
     openLink(/^Section 12\.7: open/);
 
-    expect(await screen.findByText(/The original could not be displayed, so its extracted text is shown/)).toBeTruthy();
+    expect((await screen.findByRole('alert')).textContent).toContain('The original PDF (Triage SRS.pdf) could not be displayed.');
+    expect(document.querySelector('.src-viewer-doc, .src-line-cited')).toBeNull();
+
+    // Try again loads the source and its original afresh - and this time it draws.
+    renderers.failPdf = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await screen.findByText(/Page 3: the cited section is highlighted/);
+    expect(api.getOriginal).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  test('an original that could not be loaded offers the text as a choice, and the original back from it', async () => {
+    api.getById.mockResolvedValue(source('pdf'));
+    api.getOriginal.mockRejectedValue(new TypeError('Failed to fetch'));
+    card(reason, [twelve]);
+
+    openLink(/^Section 12\.7: open/);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('could not be loaded. Check your connection and try again.');
+    fireEvent.click(screen.getByRole('button', { name: 'Show the extracted text instead' }));
     expect(document.querySelector('.src-line-cited')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Show the original PDF' }));
+    expect(screen.getByRole('alert').textContent).toContain('could not be loaded');
+    expect(document.querySelector('.src-viewer-doc')).toBeNull();
   });
 
   test('a legacy source without a kept original shows its text and never asks for an original', async () => {
@@ -820,5 +862,333 @@ describe('comparing several passages side by side', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show the extracted text in panel 1' }));
     expect(first.querySelector('.src-viewer-note')!.textContent).toContain('You are viewing the text extracted from it.');
     expect(first.querySelector('.src-viewer-note')!.textContent).not.toContain('Triage SRS.pdf');
+  });
+});
+
+// ---- the yellow highlight of a CQ's exact passage ----------------------------------------------------
+// The same rule in the PDF, the Word document and the extracted text: only the passage's own words (or,
+// for a section reference, its heading) are yellow; the rest of the cited range has a bar, never a fill;
+// the question's other passages in the same source are marked more lightly; and a passage that cannot
+// be matched is not highlighted at all.
+
+const frameDoc = () => (document.querySelector('iframe.src-docx') as HTMLIFrameElement).contentDocument!;
+const hits = (root: ParentNode, selector = 'mark.src-hit:not(.src-hit-related)') => Array.from(root.querySelectorAll(selector)).map((m) => m.textContent);
+const rect = (top: number) => ({ top, bottom: top + 20, left: 0, right: 100, width: 100, height: 20, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
+const popup = ref({ label: 'listed', start: 0, line: 10, endLine: 11, excerpt: 'listed in the decline popup', excerptIsQuote: true });
+const across = ref({ label: 'across', start: 0, line: 9, endLine: 11, excerpt: 'Decline Categories The eight decline', excerptIsQuote: true });
+
+describe('the yellow highlight of a CQ passage', () => {
+  test.each(['pdf', 'docx', null] as const)('%s: only the quoted words are marked, not the rest of their paragraph', async (format) => {
+    api.getById.mockResolvedValue(source(format));
+    card('listed here', [popup]);
+
+    openLink(/^listed: open/);
+
+    const root = format === 'docx' ? () => frameDoc() : () => document;
+    await waitFor(() => expect(hits(root())).toEqual(['listed in the decline popup']));
+    const mark = root().querySelector('mark.src-hit')!;
+    // The paragraph keeps its other words, unmarked and in their places.
+    expect(mark.parentElement!.textContent).toBe(LINES[10]);
+    expect(mark.textContent!.length).toBeLessThan(LINES[10].length);
+    if (format === 'docx') {
+      const cited = frameDoc().querySelectorAll('.src-docx-cited');
+      expect(Array.from(cited).map((p) => p.textContent)).toEqual([LINES[10]]); // located by a bar...
+      expect(cited[0].tagName).toBe('P'); // ...not wrapped in a mark
+    }
+  });
+
+  test.each(['pdf', 'docx', null] as const)('%s: a section reference is marked by its heading, the same in every format', async (format) => {
+    api.getById.mockResolvedValue(source(format));
+    card(reason, [twelve]);
+
+    openLink(/^Section 12\.7: open/);
+
+    const root = format === 'docx' ? () => frameDoc() : () => document;
+    await waitFor(() => expect(hits(root())).toEqual(['12.7 Decline Categories']));
+    // The section's body is located but not painted.
+    expect(root().querySelector('[aria-current="location"]')!.textContent).toContain('12.7 Decline Categories');
+    expect(hits(root(), 'mark')).toEqual(['12.7 Decline Categories']);
+  });
+
+  test('docx: a quote running over two paragraphs marks just its words in each, without filling either', async () => {
+    api.getById.mockResolvedValue(source('docx'));
+    card('across', [across]);
+
+    openLink(/^across: open/);
+
+    await screen.findByText(/the cited passage is highlighted/);
+    expect(hits(frameDoc())).toEqual(['Decline Categories', 'The eight decline']);
+    expect(frameDoc().querySelector('mark.src-hit')!.getAttribute('aria-current')).toBe('location');
+  });
+
+  test('text view: a quote over two lines is marked on both, and the pane opens at its first line', async () => {
+    api.getById.mockResolvedValue(source(null));
+    vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.getAttribute('aria-current') === 'location' ? 500 : 0;
+    });
+    card('across', [across]);
+
+    openLink(/^across: open/);
+
+    await waitFor(() => expect(hits(document)).toEqual(['Decline Categories', 'The eight decline']));
+    expect(document.querySelector('[aria-current="location"]')!.getAttribute('data-line')).toBe('9');
+    expect((document.querySelector('.src-viewer-doc') as HTMLElement).scrollTop).toBe(476);
+  });
+
+  test('pdf: clicking a CQ source link scrolls the pane to its highlighted passage', async () => {
+    api.getById.mockResolvedValue(source('pdf'));
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      return rect(this.matches('mark.src-hit') ? 900 : 100);
+    });
+    cardWith({ kind: 'ambiguous', sourceEvidence: [decline] });
+
+    openLink(/^Open “12\.7 Decline Categories”/);
+
+    await screen.findByText(/Page 3: the cited passage is highlighted/);
+    expect((document.querySelector('.src-pdf') as HTMLElement).scrollTop).toBe(900 - 100 - 24);
+  });
+
+  test.each(['docx', null] as const)('%s: a conflict keeps both statements highlighted, the shown one strongly, and swaps them when stepping', async (format) => {
+    api.getById.mockResolvedValue(source(format));
+    cardWith({ kind: 'contradiction', sourceEvidence: [invoices, passwords] });
+
+    openLink(/^Statement 1: Open “1 Billing”/);
+
+    const root = format === 'docx' ? () => frameDoc() : () => document;
+    await waitFor(() => expect(hits(root())).toEqual([LINES[3]]));
+    expect(hits(root(), 'mark.src-hit-related')).toEqual([LINES[8]]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Passage 2 of 2 (2 Security)' }));
+
+    await waitFor(() => expect(hits(root())).toEqual([LINES[8]]));
+    expect(hits(root(), 'mark.src-hit-related')).toEqual([LINES[3]]);
+  });
+
+  test('pdf: another passage on the same page is marked lightly as the page is drawn', async () => {
+    api.getById.mockResolvedValue(source('pdf'));
+    const heading = quoteAt(9, '12.7 Decline Categories', '12.7');
+    cardWith({ kind: 'contradiction', sourceEvidence: [decline, heading] });
+
+    openLink(/^Statement 1: Open/);
+
+    await screen.findByText(/Page 3: the cited passage is highlighted/);
+    expect(hits(document)).toEqual([LINES[10]]);
+    expect(hits(document, '.src-pdf-page[data-page="3"] mark.src-hit-related')).toEqual([LINES[9]]);
+  });
+
+  test('a passage of another source is never searched for in this one', async () => {
+    api.getById.mockImplementation(async (id: string) => (id === OTHER_ID ? otherSource() : source(null)));
+    // Same heading and words as a passage of this source, but cited in the other document.
+    const elsewhere = { ...decline, sourceId: OTHER_ID };
+    render(<SourceDocumentViewer reference={invoices} passages={[invoices, elsewhere]} onClose={() => {}} />);
+
+    await waitFor(() => expect(hits(document)).toEqual([LINES[3]]));
+    expect(document.querySelector('mark.src-hit-related, .src-line-related')).toBeNull();
+  });
+
+  test('docx: quoted words not found in the cited paragraph highlight nothing, and say so', async () => {
+    const lines = ['Intro', '4.1\tRetention rules', 'Records are kept for seven years.'];
+    api.getById.mockResolvedValue({ ...source('docx'), rawText: lines.join('\n') });
+    // Word draws the automatic number itself, so the paragraph's text is only "Retention rules".
+    renderers.docxParagraphs = ['Cover', 'Intro', 'Retention rules', lines[2]];
+    const numbered = ref({ label: 'Retention', start: 0, heading: null, sectionNumber: null, line: 1, endLine: 2, excerpt: '4.1 Retention rules', excerptIsQuote: true });
+    card('Retention', [numbered]);
+
+    openLink(/^Retention: open/);
+
+    await screen.findByText(/Its exact words could not be matched there, so nothing is highlighted/);
+    expect(frameDoc().querySelector('mark')).toBeNull();
+    const at = frameDoc().querySelector('[aria-current="location"]')!;
+    expect(at.textContent).toBe('Retention rules'); // opened at the right paragraph...
+    expect(at.classList.contains('src-docx-cited')).toBe(true); // ...shown by its bar alone
+  });
+
+  test.each(['pdf', 'docx'] as const)('%s: an unmatched reference leaves the document unmarked', async (format) => {
+    api.getById.mockResolvedValue(source(format));
+    card('See Section 9.9.', [ref({ label: 'Section 9.9', start: 4, sectionNumber: '9.9', heading: '9.9 Auditors', line: 2, endLine: 3 })]);
+
+    openLink(/^Section 9\.9: open/);
+
+    await screen.findByText(/could not be located in this source, so nothing is highlighted/);
+    if (format === 'docx') await waitFor(() => expect(frameDoc().querySelectorAll('p').length).toBeGreaterThan(0));
+    else await waitFor(() => expect(renderers.pdfRendered).toEqual([1]));
+    const root = format === 'docx' ? frameDoc() : document;
+    expect(root.querySelector('mark, .src-docx-cited, [aria-current="location"]')).toBeNull();
+  });
+});
+
+describe('the original document, opened at the passage', () => {
+  const pdfPane = () => document.querySelector('.src-pdf') as HTMLElement;
+  const pageMarks = (n: number, selector = 'mark.src-hit:not(.src-hit-related)') => hits(document, `.src-pdf-page[data-page="${n}"] ${selector}`);
+
+  test('pdf: stepping to a passage on another page moves the highlight and the scroll, without loading the PDF again', async () => {
+    api.getById.mockResolvedValue(source('pdf'));
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      // Where the mark is in the document, less how far the pane is scrolled - as a browser reports it.
+      if (this.matches('mark.src-hit:not(.src-hit-related)')) return rect((this.closest('[data-page="2"]') ? 1500 : 300) - pdfPane().scrollTop);
+      return rect(100);
+    });
+    cardWith({ kind: 'contradiction', sourceEvidence: [invoices, passwords] });
+
+    openLink(/^Statement 1: Open “1 Billing”/);
+    await screen.findByText(/Page 1: the cited passage is highlighted/);
+    expect(pageMarks(1)).toEqual([LINES[3]]);
+    expect(pdfPane().scrollTop).toBe(300 - 100 - 24);
+    expect(screen.getByText('Page 1 of 3')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Passage 2 of 2 (2 Security)' }));
+
+    await screen.findByText(/Page 2: the cited passage is highlighted/);
+    expect(pageMarks(2)).toEqual([LINES[8]]);
+    expect(document.querySelector('.src-pdf-page[data-page="2"] mark[aria-current="location"]')!.textContent).toBe(LINES[8]);
+    // The first statement is still marked - lightly now - and no longer the current place.
+    expect(pageMarks(1)).toEqual([]);
+    expect(pageMarks(1, 'mark.src-hit-related')).toEqual([LINES[3]]);
+    expect(document.querySelectorAll('[aria-current="location"]')).toHaveLength(1);
+    expect(pdfPane().scrollTop).toBe(1500 - 100 - 24);
+    expect(screen.getByText('Page 2 of 3')).toBeTruthy();
+    // The same document, parsed and fetched once.
+    expect(renderers.pdfOpened).toBe(1);
+    expect(api.getOriginal).toHaveBeenCalledTimes(1);
+  });
+
+  test('pdf: stepping back restores the first passage exactly, with the page text left as it was', async () => {
+    api.getById.mockResolvedValue(source('pdf'));
+    cardWith({ kind: 'contradiction', sourceEvidence: [invoices, passwords] });
+    openLink(/^Statement 1: Open “1 Billing”/);
+    await screen.findByText(/Page 1: the cited passage is highlighted/);
+    const page1 = document.querySelector('.src-pdf-page[data-page="1"] .textLayer')!;
+    const before = page1.textContent;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next passage' }));
+    await screen.findByText(/Page 2: the cited passage is highlighted/);
+    fireEvent.click(screen.getByRole('button', { name: 'Previous passage' }));
+    await screen.findByText(/Page 1: the cited passage is highlighted/);
+
+    expect(pageMarks(1)).toEqual([LINES[3]]);
+    expect(pageMarks(2)).toEqual([]);
+    expect(pageMarks(2, 'mark.src-hit-related')).toEqual([LINES[8]]);
+    expect(page1.textContent).toBe(before); // marks come and go; the words stay
+    expect(page1.querySelectorAll('mark mark')).toHaveLength(0);
+  });
+
+  test('previous and next step through the passages and stop at either end', async () => {
+    api.getById.mockResolvedValue(source(null));
+    cardWith({ kind: 'contradiction', sourceEvidence: [invoices, passwords] });
+    openLink(/^Statement 1: Open “1 Billing”/);
+    await waitFor(() => expect(hits(document)).toEqual([LINES[3]]));
+
+    const previous = screen.getByRole('button', { name: 'Previous passage' }) as HTMLButtonElement;
+    const next = screen.getByRole('button', { name: 'Next passage' }) as HTMLButtonElement;
+    expect(previous.disabled).toBe(true);
+    fireEvent.click(next);
+    expect(hits(document)).toEqual([LINES[8]]);
+    expect(screen.getByRole('button', { name: 'Passage 2 of 2 (2 Security)' }).getAttribute('aria-pressed')).toBe('true');
+    expect(next.disabled).toBe(true);
+    fireEvent.click(previous);
+    expect(hits(document)).toEqual([LINES[3]]);
+  });
+
+  test('docx: stepping moves the highlight and the cited bar in the same rendered document', async () => {
+    api.getById.mockResolvedValue(source('docx'));
+    cardWith({ kind: 'contradiction', sourceEvidence: [invoices, passwords] });
+    openLink(/^Statement 1: Open “1 Billing”/);
+    await waitFor(() => expect(hits(frameDoc())).toEqual([LINES[3]]));
+    const doc = frameDoc();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next passage' }));
+
+    await waitFor(() => expect(hits(frameDoc())).toEqual([LINES[8]]));
+    expect(frameDoc()).toBe(doc); // not rendered again
+    expect(renderers.docxRendered).toBe(1);
+    expect(Array.from(doc.querySelectorAll('.src-docx-cited')).map((p) => p.textContent)).toEqual([LINES[8]]);
+    expect(Array.from(doc.querySelectorAll('[aria-current="location"]')).map((p) => p.textContent)).toEqual([LINES[8]]);
+    expect(hits(doc, 'mark.src-hit-related')).toEqual([LINES[3]]);
+    expect(await screen.findByText(/the cited passage is highlighted/)).toBeTruthy();
+  });
+
+  test('stepping to a passage in another document opens that document at its passage', async () => {
+    api.getById.mockImplementation(async (id: string) =>
+      id === OTHER_ID ? { ...otherSource(), originalDocument: { format: 'pdf', length: 9, pageLineStarts: [0], storedAt: '' } } : source('docx'),
+    );
+    render(<SourceDocumentViewer reference={invoices} passages={[invoices, reminders]} onClose={() => {}} />);
+    await waitFor(() => expect(hits(frameDoc())).toEqual([LINES[3]]));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next passage' }));
+
+    await waitFor(() => expect(document.querySelector('.src-pdf')).not.toBeNull());
+    expect(document.querySelector('iframe.src-docx')).toBeNull();
+    expect(api.getById).toHaveBeenCalledWith(OTHER_ID, 'test-token');
+  });
+
+  test('pdf: zoom draws the pages larger and keeps the passage highlighted; Ctrl+0 goes back', async () => {
+    api.getById.mockResolvedValue(source('pdf'));
+    card('listed here', [popup]);
+    openLink(/^listed: open/);
+    await screen.findByText(/Page 3: the cited passage is highlighted/);
+    const page = () => document.querySelector('.src-pdf-page[data-page="3"]') as HTMLElement;
+    expect(page().style.width).toBe('600px');
+    expect(screen.getByLabelText('Zoom 100%')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+
+    await waitFor(() => expect(page().style.width).toBe('750px'));
+    expect(screen.getByLabelText('Zoom 125%')).toBeTruthy();
+    await waitFor(() => expect(pageMarks(3)).toEqual(['listed in the decline popup']));
+    expect(renderers.pdfScales.at(-1)).toBe(1.25);
+    expect(renderers.pdfOpened).toBe(1); // the PDF is drawn again, not parsed again
+
+    fireEvent.keyDown(pdfPane(), { key: '0', ctrlKey: true });
+    await waitFor(() => expect(page().style.width).toBe('600px'));
+    fireEvent.keyDown(pdfPane(), { key: '-', ctrlKey: true });
+    await waitFor(() => expect(screen.getByLabelText('Zoom 90%')).toBeTruthy());
+    // A zoom is not a new navigation: the note stays as it was.
+    expect(screen.getByText(/Page 3: the cited passage is highlighted/)).toBeTruthy();
+  });
+
+  test('docx: zoom scales the rendered document and keeps its highlight', async () => {
+    api.getById.mockResolvedValue(source('docx'));
+    card('listed here', [popup]);
+    openLink(/^listed: open/);
+    await waitFor(() => expect(hits(frameDoc())).toEqual(['listed in the decline popup']));
+    const zoomOf = () => frameDoc().documentElement.style.getPropertyValue('--src-zoom');
+    expect(zoomOf()).toBe('1');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+    await waitFor(() => expect(zoomOf()).toBe('1.1'));
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom out' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom out' }));
+    await waitFor(() => expect(zoomOf()).toBe('0.9'));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset zoom' }));
+    await waitFor(() => expect(zoomOf()).toBe('1'));
+
+    expect(hits(frameDoc())).toEqual(['listed in the decline popup']);
+    expect(renderers.docxRendered).toBe(1);
+  });
+
+  test('the zoom stops at its smallest and largest sizes', async () => {
+    const { ZOOM_LEVELS, zoomForKey, zoomStep } = await import('../../src/lib/documentZoom');
+    expect(zoomStep(1, 1)).toBe(1.1);
+    expect(zoomStep(1, -1)).toBe(0.9);
+    expect(zoomStep(ZOOM_LEVELS[0], -1)).toBe(ZOOM_LEVELS[0]);
+    expect(zoomStep(ZOOM_LEVELS[ZOOM_LEVELS.length - 1], 1)).toBe(ZOOM_LEVELS[ZOOM_LEVELS.length - 1]);
+    expect(zoomStep(1.2, 1)).toBe(1.25); // from between two levels, to the next one
+    expect(zoomForKey(1.5, { key: '0', ctrlKey: true, metaKey: false, altKey: false })).toBe(1);
+    expect(zoomForKey(1, { key: '=', ctrlKey: false, metaKey: true, altKey: false })).toBe(1.1);
+    expect(zoomForKey(1, { key: '+', ctrlKey: false, metaKey: false, altKey: false })).toBeNull(); // typing, not zooming
+  });
+
+  test('the original is what opens - never the extracted text - for both PDF and Word', async () => {
+    for (const format of ['pdf', 'docx'] as const) {
+      api.getById.mockResolvedValue(source(format));
+      const { unmount } = card('listed here', [popup]);
+      openLink(/^listed: open/);
+      await screen.findByText(/the cited passage is highlighted/);
+      expect(document.querySelector(format === 'pdf' ? '.src-pdf' : 'iframe.src-docx')).not.toBeNull();
+      expect(document.querySelector('.src-viewer-doc')).toBeNull();
+      expect(screen.getByRole('toolbar', { name: `${format === 'pdf' ? 'PDF' : 'Word document'} controls` })).toBeTruthy();
+      unmount();
+    }
   });
 });

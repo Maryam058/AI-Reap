@@ -74,6 +74,13 @@
   --warning: #c28b2c;
   --warning-soft: #fbf4e3;
   --warning-strong: #86600f;
+  /* The source viewer's highlight of a CQ's cited text (SourceDocumentViewer): one clear yellow, the
+     same as in the original PDF and Word views; the question's other passages more lightly. */
+  --evidence-hit: #ffe45c;
+  --evidence-hit-edge: #e0b400;
+  --evidence-hit-text: #1f1b00;
+  --evidence-related: #fff3b0;
+  --evidence-related-edge: #ecd36a;
   --blocked: #b8693a;
   --blocked-soft: #fbefe6;
   --blocked-strong: #8c4820;
@@ -181,6 +188,11 @@
   --warning: #d9aa52;
   --warning-soft: #2d2616;
   --warning-strong: #ebc67e;
+  --evidence-hit: #ffe45c;
+  --evidence-hit-edge: #f2cc2c;
+  --evidence-hit-text: #1f1b00;
+  --evidence-related: rgb(255 228 92 / 0.26);
+  --evidence-related-edge: #8a7a3a;
   --blocked: #db8d5f;
   --blocked-soft: #2f221a;
   --blocked-strong: #efae87;
@@ -1359,6 +1371,97 @@ pre {
   overflow-wrap: anywhere;
 }
 
+/* ---- Held for review (HeldForReviewSection) ----
+   Proposed questions held back for a person: read-only, and drawn apart from accepted clarification
+   questions by a dashed edge, a "Not a clarification question" tag and side-by-side passages. */
+.held-card {
+  border-left: 3px dashed var(--warning-strong);
+  background: linear-gradient(var(--warning-soft), var(--warning-soft)) top / 100% 2.6rem no-repeat, var(--surface);
+}
+
+.held-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.held-tag {
+  padding: 0.05rem 0.45rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.held-topic {
+  margin: 0.25rem 0 0.4rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.held-question .cq-question {
+  margin-top: 0.15rem;
+  overflow-wrap: anywhere;
+}
+
+.held-passages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+  gap: 0.75rem;
+  margin: 0.25rem 0 0.75rem;
+}
+
+.held-passage {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.held-quote-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.held-quote {
+  margin: 0;
+  padding: 0.55rem 0.75rem;
+  border-left: 3px solid var(--primary-light, var(--primary));
+  border-radius: 0 var(--radius-md, 6px) var(--radius-md, 6px) 0;
+  background: var(--surface-sunken);
+  color: var(--text);
+  font-size: 0.84rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.held-passage-contradicts .held-quote {
+  border-left-color: var(--danger);
+}
+
+.held-quote-missing,
+.held-where-text {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.held-reason {
+  margin: 0;
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.held-reason .detail-label {
+  display: block;
+  margin-bottom: 0.15rem;
+}
+
 .src-viewer {
   display: flex;
   flex-direction: column;
@@ -1477,9 +1580,9 @@ pre {
   color: var(--text);
 }
 
+/* The cited range has a bar beside it, not a fill: only the passage's exact text is yellow. */
 .src-line-cited {
-  background: var(--primary-soft);
-  border-left-color: var(--primary-soft-border);
+  border-left-color: var(--evidence-hit-edge);
 }
 
 .src-line-heading {
@@ -1489,8 +1592,7 @@ pre {
 
 /* The question's other passages (the other side of a conflict), marked more lightly. */
 .src-line-related {
-  border-left-color: var(--warning);
-  background: var(--surface);
+  border-left-color: var(--evidence-related-edge);
 }
 
 .src-viewer-steps {
@@ -1617,11 +1719,79 @@ pre {
   height: min(58vh, 600px);
 }
 
-.src-line mark {
-  background: var(--warning-soft);
-  color: inherit;
-  outline: 1px solid var(--warning);
+.src-line mark.src-hit {
+  background: var(--evidence-hit);
+  color: var(--evidence-hit-text);
   border-radius: 2px;
+  box-shadow: 0 0 0 1px var(--evidence-hit-edge);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.src-line mark.src-hit-related {
+  background: var(--evidence-related);
+  color: inherit;
+  box-shadow: none;
+}
+
+/* The original document with its bar above it: zoom, and for a PDF the page in view. */
+.src-original-frame {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.src-original-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem 0.75rem;
+}
+
+.src-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.src-zoom-level {
+  min-width: 3.25rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.src-original-page {
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+/* A kept original that could not be shown: said plainly, with Retry and the text as a choice. */
+.src-viewer-failed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--evidence-hit-edge);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+}
+
+.src-viewer-failed p {
+  margin: 0;
+}
+
+.src-viewer-failed-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 /* The original PDF/DOCX (OriginalDocumentViews): the pane scrolls, the page behind does not. */
@@ -1642,6 +1812,8 @@ pre {
 .src-pdf {
   overflow: auto;
   padding: 16px;
+  /* Room for the scrollbar from the start, so a page fitted to the width never scrolls sideways. */
+  scrollbar-gutter: stable;
 }
 
 .src-pdf-page {
@@ -1689,15 +1861,25 @@ pre {
   display: contents;
 }
 
+/* The marks lie over the drawn page (the text layer's text is transparent), so the yellow is
+   translucent: the page's own glyphs, fonts and layout show through unchanged. */
 .src-pdf-page mark.src-hit {
-  background: rgb(255 196 0 / 0.45);
+  background: rgb(255 221 0 / 0.5);
   color: transparent;
   border-radius: 2px;
-  outline: 2px solid rgb(201 138 0 / 0.9);
+  box-shadow: 0 0 0 1px rgb(214 170 0 / 0.9);
 }
 
-.src-pdf-page mark.src-hit-heading {
-  background: rgb(255 196 0 / 0.25);
+.src-pdf-page mark.src-hit-related {
+  background: rgb(255 221 0 / 0.22);
+  box-shadow: none;
+}
+
+/* A quote's section heading, for context: underlined, not highlighted - it is not the passage. */
+.src-pdf-page mark.src-heading-mark {
+  background: transparent;
+  color: transparent;
+  box-shadow: inset 0 -2px 0 rgb(90 100 115 / 0.55);
 }
 
 .cq-answer-form .req-textarea {

@@ -8,7 +8,10 @@ using Microsoft.EntityFrameworkCore;
 namespace AiReap.Application.Ai.Pipeline;
 
 // A candidate question the validator turned down, with every reason (ClarificationCandidateValidator).
-public sealed record RejectedClarification(string Topic, string Question, string? Kind, IReadOnlyList<CandidateRejection> Reasons);
+// Outcome: the validation result (ClarificationOutcomes: duplicate, already-answered, unsupported or
+// needs-review); null on records saved before CqValidation-v5.
+public sealed record RejectedClarification(
+    string Topic, string Question, string? Kind, IReadOnlyList<CandidateRejection> Reasons, string? Outcome = null);
 
 // What retrieval the analysis used. SourcePassages: the deterministic search of the source's own sentences
 // that the answered-in-source check runs on ("lexical" - no embeddings). ProjectDocuments: semantic retrieval

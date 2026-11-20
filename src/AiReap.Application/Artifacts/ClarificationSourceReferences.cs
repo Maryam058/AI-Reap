@@ -130,6 +130,16 @@ public static partial class ClarificationSourceReferences
         {
             if (index.Holds(stored))
             {
+                // The section it is labelled with is read again from the source as the source is read now
+                // (a table of contents' headings, not a list item above it), so an old label never
+                // names a section the passage is not in. Read-time only, nothing is saved.
+                if (stored.ExcerptIsQuote)
+                {
+                    var section = index.SectionOf(stored.Line);
+                    stored.Heading = section?.HeadingLine;
+                    stored.SectionNumber = section?.Number;
+                }
+
                 evidence.Add(stored);
                 continue;
             }
@@ -161,6 +171,21 @@ public static partial class ClarificationSourceReferences
         if (!evidence.Any(e => e.Line >= 0) && Recover(data, links, locator, trace) is { Count: > 0 } recovered)
         {
             evidence = recovered.Concat(evidence).ToList();
+        }
+
+        // A placed passage that shares only the document's general vocabulary with the question
+        // (EvidenceSupport) is not shown beside one that is about it. A contradiction keeps both of its
+        // statements, and a question with no supporting passage keeps what it has (IsGrounded decides
+        // whether it is shown at all).
+        if (ClarificationCandidateValidator.NormalizeKind(data.Kind) != "contradiction")
+        {
+            var terms = ClarificationCandidateValidator.Terms(data.Question);
+            var placed = evidence.Where(e => e.Line >= 0).ToList();
+            var supporting = placed.Where(e => EvidenceSupport.Assess(terms, ClarificationCandidateValidator.Terms(e.Excerpt), locator.CommonTerms).Supports).ToList();
+            if (supporting.Count > 0 && supporting.Count < placed.Count)
+            {
+                evidence = evidence.Where(e => e.Line < 0 || supporting.Contains(e)).ToList();
+            }
         }
 
         Set(payload, Key, links);
@@ -226,10 +251,16 @@ public static partial class ClarificationSourceReferences
         var keys = new[] { data.Question, trace.OriginalQuestion }
             .Where(q => !string.IsNullOrWhiteSpace(q)).Select(q => AiResultMerge.Key(q!)).Where(k => k.Length > 0).ToHashSet();
         var items = trace.Items.Where(i => keys.Contains(AiResultMerge.Key(i.Question))).ToList();
+        // Matched by reason only when exactly one item gives that reason: a reason several questions share
+        // ("The SRS does not specify this.") would hand this question another question's passages.
         if (items.Count == 0 && !string.IsNullOrWhiteSpace(data.Reason))
         {
             var reason = AiResultMerge.Key(data.Reason);
             items = trace.Items.Where(i => i.Reason is { } r && AiResultMerge.Key(r) == reason).ToList();
+            if (items.Count > 1)
+            {
+                items = [];
+            }
         }
 
         var found = new List<SourceReferencePayload>();

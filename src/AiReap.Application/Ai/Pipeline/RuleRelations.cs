@@ -459,9 +459,14 @@ public static partial class RuleRelations
     private static RuleResolution? Resolve(
         RuleStatement a, RuleStatement b, HashSet<string> aTerms, HashSet<string> bTerms, IEnumerable<(int Line, string Text)> elsewhere, TermAliases aliases)
     {
-        var onlyA = aTerms.Where(t => !bTerms.Contains(t)).ToHashSet(StringComparer.Ordinal);
-        var onlyB = bTerms.Where(t => !aTerms.Contains(t)).ToHashSet(StringComparer.Ordinal);
-        foreach (var (line, text) in elsewhere)
+        var sentences = elsewhere.Select(s => (s.Line, s.Text, Terms: aliases.Canon(ClarificationCandidateValidator.Terms(s.Text)))).ToList();
+
+        // Words a long document uses throughout ("Careway", "referral") name its general subject, not
+        // either rule: a sentence that shares only those with a rule is not about it.
+        var common = EvidenceSupport.CommonTerms(sentences.Select(s => s.Terms).ToList());
+        var onlyA = aTerms.Where(t => !bTerms.Contains(t) && !common.Contains(t)).ToHashSet(StringComparer.Ordinal);
+        var onlyB = bTerms.Where(t => !aTerms.Contains(t) && !common.Contains(t)).ToHashSet(StringComparer.Ordinal);
+        foreach (var (line, text, terms) in sentences)
         {
             if (text.EndsWith('?') || Resolver().Match(text) is not { Success: true } marker)
             {
@@ -470,7 +475,6 @@ public static partial class RuleRelations
 
             // It names something only the first rule has and something only the second has, so it is
             // about these two rules - and it is not just one of them written again.
-            var terms = aliases.Canon(ClarificationCandidateValidator.Terms(text));
             if (terms.Overlaps(onlyA) && terms.Overlaps(onlyB) && Jaccard(terms, aTerms) < 0.8 && Jaccard(terms, bTerms) < 0.8)
             {
                 return new RuleResolution(line, text, marker.Value);
@@ -663,7 +667,10 @@ public static partial class RuleRelations
     [GeneratedRegex(@"\b(?:however|except|exceptions?|as an exception|notwithstanding|instead|overrides?|takes precedence)\b", RegexOptions.IgnoreCase)]
     private static partial Regex ExceptionWording();
 
-    // Wording that states how rules relate: an exception, a precedence or a scope.
-    [GeneratedRegex(@"\b(?:except(?:ion)?s?|unless|excluding|other than|takes? precedence|precedence over|overrides?|overridden|appl(?:y|ies) only|only appl(?:y|ies)|(?:does|do|shall|will) not apply|is not applied|are not applied|never appl(?:y|ies)|regardless of|instead of|prior to|(?:is|are) (?:checked|validated|evaluated|applied) (?:first|before))\b", RegexOptions.IgnoreCase)]
+    // Wording that states how rules relate: an exception, a precedence or a scope. "Exception" on its own
+    // is not enough - documents also use it for an error case ("raise an exception", "become an
+    // exception for manual verification", "exception menu"); only wording that makes one rule an
+    // exception to another counts.
+    [GeneratedRegex(@"\b(?:except(?:\s+(?:for|when|where|if|that))?(?!ions?)|with the exception of|as an exception|(?:is|are) an? exceptions? (?:to|for)|exceptions? to (?:the|this|these|that|any) |the following exceptions|exceptions? (?:apply|applies)|unless|excluding|other than|takes? precedence|precedence over|overrides?|overridden|appl(?:y|ies) only|only appl(?:y|ies)|(?:does|do|shall|will) not apply|is not applied|are not applied|never appl(?:y|ies)|regardless of|instead of|prior to|(?:is|are) (?:checked|validated|evaluated|applied) (?:first|before))\b", RegexOptions.IgnoreCase)]
     private static partial Regex Resolver();
 }

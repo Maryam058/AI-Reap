@@ -49,12 +49,14 @@ export function matchesIn(root: Node, query: string, joiner: '' | ' ' = ''): { n
   return { nodes, matches: findMatches(nodes.map((n) => n.data), query, joiner) };
 }
 
-// Wraps one match in <mark> elements (one per text node it covers) and returns them in order.
-export function markMatch(nodes: Text[], match: TextMatch, className = 'src-hit'): HTMLElement[] {
+// Wraps one match in <mark> elements (one per text node it covers) and returns them in order. A null
+// segment stands for a gap between blocks (markAcross) and has nothing to wrap.
+export function markMatch(nodes: (Text | null)[], match: TextMatch, className = 'src-hit'): HTMLElement[] {
   const marks: HTMLElement[] = [];
   // Last node first, so splitting a node does not move the offsets of the ones still to do.
   for (let s = match.end.segment; s >= match.start.segment; s--) {
     const node = nodes[s];
+    if (!node) continue;
     const from = s === match.start.segment ? match.start.offset : 0;
     const to = s === match.end.segment ? match.end.offset : node.data.length;
     if (to <= from) continue;
@@ -77,4 +79,39 @@ export function markOccurrence(root: Node, query: string, nth = 0, className = '
     if (matches.length > nth) return markMatch(nodes, matches[nth], className);
   }
   return [];
+}
+
+// Marks the first occurrence of the query in a run of consecutive blocks (a Word quote's paragraphs):
+// within one block if it is there, else across them, with the break between two blocks read as a space
+// and the formatting runs inside a block read as one run of text. Only the matched words are marked,
+// never the rest of the blocks. Returns [] when the words are not there.
+export function markAcross(blocks: readonly Node[], query: string, className = 'src-hit'): HTMLElement[] {
+  for (const block of blocks) {
+    const marks = markOccurrence(block, query, 0, className);
+    if (marks.length) return marks;
+  }
+  if (blocks.length < 2) return [];
+  const nodes: (Text | null)[] = [];
+  blocks.forEach((block, i) => {
+    if (i > 0) nodes.push(null);
+    nodes.push(...textNodes(block));
+  });
+  const [match] = findMatches(nodes.map((n) => n?.data ?? ' '), query);
+  return match ? markMatch(nodes, match, className) : [];
+}
+
+// Undoes markMatch in an element: every mark of the viewer's (the yellow highlight and the heading
+// underline) is replaced by the text it held, and the split text nodes are joined again, so the next
+// passage is matched on the document's own text. Marks the document itself contains are left alone.
+export function unmarkAll(root: ParentNode, selector = 'mark.src-hit, mark.src-heading-mark'): void {
+  const parents = new Set<Node>();
+  // Innermost first: a mark inside another (two passages over the same words) goes before its outer one.
+  for (const mark of Array.from(root.querySelectorAll(selector)).reverse()) {
+    const parent = mark.parentNode;
+    if (!parent) continue;
+    while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+    mark.remove();
+    parents.add(parent);
+  }
+  parents.forEach((p) => p.normalize());
 }
